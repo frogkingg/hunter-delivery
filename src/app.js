@@ -175,21 +175,41 @@ function bindEvents() {
 }
 
 
+function applyDarkMode(isDark) {
+  if (isDark) {
+    document.body.classList.add("dark");
+    $("darkToggle").textContent = "☀️";
+  } else {
+    document.body.classList.remove("dark");
+    $("darkToggle").textContent = "🌙";
+  }
+}
+
 async function initDarkMode() {
-  const { darkMode } = await chrome.storage.local.get("darkMode");
-  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-  const isDark = darkMode !== undefined ? darkMode : prefersDark;
-  if (isDark) { document.body.classList.add("dark"); $("darkToggle").textContent = "☀️"; }
+  try {
+    const { darkMode } = await chrome.storage.local.get("darkMode");
+    if (darkMode !== undefined) {
+      applyDarkMode(darkMode);
+    } else {
+      const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      applyDarkMode(prefersDark);
+      // 监听系统切换，但只在用户未手动选择时生效
+      window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", async (e) => {
+        const { darkMode: saved } = await chrome.storage.local.get("darkMode");
+        if (saved === undefined) applyDarkMode(e.matches);
+      });
+    }
+  } catch (e) { console.error("[猎投] dark mode init error:", e); }
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
   await initConfig();
-  bindEvents();
   initDarkMode();
+  bindEvents();
   $("darkToggle").onclick = () => {
-    const isDark = document.body.classList.toggle("dark");
-    $("darkToggle").textContent = isDark ? "☀️" : "🌙";
-    chrome.storage.local.set({ darkMode: isDark });
+    const isDark = !document.body.classList.contains("dark");
+    applyDarkMode(isDark);
+    chrome.storage.local.set({ darkMode: isDark }).catch(() => {});
   };
   loadQueue();
 });
