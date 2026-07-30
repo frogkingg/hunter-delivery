@@ -11,6 +11,29 @@
 .profile-delete { padding: 2px 6px; border: 0; background: none; color: #d92d20; font-size: 16px; cursor: pointer; }
 .profile-delete:hover { text-decoration: underline; }
 
+/* 暗黑模式 */
+body.dark { --ink: #cdd6f4; --muted: #6c7086; --line: #3a3a5c; --bg: #1e1e2e; background: #1e1e2e; }
+body.dark .icon-button { background: #282840; }
+body.dark .guide-card, body.dark .job-card, body.dark .analysis, body.dark .library-item { background: #282840; border-color: #3a3a5c; }
+body.dark input, body.dark textarea { background: #313244; border-color: #45475a; color: #cdd6f4; }
+body.dark .secondary { border-color: #3a3a5c; background: #282840; color: #89b4fa; }
+body.dark .badge { background: #1e2a4a; color: #89b4fa; }
+body.dark #toast { background: #45475a; }
+body.dark .resume-picker { background: #282840; border-color: #3a3a5c; color: #89b4fa; }
+body.dark .resume-picker:hover { background: #313244; }
+body.dark .resume-file { background: #282840; border-color: #3a3a5c; }
+body.dark .job-prompt { background: #282840; border-color: #3a3a5c; }
+body.dark .queue-diagnostic .queue-raw-response { background: #282840; color: #cdd6f4; }
+body.dark .profile-item { border-color: #3a3a5c; }
+body.dark .profile-item:hover { background: #313244; }
+body.dark .profile-item.active { border-color: #89b4fa; background: #1e2a4a; }
+body.dark .profile-status { color: #6c7086; }
+body.dark .resume-send-note { color: #a6adc8; }
+body.dark .text-button, body.dark .refresh-greeting { color: #89b4fa; }
+body.dark .queue-diagnostic summary { color: #fab387; }
+body.dark nav { border-color: #3a3a5c; }
+body.dark header img { border-radius: 12px; }
+
 @media (prefers-color-scheme: dark) {
   :root { --ink: #cdd6f4; --muted: #6c7086; --line: #3a3a5c; --bg: #1e1e2e; }
   body { background: var(--bg); }

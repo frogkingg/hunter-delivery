@@ -174,8 +174,22 @@ function bindEvents() {
   }
 }
 
+
+async function initDarkMode() {
+  const { darkMode } = await chrome.storage.local.get("darkMode");
+  const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+  const isDark = darkMode !== undefined ? darkMode : prefersDark;
+  if (isDark) { document.body.classList.add("dark"); $("darkToggle").textContent = "☀️"; }
+}
+
 document.addEventListener("DOMContentLoaded", async () => {
   await initConfig();
   bindEvents();
+  initDarkMode();
+  $("darkToggle").onclick = () => {
+    const isDark = document.body.classList.toggle("dark");
+    $("darkToggle").textContent = isDark ? "☀️" : "🌙";
+    chrome.storage.local.set({ darkMode: isDark });
+  };
   loadQueue();
 });
