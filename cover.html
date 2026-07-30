@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280,height=640">
+<title>猎投 - Cover</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { width: 1280px; height: 640px; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.cover {
+  width: 1280px; height: 640px;
+  background: linear-gradient(135deg, #0a1628 0%, #13294b 50%, #1a365d 100%);
+  display: flex; align-items: center; padding: 0 80px;
+  position: relative;
+}
+.cover::before {
+  content: ""; position: absolute; inset: 0;
+  background-image: radial-gradient(circle at 20% 50%, rgba(26,86,219,0.15) 0%, transparent 60%),
+                    radial-gradient(circle at 80% 20%, rgba(229,160,0,0.08) 0%, transparent 40%);
+}
+.icon-area { flex: 0 0 420px; position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; }
+.target {
+  width: 280px; height: 280px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.12); background: rgba(26,86,219,0.06);
+  position: relative; display: flex; align-items: center; justify-content: center;
+}
+.target::before {
+  content: ""; width: 186px; height: 186px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.18); background: rgba(26,86,219,0.08);
+  position: absolute;
+}
+.target::after {
+  content: ""; width: 93px; height: 93px; border-radius: 50%;
+  border: 2px solid rgba(255,255,255,0.25); background: rgba(26,86,219,0.12);
+  position: absolute;
+}
+.crosshair-h, .crosshair-v {
+  position: absolute; background: rgba(255,255,255,0.12);
+}
+.crosshair-h { width: 340px; height: 1px; }
+.crosshair-v { width: 1px; height: 340px; }
+.arrow {
+  position: absolute; width: 400px; height: 3px;
+  background: linear-gradient(90deg, transparent, #e5a000 40%, #e5a000 100%);
+  transform: rotate(-45deg); transform-origin: center;
+}
+.arrow::after {
+  content: ""; position: absolute; right: -2px; top: -9px;
+  width: 0; height: 0;
+  border-left: 20px solid #e5a000;
+  border-top: 10px solid transparent;
+  border-bottom: 10px solid transparent;
+  transform: rotate(45deg);
+}
+.text-area { flex: 1; position: relative; z-index: 1; padding-left: 20px; }
+.title { font-size: 80px; font-weight: 800; color: #ffffff; letter-spacing: 0.04em; line-height: 1; }
+.subtitle { font-size: 28px; color: rgba(255,255,255,0.55); margin: 12px 0 24px; letter-spacing: 0.08em; }
+.desc { font-size: 22px; color: rgba(255,255,255,0.45); margin-bottom: 8px; line-height: 1.6; }
+.badges { display: flex; gap: 10px; margin-top: 30px; flex-wrap: wrap; }
+.badge {
+  padding: 7px 16px; border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.15);
+  font-size: 14px; color: rgba(255,255,255,0.5);
+  background: rgba(255,255,255,0.05);
+}
+</style>
+</head>
+<body>
+<div class="cover">
+  <div class="icon-area">
+    <div class="target">
+      <div class="crosshair-h"></div>
+      <div class="crosshair-v"></div>
+      <div class="arrow"></div>
+    </div>
+  </div>
+  <div class="text-area">
+    <div class="title">猎投</div>
+    <div class="subtitle">Hunter Delivery</div>
+    <div class="desc">BOSS 直聘 AI 投递助手 — 自动抓取岗位，多份简历管理</div>
+    <div class="desc">AI 生成 3 种风格招呼语，批量一键投递</div>
+    <div class="badges">
+      <span class="badge">Chrome Extension</span>
+      <span class="badge">Manifest V3</span>
+      <span class="badge">OpenAI Compatible</span>
+      <span class="badge">MIT License</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>
