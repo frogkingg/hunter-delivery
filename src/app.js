@@ -175,13 +175,19 @@ function bindEvents() {
 }
 
 
-function applyDarkMode(isDark) {
+// animate: 是否触发按钮旋转动画（仅用户主动点击时为 true）
+function applyDarkMode(isDark, animate = true) {
+  const btn = $("darkToggle");
+  if (animate) {
+    btn.classList.add("spinning");
+    setTimeout(() => btn.classList.remove("spinning"), 550);
+  }
   if (isDark) {
     document.body.classList.add("dark");
-    $("darkToggle").textContent = "☀️";
+    btn.textContent = "🌙";
   } else {
     document.body.classList.remove("dark");
-    $("darkToggle").textContent = "🌙";
+    btn.textContent = "☀️";
   }
 }
 
@@ -189,14 +195,14 @@ async function initDarkMode() {
   try {
     const { darkMode } = await chrome.storage.local.get("darkMode");
     if (darkMode !== undefined) {
-      applyDarkMode(darkMode);
+      applyDarkMode(darkMode, false);
     } else {
       const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      applyDarkMode(prefersDark);
+      applyDarkMode(prefersDark, false);
       // 监听系统切换，但只在用户未手动选择时生效
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", async (e) => {
         const { darkMode: saved } = await chrome.storage.local.get("darkMode");
-        if (saved === undefined) applyDarkMode(e.matches);
+        if (saved === undefined) applyDarkMode(e.matches, false);
       });
     }
   } catch (e) { console.error("[猎投] dark mode init error:", e); }

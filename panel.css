@@ -3,13 +3,38 @@
 .refresh-greeting{display:block;margin:4px 0 12px;padding:0;color:#155eef;font-weight:700}.current-actions{margin:0 0 10px}.queue-actions{margin-top:8px}.queue-selection-actions{margin-top:8px}.queue-item summary{display:flex;align-items:flex-start;gap:8px;list-style:none;cursor:pointer}.queue-item summary::-webkit-details-marker{display:none}.queue-select{width:18px;height:18px;flex:0 0 auto;margin:2px 2px 0 0;padding:0}.queue-summary-content{min-width:0;flex:1}.queue-summary-content h3{margin-bottom:4px}.queue-delete{flex:0 0 auto;padding:3px 0;border:0;background:none;color:#d92d20;font-size:12px;font-weight:700}.queue-delete:hover{text-decoration:underline}
 /* 多简历管理 */
 .profile-list { margin: 8px 0; }
-.profile-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin: 4px 0; border: 1px solid #e0e0e0; border-radius: 6px; cursor: pointer; transition: background .15s; }
+.profile-item { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin: 4px 0; border: 1px solid #e0e0e0; border-radius: 6px; cursor: pointer; transition: background 0.35s ease, border-color 0.35s ease; }
 .profile-item:hover { background: #f5f7ff; }
 .profile-item.active { border-color: #1a56db; background: #eef2ff; }
 .profile-name { font-weight: 600; flex: 1; }
 .profile-status { font-size: 12px; color: #888; }
 .profile-delete { padding: 2px 6px; border: 0; background: none; color: #d92d20; font-size: 16px; cursor: pointer; }
 .profile-delete:hover { text-decoration: underline; }
+
+/* 主题切换动画 — 页面元素平滑过渡 */
+body {
+  transition: background-color 0.35s ease, color 0.35s ease;
+}
+nav,
+.icon-button,
+.guide-card, .job-card, .analysis, .library-item,
+input, textarea,
+.secondary,
+.badge,
+.resume-picker,
+.resume-file,
+.job-prompt {
+  transition: background-color 0.35s ease, color 0.35s ease, border-color 0.35s ease;
+}
+.profile-status,
+.resume-send-note,
+.text-button, .refresh-greeting,
+.queue-diagnostic summary {
+  transition: color 0.35s ease;
+}
+.queue-diagnostic .queue-raw-response {
+  transition: background-color 0.35s ease, color 0.35s ease;
+}
 
 /* 暗黑模式 */
 body.dark { --ink: #cdd6f4; --muted: #6c7086; --line: #3a3a5c; --bg: #1e1e2e; background: #1e1e2e; }
@@ -34,27 +59,16 @@ body.dark .queue-diagnostic summary { color: #fab387; }
 body.dark nav { border-color: #3a3a5c; }
 body.dark header img { border-radius: 12px; }
 
-@media (prefers-color-scheme: dark) {
-  :root { --ink: #cdd6f4; --muted: #6c7086; --line: #3a3a5c; --bg: #1e1e2e; }
-  body { background: var(--bg); }
-  header img { border-radius: 12px; }
-  .icon-button { background: #282840; }
-  .guide-card, .job-card, .analysis, .library-item { background: #282840; border-color: var(--line); }
-  input, textarea { background: #313244; border-color: #45475a; color: var(--ink); }
-  .secondary { border-color: #3a3a5c; background: #282840; color: #89b4fa; }
-  .badge { background: #1e2a4a; color: #89b4fa; }
-  #toast { background: #45475a; }
-  .resume-picker { background: #282840; border-color: #3a3a5c; color: #89b4fa; }
-  .resume-picker:hover { background: #313244; }
-  .resume-file { background: #282840; border-color: var(--line); }
-  .job-prompt { background: #282840; border-color: var(--line); }
-  .queue-diagnostic .queue-raw-response { background: #282840; color: #cdd6f4; }
-  .profile-item { border-color: var(--line); }
-  .profile-item:hover { background: #313244; }
-  .profile-item.active { border-color: #89b4fa; background: #1e2a4a; }
-  .profile-status { color: var(--muted); }
-  .resume-send-note { color: #a6adc8; }
-  .text-button, .refresh-greeting { color: #89b4fa; }
-  .queue-diagnostic summary { color: #fab387; }
-  nav { border-color: var(--line); }
+/* 切换按钮旋转动画 */
+@keyframes themeToggleSpin {
+  0%   { transform: rotate(0deg) scale(1); }
+  40%  { transform: rotate(200deg) scale(0.75); }
+  70%  { transform: rotate(340deg) scale(1.05); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+#darkToggle {
+  transition: transform 0.35s ease;
+}
+#darkToggle.spinning {
+  animation: themeToggleSpin 0.55s cubic-bezier(0.4, 0, 0.2, 1);
 }
