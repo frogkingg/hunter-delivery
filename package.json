@@ -1,6 +1,6 @@
 {
   "name": "hunter-delivery",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "猎投 Chrome 扩展 - 读取 BOSS 当前岗位，用你的简历生成招呼语并记录投递。",
   "private": true,
   "type": "module",
