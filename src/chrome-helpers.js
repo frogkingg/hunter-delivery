@@ -1,0 +1,42 @@
+// 依赖 chrome API 与 DOM 的工具函数。
+
+export const $ = (id) => document.getElementById(id);
+
+export const send = (message) =>
+  new Promise((resolve, reject) =>
+    chrome.runtime.sendMessage(message, (response) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve(response);
+    })
+  );
+
+export async function activeTab() {
+  // Side Panel 获得焦点时，currentWindow 在少数 Chrome 版本中会返回扩展页而非网页标签。
+  // 先取最后活跃窗口的当前标签；若仍不是 BOSS，则在当前浏览器窗口中寻找最近的 BOSS 职位页。
+  const [focused] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (focused && /(^|\.)zhipin\.com$/.test(new URL(focused.url || "https://invalid.local").hostname))
+    return focused;
+  const candidates = await chrome.tabs.query({
+    url: ["*://*.zhipin.com/job_detail/*", "*://*.zhipin.com/web/geek/jobs*"],
+  });
+  return candidates.sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0] || focused;
+}
+
+export function toast(message) {
+  const el = $("toast");
+  el.textContent = message;
+  el.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => el.classList.remove("show"), 4200);
+}
+
+export async function messagePage(tab, message) {
+  try {
+    return await chrome.tabs.sendMessage(tab.id, message);
+  } catch (error) {
+    if (!/Receiving end does not exist/i.test(error.message || "")) throw error;
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["content.js"] });
+    return chrome.tabs.sendMessage(tab.id, message);
+  }
+}

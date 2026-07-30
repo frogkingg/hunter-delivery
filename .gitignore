@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+.AppleDouble
+._*
+
+# Local editor files
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local development and packaged archives
+*.zip
+.openai/
+dist/
+node_modules/
+.agents/
+.codex/
+icon.png
