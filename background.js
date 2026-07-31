@@ -1,9 +1,10 @@
-import { trimLog } from "./src/pure-utils.js";
+import { sanitizeGreeting, trimLog } from "./src/pure-utils.js";
 
 const DEFAULTS = {
   endpoint: "https://api.openai.com/v1",
   model: "gpt-4.1-mini",
   apiKey: "",
+  disableThinking: true,
   candidateProfile: "",
   greetingPrompt: "",
   resumeImages: []
@@ -24,7 +25,7 @@ function mutex() {
 
 // 清洗投递清单中的临时字段，避免它们被 spread 进岗位库长期留存或导出。
 function sanitizeJobForLibrary(job) {
-  const { progress, error, rawAiResponse, queuedAt, status, ...rest } = job || {};
+  const { progress, error, rawAiResponse, queuedAt, ...rest } = job || {};
   return rest;
 }
 
@@ -80,69 +81,230 @@ function assertSafeEndpoint(endpoint) {
   if (host === "localhost" || host === "127.0.0.1" || host === "::1" || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(host)) throw new Error("不允许使用本地或内网地址作为 AI 服务。");
 }
 
-async function callAI({ config, messages, maxTokens = 1800, jsonMode = false, timeoutMs = 20000, retries = 2 }) {
+const MAX_RETRY_TOKENS = 12000;
+
+function isReasoningModel(model) {
+  return /(^|[-_/])(o[1-9]|gpt-5|r1|reasoner|reasoning|thinking)([-_.:/]|$)/i.test(String(model || ""));
+}
+
+function usesMaxCompletionTokens(model) {
+  return /^(o[1-9](?:[-_.]|$)|gpt-5(?:[-_.]|$))/i.test(String(model || ""));
+}
+
+function deepSeekThinkingControl(config) {
+  const isDeepSeek = /deepseek/i.test(`${config?.endpoint || ""} ${config?.model || ""}`);
+  return isDeepSeek && config?.disableThinking !== false
+    ? { thinking: { type: "disabled" } }
+    : {};
+}
+
+function assistantText(body) {
+  const choice = body?.choices?.[0];
+  const content = choice?.message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map(part => {
+      if (typeof part === "string") return part;
+      if (typeof part?.text === "string") return part.text;
+      if (typeof part?.text?.value === "string") return part.text.value;
+      if (typeof part?.content === "string" && /text/i.test(part?.type || "")) return part.content;
+      return "";
+    }).join("");
+  }
+  if (typeof choice?.text === "string") return choice.text;
+  if (typeof body?.output_text === "string") return body.output_text;
+  if (Array.isArray(body?.output)) {
+    return body.output.flatMap(item => Array.isArray(item?.content) ? item.content : []).map(part => {
+      if (typeof part?.text === "string") return part.text;
+      if (typeof part?.text?.value === "string") return part.text.value;
+      return "";
+    }).join("");
+  }
+  return "";
+}
+
+function rawAiResponse(body) {
+  try { return JSON.stringify(body, null, 2).slice(0, 20000); }
+  catch (_) { return String(body || "").slice(0, 20000); }
+}
+
+function emptyAiError(body, attempts) {
+  const choice = body?.choices?.[0] || {};
+  const message = choice?.message || {};
+  const finishReason = choice?.finish_reason || body?.status || "未提供";
+  const reasoningTokens = body?.usage?.completion_tokens_details?.reasoning_tokens || 0;
+  const hasReasoning = !!(message.reasoning_content || reasoningTokens);
+  let cause;
+  if (message.refusal) cause = `模型拒绝生成：${message.refusal}`;
+  else if (/content_filter/i.test(finishReason)) cause = "响应被服务商的内容安全策略拦截。";
+  else if (/length|max_tokens|incomplete/i.test(finishReason) || hasReasoning) cause = "模型在输出最终文本前耗尽了生成额度。";
+  else cause = `服务返回 finish_reason=${finishReason}，但 content 为空。`;
+  const retryText = attempts > 1 ? `已自动重试 ${attempts - 1} 次。` : "";
+  const error = new Error(`AI 服务返回空内容。${retryText}${cause}若持续出现，请改用非推理型对话模型后重试。`);
+  error.rawResponse = rawAiResponse(body);
+  return error;
+}
+
+function canRetryEmptyResponse(body) {
+  return !body?.choices?.[0]?.message?.refusal &&
+    !/content_filter/i.test(body?.choices?.[0]?.finish_reason || "");
+}
+
+async function callAI({ config, messages, maxTokens = 1800, jsonMode = false, timeoutMs = 60000, retries = 1 }) {
   assertSafeEndpoint(config.endpoint);
   const url = endpointUrl(config.endpoint);
   const origin = new URL(url).origin + "/*";
   const granted = await chrome.permissions.contains({ origins: [origin] });
   if (!granted) throw new Error("请先在设置中允许此 AI 服务的网址访问权限。");
-  let response;
+  const attempts = Math.max(1, Math.floor(Number(retries) || 0) + 1);
+  let tokenBudget = Math.max(1, Number(maxTokens) || 1800);
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let response;
+    try {
+      const tokenLimit = usesMaxCompletionTokens(config.model)
+        ? { max_completion_tokens: tokenBudget }
+        : { max_tokens: tokenBudget };
+      const temperature = isReasoningModel(config.model) ? {} : { temperature: 0.35 };
+      const thinkingControl = deepSeekThinkingControl(config);
+      const useJsonMode = jsonMode && (/deepseek/i.test(config.endpoint || "") || /deepseek/i.test(config.model || ""));
+      response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${config.apiKey}` },
+        body: JSON.stringify({ model: config.model, messages, ...temperature, ...tokenLimit, ...thinkingControl, ...(useJsonMode ? { response_format: { type: "json_object" } } : {}) }),
+        signal: controller.signal
+      });
+    } catch (error) {
+      if (error?.name === "AbortError") throw new Error(`AI 服务连接超时（${Math.round(timeoutMs / 1000)} 秒）：${hostOf(url)}。请检查 API 地址、网络或服务状态。`);
+      throw new Error(`无法连接 AI 服务：${hostOf(url)}。请检查 API 地址、网络，并在「设置」点击“测试连接”授权该服务。`);
+    } finally {
+      clearTimeout(timeout);
+    }
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(body?.error?.message || `AI 服务返回 ${response.status}`);
+      error.rawResponse = rawAiResponse(body);
+      throw error;
+    }
+    const text = assistantText(body);
+    if (String(text || "").trim()) return { text, usage: body?.usage };
+    if (attempt < attempts && canRetryEmptyResponse(body)) {
+      tokenBudget = Math.min(MAX_RETRY_TOKENS, Math.max(tokenBudget * 2, tokenBudget + 1000));
+      continue;
+    }
+    throw emptyAiError(body, attempt);
+  }
+}
+
+function streamDeltaText(parsed) {
+  const delta = parsed?.choices?.[0]?.delta;
+  if (typeof delta?.content === "string") return delta.content;
+  if (Array.isArray(delta?.content)) {
+    return delta.content.map(part => typeof part?.text === "string" ? part.text : "").join("");
+  }
+  if (parsed?.type === "response.output_text.delta" && typeof parsed?.delta === "string") return parsed.delta;
+  return "";
+}
+
+function hasReasoningDelta(parsed) {
+  const delta = parsed?.choices?.[0]?.delta;
+  return !!(delta?.reasoning_content || delta?.reasoning || /reasoning/i.test(parsed?.type || ""));
+}
+
+// 流式调用 AI（SSE）：只展示生成进度，不向界面暴露模型的思考内容。
+async function callAIStream({ config, messages, maxTokens = 1800, jsonMode = false, onDelta, onProgress }) {
+  assertSafeEndpoint(config.endpoint);
+  const url = endpointUrl(config.endpoint);
+  const origin = new URL(url).origin + "/*";
+  const granted = await chrome.permissions.contains({ origins: [origin] });
+  if (!granted) throw new Error("请先在设置中允许此 AI 服务的网址访问权限。");
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
+  const timeoutMs = 120000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const retryWithoutStream = async (body) => {
+    if (!canRetryEmptyResponse(body)) throw emptyAiError(body, 1);
+    if (onProgress) onProgress({ phase: "retrying" });
+    return callAI({
+      config,
+      messages,
+      maxTokens: Math.min(MAX_RETRY_TOKENS, Math.max(maxTokens * 2, maxTokens + 1000)),
+      jsonMode,
+      timeoutMs: 60000,
+      retries: 0,
+    });
+  };
+  let response;
   try {
+    const tokenLimit = usesMaxCompletionTokens(config.model)
+      ? { max_completion_tokens: maxTokens }
+      : { max_tokens: maxTokens };
+    const temperature = isReasoningModel(config.model) ? {} : { temperature: 0.35 };
+    const thinkingControl = deepSeekThinkingControl(config);
     const useJsonMode = jsonMode && (/deepseek/i.test(config.endpoint || "") || /deepseek/i.test(config.model || ""));
     response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${config.apiKey}` },
-      body: JSON.stringify({ model: config.model, messages, temperature: 0.35, max_tokens: maxTokens, ...(useJsonMode ? { response_format: { type: "json_object" } } : {}) }),
-      signal: controller.signal
-    });
-  } catch (error) {
-    if (error?.name === "AbortError") throw new Error(`AI 服务连接超时（20 秒）：${hostOf(url)}。请检查 API 地址、网络或服务状态。`);
-    throw new Error(`无法连接 AI 服务：${hostOf(url)}。请检查 API 地址、网络，并在「设置」点击“测试连接”授权该服务。`);
-  } finally {
-    clearTimeout(timeout);
-  }
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body?.error?.message || `AI 服务返回 ${response.status}`);
-  const content = body?.choices?.[0]?.message?.content;
-  const text = Array.isArray(content) ? content.map(part => part?.text || "").join("") : content;
-  if (!text) throw new Error("AI 服务没有返回内容。");
-  return text;
-}
-
-// 流式调用 AI（SSE）：逐字增量通过 onDelta 回调返回。
-// 用于 parseResume（纯文本输出，逐字显示体验好）；analyze/generateQueue 保持非流式（JSON 输出流式无意义）。
-async function callAIStream({ config, messages, maxTokens = 1800, onDelta }) {
-  assertSafeEndpoint(config.endpoint);
-  const url = endpointUrl(config.endpoint);
-  const origin = new URL(url).origin + "/*";
-  const granted = await chrome.permissions.contains({ origins: [origin] });
-  if (!granted) throw new Error("请先在设置中允许此 AI 服务的网址访问权限。");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60000);
-  let response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${config.apiKey}` },
-      body: JSON.stringify({ model: config.model, messages, temperature: 0.35, max_tokens: maxTokens, stream: true }),
+      body: JSON.stringify({ model: config.model, messages, ...temperature, ...tokenLimit, ...thinkingControl, stream: true, ...(useJsonMode ? { response_format: { type: "json_object" } } : {}) }),
       signal: controller.signal
     });
   } catch (error) {
     clearTimeout(timeout);
-    if (error?.name === "AbortError") throw new Error(`AI 服务连接超时（60 秒）：${hostOf(url)}。请检查 API 地址、网络或服务状态。`);
+    if (error?.name === "AbortError") throw new Error(`AI 服务连接超时（${Math.round(timeoutMs / 1000)} 秒）：${hostOf(url)}。请检查 API 地址、网络或服务状态。`);
     throw new Error(`无法连接 AI 服务：${hostOf(url)}。请检查 API 地址、网络，并在「设置」点击“测试连接”授权该服务。`);
   }
   if (!response.ok) {
     clearTimeout(timeout);
     const body = await response.json().catch(() => ({}));
-    throw new Error(body?.error?.message || `AI 服务返回 ${response.status}`);
+    const error = new Error(body?.error?.message || `AI 服务返回 ${response.status}`);
+    error.rawResponse = rawAiResponse(body);
+    throw error;
   }
+
+  const contentType = response.headers?.get?.("content-type") || "";
+  if (contentType && !/text\/event-stream/i.test(contentType)) {
+    clearTimeout(timeout);
+    const body = await response.json().catch(() => ({}));
+    const text = assistantText(body);
+    if (!String(text || "").trim()) return retryWithoutStream(body);
+    if (onDelta) onDelta(text, text);
+    return { text, usage: body?.usage };
+  }
+
+  if (!response.body?.getReader) {
+    clearTimeout(timeout);
+    throw new Error("AI 服务没有返回可读取的流式响应。请改用支持 SSE 流式输出的模型。");
+  }
+
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let fullText = "";
+  let usage;
+  let lastEvent = {};
+  let reasoningReported = false;
+  const handleLine = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed || !trimmed.startsWith("data:")) return;
+    const data = trimmed.slice(5).trim();
+    if (data === "[DONE]") return;
+    try {
+      const parsed = JSON.parse(data);
+      lastEvent = parsed;
+      if (parsed?.usage) usage = parsed.usage;
+      if (hasReasoningDelta(parsed) && !reasoningReported) {
+        reasoningReported = true;
+        if (onProgress) onProgress({ phase: "reasoning" });
+      }
+      const delta = streamDeltaText(parsed);
+      if (delta) {
+        fullText += delta;
+        if (onDelta) onDelta(delta, fullText);
+      }
+    } catch (error) {
+      if (error?.message === "PORT_DISCONNECTED") throw error;
+    }
+  };
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -150,28 +312,19 @@ async function callAIStream({ config, messages, maxTokens = 1800, onDelta }) {
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data:")) continue;
-        const data = trimmed.slice(5).trim();
-        if (data === "[DONE]") continue;
-        try {
-          const parsed = JSON.parse(data);
-          const delta = parsed?.choices?.[0]?.delta?.content || "";
-          if (delta) { fullText += delta; if (onDelta) onDelta(delta, fullText); }
-        } catch (e) {
-          // PORT_DISCONNECTED 由 onDelta 抛出，需冒泡到外层 finally（释放 reader）再交由 onConnect catch；
-          // 其余（JSON.parse 失败）静默跳过。
-          if (e?.message === "PORT_DISCONNECTED") throw e;
-        }
-      }
+      for (const line of lines) handleLine(line);
     }
+    buffer += decoder.decode();
+    if (buffer.trim()) handleLine(buffer);
+  } catch (error) {
+    if (error?.name === "AbortError") throw new Error(`AI 流式生成超时（${Math.round(timeoutMs / 1000)} 秒）：${hostOf(url)}。`);
+    throw error;
   } finally {
     clearTimeout(timeout);
     try { reader.cancel(); } catch (_) {}
   }
-  if (!fullText) throw new Error("AI 服务没有返回内容。");
-  return fullText;
+  if (!fullText) return retryWithoutStream(lastEvent);
+  return { text: fullText, usage };
 }
 
 function jsonFrom(text) {
@@ -344,7 +497,7 @@ async function sendToTab(tabId, message) {
   try { return await chrome.tabs.sendMessage(tabId, message); }
   catch (error) {
     if (!/Receiving end does not exist/i.test(error.message || "")) throw error;
-    await chrome.scripting.executeScript({ target: { tabId }, files: ["selectors.js", "content.js"] });
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
     return chrome.tabs.sendMessage(tabId, message);
   }
 }
@@ -359,6 +512,24 @@ async function waitForTab(tabId, fragment, timeout = 15000) {
   throw new Error(`页面加载超时：${fragment}`);
 }
 
+async function waitForCommunicationReady(tabId, timeout = 15000) {
+  const deadline = Date.now() + timeout;
+  let lastError = "";
+  while (Date.now() < deadline) {
+    try {
+      const response = await sendToTab(tabId, { type: "PREPARE_COMMUNICATION" });
+      if (response?.blocked) throw new Error(response.reason || "检测到 BOSS 安全验证，请手动处理后重试。");
+      if (response?.ready) return response;
+      if (!response?.ok) lastError = response?.error || "页面尚未准备好";
+    } catch (error) {
+      if (/安全验证|操作限制/.test(error.message || "")) throw error;
+      lastError = error.message || String(error);
+    }
+    await sleep(400);
+  }
+  throw new Error(`未能进入可发送状态。${lastError ? `最后状态：${lastError}。` : ""}请检查 BOSS 页面是否出现验证或沟通弹层。`);
+}
+
 async function ensureWorker(url) {
   try {
     if (workerTabId) await chrome.tabs.get(workerTabId);
@@ -369,8 +540,6 @@ async function ensureWorker(url) {
 }
 
 async function runQueue() {
-  if (queueRunning) throw new Error("投递清单正在执行中。");
-  queueRunning = true;
   queueStopRequested = false;
   const MAX_CONSECUTIVE_FAILURES = 3;
   let consecutiveFailures = 0;
@@ -385,10 +554,15 @@ async function runQueue() {
         break;
       }
       const item = items[index];
+      let messageSent = false;
       queueBatch.current = index + 1;
       await updateQueueItem(item.key, { status: "投递中", progress: `正在投递第 ${queueBatch.current}/${queueBatch.total} 个岗位：打开岗位详情`, error: "" });
       try {
-        if (!item.greeting || !item.greeting.trim()) throw new Error("招呼语为空，已跳过；请先批量生成招呼语。");
+        const greeting = sanitizeGreeting(item.greeting);
+        if (!item.profileName) throw new Error("该岗位未绑定生成招呼语时使用的简历，请重新批量生成后再投递。");
+        const { profiles = [] } = await chrome.storage.local.get("profiles");
+        const profile = profiles.find(candidate => candidate.name === item.profileName);
+        if (!profile) throw new Error(`生成招呼语时使用的简历“${item.profileName}”已不存在，请重新批量生成。`);
         if (!item.detailUrl) throw new Error("缺少岗位详情链接");
         const tabId = await ensureWorker(item.detailUrl);
         await waitForTab(tabId, "/job_detail/");
@@ -400,25 +574,30 @@ async function runQueue() {
         await updateQueueItem(item.key, { progress: "正在打开 BOSS 沟通页" });
         const open = await sendToTab(tabId, { type: "OPEN_COMMUNICATION" });
         if (!open?.ok) throw new Error(open?.error || "无法打开沟通页");
-        try { await waitForTab(tabId, "/web/geek/chat"); }
-        catch (_) {
-          // BOSS 偶发“会话已建但页面没有跳转”。参考社区最佳实践，再点一次继续沟通后重等一次。
-          await updateQueueItem(item.key, { progress: "沟通页未跳转，正在重试" });
-          const retryOpen = await sendToTab(tabId, { type: "OPEN_COMMUNICATION" });
-          if (!retryOpen?.ok) throw new Error(retryOpen?.error || "沟通页未跳转，重试点击失败");
-          await waitForTab(tabId, "/web/geek/chat");
-        }
+        await updateQueueItem(item.key, { progress: "正在处理沟通弹层并等待聊天输入框" });
+        await waitForCommunicationReady(tabId);
         await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "打开沟通页", status: "ok" });
         await updateQueueItem(item.key, { progress: "正在发送招呼语和简历图片" });
-        const sent = await sendToTab(tabId, { type: "SEND_MESSAGE", greeting: item.greeting, images: (await chrome.storage.local.get("config")).config?.resumeImages || [] });
+        const sent = await sendToTab(tabId, { type: "SEND_MESSAGE", greeting, images: profile.resumeImages || [] });
         if (!sent?.ok) throw new Error(sent?.error || "发送失败");
-        await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "发送招呼语", status: "ok", message: sent.resume?.sent ? "简历图片已确认送达" : (sent.resume?.reason || "未发送简历") });
-        await saveJob({ ...item, status: "已沟通", sentAt: new Date().toLocaleString("zh-CN"), resumeStatus: sent.resume?.sent ? "简历图片已确认送达" : (sent.resume?.reason || "未发送") });
-        await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "投递完成", status: "ok" });
+        messageSent = true;
+        const resumeStatus = sent.resume?.sent ? "简历图片已确认送达" : (sent.resume?.reason || "未发送");
+        // 从此处起消息已经不可撤销。先持久化不可重试状态，归档失败也不能回到普通失败状态。
+        await updateQueueItem(item.key, { status: "已发送待归档", progress: "消息已送达，正在保存投递记录", error: "" });
+        await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "发送招呼语", status: "ok", message: sent.resume?.sent ? "简历图片已确认送达" : (sent.resume?.reason || "未发送简历") }).catch(error => logError("记录发送日志", error));
+        await saveJob({ ...item, greeting, status: "已沟通", sentAt: new Date().toLocaleString("zh-CN"), resumeStatus });
+        await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "投递完成", status: "ok" }).catch(error => logError("记录投递完成日志", error));
         // 岗位库已保存成功记录，待投递清单实时移除，避免和历史记录重复出现。
-        await removeQueueItem(item.key);
+        if (!await removeQueueItem(item.key)) throw new Error("投递记录已保存，但未能从投递清单移除");
         consecutiveFailures = 0;
       } catch (error) {
+        if (messageSent) {
+          const message = `消息已确认送达，但本地归档失败：${logError(`归档岗位「${item.title}」`, error)}`;
+          await updateQueueItem(item.key, { status: "已发送待归档", progress: "", error: message }).catch(() => {});
+          await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "归档失败", status: "fail", message }).catch(() => {});
+          // 本地持久化异常可能影响后续岗位，停止本轮且绝不自动重发当前岗位。
+          break;
+        }
         consecutiveFailures++;
         const message = logError(`投递岗位「${item.title}」`, error);
         await updateQueueItem(item.key, { status: "失败", progress: "", error: message });
@@ -447,8 +626,10 @@ async function runQueue() {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     if (message.type === "AI_CALL") {
-      const text = await callAI(message.payload);
-      sendResponse({ ok: true, text });
+      const result = await callAI(message.payload);
+      const text = typeof result === "string" ? result : (result?.text ?? result);
+      const usage = typeof result === "object" ? result?.usage : undefined;
+      sendResponse({ ok: true, text, ...(usage ? { usage } : {}) });
     } else if (message.type === "PARSE_JSON") {
       sendResponse({ ok: true, data: jsonFrom(message.text) });
     } else if (message.type === "SAVE_JOB") {
@@ -462,6 +643,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === "QUEUE_GET") {
       sendResponse({ ok: true, queue: await getQueue(), running: queueRunning, batch: queueBatch });
     } else if (message.type === "QUEUE_UPDATE") {
+      const current = (await getQueue()).find(item => item.key === message.key);
+      if (current?.status === "已发送待归档") {
+        throw new Error("该岗位消息已送达，仅本地归档未完成；为避免重复发送，不能重新加入待投递队列。");
+      }
       sendResponse({ ok: true, item: await updateQueueItem(message.key, message.patch || {}) });
     } else if (message.type === "QUEUE_REMOVE") {
       sendResponse({ ok: await removeQueueItem(message.key) });
@@ -472,6 +657,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (queueRunning) { sendResponse({ ok: true, alreadyRunning: true }); return; }
       const count = (await getQueue()).filter(item => ["待投递", "待确认"].includes(item.status)).slice(0, 20).length;
       if (!count) throw new Error("没有已生成招呼语的岗位。");
+      // getQueue() 让出了事件循环；再次检查后再同步置锁，确保并发启动只有一个获胜者。
+      if (queueRunning) { sendResponse({ ok: true, alreadyRunning: true }); return; }
       queueRunning = true; // 在 await 让出前同步置锁，避免并发 QUEUE_START 双启动。
       runQueue().catch(error => console.error("[猎投] runQueue 失败：", error));
       sendResponse({ ok: true, count });
@@ -485,31 +672,45 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       await clearDeliveryLog();
       sendResponse({ ok: true });
     }
-  })().catch(error => sendResponse({ ok: false, error: error.message || String(error) }));
+  })().catch(error => sendResponse({
+    ok: false,
+    error: error.message || String(error),
+    ...(error.rawResponse ? { rawResponse: error.rawResponse } : {}),
+  }));
   return true;
 });
 
 // 流式 AI 调用：panel 端通过 chrome.runtime.connect 建立长连接，
-// background 读 SSE 并 port.postMessage({ type: "DELTA", text }) 逐字推送累计全文，
-// 完成后 postMessage({ type: "DONE", text })，出错 postMessage({ type: "ERROR", error })。
+// background 读取 SSE，推送进度与累计文本；完成后返回文本和 usage。
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== "AI_CALL_STREAM") return;
   port.onMessage.addListener(async (message) => {
     if (message.type !== "AI_CALL_STREAM") return;
     try {
-      const fullText = await callAIStream({
+      const result = await callAIStream({
         config: message.payload.config,
         messages: message.payload.messages,
         maxTokens: message.payload.maxTokens,
+        jsonMode: message.payload.jsonMode,
         onDelta: (_delta, full) => {
           try { port.postMessage({ type: "DELTA", text: full }); }
           catch (_) { throw new Error("PORT_DISCONNECTED"); }
         },
+        onProgress: (progress) => {
+          try { port.postMessage({ type: "PROGRESS", ...progress }); }
+          catch (_) { throw new Error("PORT_DISCONNECTED"); }
+        },
       });
-      try { port.postMessage({ type: "DONE", text: fullText }); }
+      try { port.postMessage({ type: "DONE", text: result.text, usage: result.usage }); }
       catch (_) { /* port 已断开，无需通知 */ }
     } catch (error) {
-      try { port.postMessage({ type: "ERROR", error: error.message || String(error) }); }
+      try {
+        port.postMessage({
+          type: "ERROR",
+          error: error.message || String(error),
+          ...(error.rawResponse ? { rawResponse: error.rawResponse } : {}),
+        });
+      }
       catch (_) { /* port 已断开，无需通知 */ }
     }
   });

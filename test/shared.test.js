@@ -145,7 +145,7 @@ test("sanitizeJobForLibrary 剔除临时字段", () => {
     title: "前端", company: "X", progress: "投递中", error: "x",
     rawAiResponse: "...", queuedAt: "2024", status: "已沟通", greeting: "hi"
   });
-  assert.deepEqual(cleaned, { title: "前端", company: "X", greeting: "hi" });
+  assert.deepEqual(cleaned, { title: "前端", company: "X", status: "已沟通", greeting: "hi" });
 });
 
 test("sanitizeJobForLibrary 处理空值", () => {
@@ -165,4 +165,5 @@ test("escapeCsv 引号转义", () => {
 test("DEFAULTS 有必要字段", () => {
   assert.ok(DEFAULTS.endpoint.startsWith("https://"));
   assert.equal(DEFAULTS.apiKey, "");
+  assert.equal(DEFAULTS.disableThinking, true);
 });

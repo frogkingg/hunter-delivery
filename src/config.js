@@ -2,13 +2,14 @@
 import { state, setConfig, setUploadedImages, setProfiles, setActiveProfileIndex, activeProfile, saveCurrentProfileFields } from "./state.js";
 import { $, send, toast } from "./chrome-helpers.js";
 import { handleError } from "./error-handler.js";
-import { validateEndpoint } from "./pure-utils.js";
+import { escapeHtml, validateEndpoint } from "./pure-utils.js";
 import { DEFAULT_GREETING_PROMPT } from "./prompts.js";
 
 export function setupConfig() {
   $("endpoint").value = state.config.endpoint || "";
   $("model").value = state.config.model || "";
   $("apiKey").value = state.config.apiKey || "";
+  $("disableThinking").checked = state.config.disableThinking !== false;
   $("candidateProfile").value = state.config.candidateProfile || "";
   $("greetingPrompt").value = state.config.greetingPrompt || DEFAULT_GREETING_PROMPT;
 }
@@ -26,6 +27,7 @@ export async function persistConfig(show = true) {
     endpoint,
     model: $("model").value.trim(),
     apiKey: $("apiKey").value.trim(),
+    disableThinking: $("disableThinking").checked,
     candidateProfile: $("candidateProfile").value.trim(),
     greetingPrompt: $("greetingPrompt").value.trim() || DEFAULT_GREETING_PROMPT,
     resumeImages: state.uploadedImages,
@@ -65,17 +67,29 @@ export async function loadProfiles() {
     setProfiles(savedProfiles);
     setActiveProfileIndex(Math.min(activeProfileIndex, savedProfiles.length - 1));
   } else {
-    const defaultProfile = { name: "默认简历", candidateProfile: "", greetingPrompt: "", resumeImages: [] };
+    const defaultProfile = {
+      name: "默认简历",
+      candidateProfile: state.config.candidateProfile || "",
+      greetingPrompt: state.config.greetingPrompt || "",
+      resumeImages: state.config.resumeImages || [],
+    };
     setProfiles([defaultProfile]);
     setActiveProfileIndex(0);
-    await saveProfiles();
   }
   applyActiveProfile();
+  await saveActiveProfileState();
 }
 
 export async function saveProfiles() {
-  saveCurrentProfileFields();
   await chrome.storage.local.set({ profiles: state.profiles, activeProfileIndex: state.activeProfileIndex });
+}
+
+async function saveActiveProfileState() {
+  await chrome.storage.local.set({
+    profiles: state.profiles,
+    activeProfileIndex: state.activeProfileIndex,
+    config: state.config,
+  });
 }
 
 export function applyActiveProfile() {
@@ -91,8 +105,8 @@ export async function switchProfile(index) {
   if (index === state.activeProfileIndex) return;
   saveCurrentProfileFields();
   setActiveProfileIndex(index);
-  await saveProfiles();
   applyActiveProfile();
+  await saveActiveProfileState();
 }
 
 export async function createProfile(name) {
@@ -107,10 +121,13 @@ export async function createProfile(name) {
 export async function deleteProfile(index) {
   if (state.profiles.length <= 1) throw new Error("至少保留一份简历。");
   if (index < 0 || index >= state.profiles.length) throw new Error("简历序号无效。");
+  saveCurrentProfileFields();
+  const previousActiveIndex = state.activeProfileIndex;
   state.profiles.splice(index, 1);
-  if (state.activeProfileIndex >= state.profiles.length) setActiveProfileIndex(state.profiles.length - 1);
-  await saveProfiles();
+  if (index < previousActiveIndex) setActiveProfileIndex(previousActiveIndex - 1);
+  else if (index === previousActiveIndex) setActiveProfileIndex(Math.min(index, state.profiles.length - 1));
   applyActiveProfile();
+  await saveActiveProfileState();
 }
 
 export async function renameProfile(index, name) {
@@ -127,7 +144,7 @@ export function renderProfileList(targetId) {
   if (!target) return;
   target.innerHTML = state.profiles.map((profile, index) => {
     const active = index === state.activeProfileIndex ? " active" : "";
-    const name = profile.name || "(未命名)";
+    const name = escapeHtml(profile.name || "(未命名)");
     const images = (profile.resumeImages || []).length;
     const hasContent = profile.candidateProfile?.trim();
     const status = hasContent ? "✓ 已填写" : "○ 未填写";

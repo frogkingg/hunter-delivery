@@ -1,11 +1,12 @@
 // 队列 UI 逻辑：addCurrentToQueue / removeSelectedQueue / toggleSelectAll /
 // generateQueue / startQueue / startQueuePolling。
-import { state } from "./state.js";
+import { state, activeProfile } from "./state.js";
 import { $, send, toast } from "./chrome-helpers.js";
 import { handleError } from "./error-handler.js";
-import { ai, parseAiJson } from "./ai-client.js";
+import { aiStreamResponse, parseAiJson } from "./ai-client.js";
 import { renderJob, loadQueue } from "./render.js";
 import { extractJob } from "./current-job.js";
+import { sanitizeGreeting } from "./pure-utils.js";
 import { DEFAULT_GREETING_PROMPT, buildBatchGreetingPrompt } from "./prompts.js";
 
 export async function addCurrentToQueue() {
@@ -81,10 +82,16 @@ export function startQueuePolling() {
 export async function generateQueue() {
   const button = $("generateQueue");
   const originalText = button.textContent;
+  let progressTimer = null;
   try {
     if (!state.config.candidateProfile) throw new Error("请先在设置中粘贴或解析简历内容。");
+    const profile = activeProfile();
+    if (!profile) throw new Error("未找到当前简历，请在设置中重新选择。");
+    const profileName = profile.name;
+    const candidateProfile = state.config.candidateProfile;
+    const greetingPrompt = state.config.greetingPrompt || DEFAULT_GREETING_PROMPT;
     const response = await send({ type: "QUEUE_GET" });
-    const items = (response?.queue || []).filter(item => !["投递中", "已成功"].includes(item.status));
+    const items = (response?.queue || []).filter(item => !["投递中", "已成功", "已发送待归档"].includes(item.status));
     if (!items.length) throw new Error("清单中没有可生成的岗位。");
     button.disabled = true;
     let success = 0;
@@ -94,18 +101,48 @@ export async function generateQueue() {
       button.textContent = `正在生成 ${index + 1}/${items.length}`;
       await send({ type: "QUEUE_UPDATE", key: item.key, patch: { status: "生成中", progress: `正在生成第 ${index + 1}/${items.length} 条`, error: "", rawAiResponse: "" } });
       await loadQueue();
+      const startedAt = Date.now();
+      let receivedChars = 0;
+      let phase = "正在分析岗位与简历";
+      const renderProgress = () => {
+        const seconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
+        button.textContent = receivedChars
+          ? `生成 ${index + 1}/${items.length} · ${receivedChars} 字 · ${seconds} 秒`
+          : `分析 ${index + 1}/${items.length} · ${seconds} 秒`;
+        $("queueProgress").textContent = receivedChars
+          ? `正在生成「${item.title}」：已接收 ${receivedChars} 字`
+          : `${phase}：「${item.title}」`;
+      };
+      progressTimer = setInterval(renderProgress, 500);
+      renderProgress();
       try {
-        const prompt = buildBatchGreetingPrompt(state.config.greetingPrompt || DEFAULT_GREETING_PROMPT, state.config.candidateProfile, item);
-        const aiResponse = await ai([{ role: "user", content: prompt }], 1600, true);
+        const prompt = buildBatchGreetingPrompt(greetingPrompt, candidateProfile, item);
+        const aiResponse = await aiStreamResponse(
+          [{ role: "user", content: prompt }],
+          4000,
+          (text) => {
+            receivedChars = text.length;
+            phase = "正在生成招呼语";
+          },
+          {
+            jsonMode: true,
+            onProgress: ({ phase: nextPhase }) => {
+              if (nextPhase === "reasoning") phase = "正在分析岗位与简历";
+              if (nextPhase === "retrying") phase = "首次响应为空，正在重试";
+            },
+          }
+        );
         const data = await parseAiJson(aiResponse.text);
-        const greeting = data.greetings?.[0]?.text || data.greeting || "";
-        if (!greeting) throw new Error("AI 没有返回招呼语");
-        const saved = await send({ type: "QUEUE_UPDATE", key: item.key, patch: { greeting, status: "待投递", progress: "已生成，等待开始批量投递", error: "", rawAiResponse: "" } });
+        const greeting = sanitizeGreeting(data.greetings?.[0]?.text || data.greeting || "");
+        const saved = await send({ type: "QUEUE_UPDATE", key: item.key, patch: { greeting, profileName, status: "待投递", progress: "已生成，等待开始批量投递", error: "", rawAiResponse: "" } });
         if (!saved?.ok) throw new Error(saved?.error || "保存生成结果失败");
         success++;
       } catch (error) {
         failures.push(item.title);
         await send({ type: "QUEUE_UPDATE", key: item.key, patch: { status: "生成失败", progress: "", error: error.message || String(error), rawAiResponse: error.rawResponse || "" } });
+      } finally {
+        clearInterval(progressTimer);
+        progressTimer = null;
       }
       await loadQueue();
     }
@@ -113,6 +150,7 @@ export async function generateQueue() {
   } catch (error) {
     handleError("批量生成招呼语", error, (msg) => toast(`批量生成未开始：${msg}`));
   } finally {
+    clearInterval(progressTimer);
     button.disabled = false;
     button.textContent = originalText;
     await loadQueue().catch(() => {});
