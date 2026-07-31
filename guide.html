@@ -1,1 +1,58 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="guide.css"><title>猎投 · 操作指南</title></head><body><main><header><img src="icons/icon128.png"><div><p class="eyebrow">猎投</p><h1>从岗位页面到确认投递</h1><p>首次：配置 AI → 创建简历 → 上传解析；日常：打开岗位 → 生成招呼语 → 一键投递。</p></div></header><section><span>01</span><div><h2>配置 AI + 创建简历</h2><p>在「设置」中填写 API 地址、模型和 Key，点击"测试连接"。你可以创建多份简历（如产品方向、AI 方向），每份独立管理内容和写作要求，投递时一键切换。</p></div></section><section><span>02</span><div><h2>上传并解析简历</h2><p>上传 JPG 或 PNG 简历图片，AI 会流式提取完整经历、项目、技能和量化成果。请检查提取结果并保存。简历内容会随招呼语发送时自动引用。</p></div></section><section><span>03</span><div><h2>浏览岗位，加入清单</h2><p>在 BOSS 职位列表或详情页，点击"加入投递清单"收集感兴趣的岗位。也可以点击"分析当前岗位"单独查看 JD 匹配结果并生成招呼语。</p><img src="assets/boss-list.png" alt="BOSS 职位列表示例"></div></section><section><span>04</span><div><h2>批量生成招呼语</h2><p>在投递清单点击"批量生成招呼语"，AI 会针对每个岗位生成 3 条不同风格的招呼语。你可以点击风格标签切换，也可以直接在卡片中编辑修改。</p><img src="assets/boss-detail.png" alt="BOSS 岗位详情示例"></div></section><section><span>05</span><div><h2>开始投递</h2><p>点击"开始投递"，插件会自动打开岗位详情、进入沟通页、发送简历图片和招呼语。成功后岗位会记入岗位库，可导出 CSV。投递过程中遇到连续失败会自动熔断保护账号。</p></div></section><aside><b>发送前请确认岗位和招呼语。</b>每次 AI 调用后会显示 Token 用量和费用估算，方便控制成本。如页面结构变化导致未能找到按钮，插件会提示你手动确认。</aside></main></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="guide.css">
+  <title>猎投 · 操作指南</title>
+</head>
+<body>
+<main>
+  <header>
+    <img src="icons/icon128.png" alt="猎投图标">
+    <div>
+      <p class="eyebrow">猎投</p>
+      <h1>从岗位分析到确认投递</h1>
+      <p>首次：配置 AI → 创建简历 → 上传解析；日常：分析岗位或加入清单 → 生成招呼语 → 确认投递。</p>
+    </div>
+  </header>
+
+  <section><span>01</span><div>
+    <h2>配置 AI + 创建简历</h2>
+    <p>在「设置」中填写 API 地址、模型和 Key，点击"测试连接"。DeepSeek 用户建议保持"关闭思考模式"开启，以减少等待时间。最多可创建 5 份简历，每份独立管理内容、图片和写作要求。</p>
+  </div></section>
+
+  <section><span>02</span><div>
+    <h2>上传并解析简历</h2>
+    <p>上传 JPG 或 PNG 简历图片，AI 会流式提取经历、项目、技能和量化成果。请检查并保存提取结果；生成招呼语时使用简历文字，实际投递时发送已保存的简历图片。</p>
+  </div></section>
+
+  <section><span>03</span><div>
+    <h2>分析当前岗位</h2>
+    <p>打开 BOSS 职位列表或详情页，点击"分析当前岗位"。插件会流式生成 JD 匹配分析和 3 种招呼语风格；选择或编辑后，再点击"确认沟通并发送"。</p>
+    <img src="assets/boss-detail.png" alt="BOSS 岗位详情示例">
+  </div></section>
+
+  <section><span>04</span><div>
+    <h2>建立投递清单</h2>
+    <p>浏览岗位时点击"加入投递清单"，最多保留 20 个待处理岗位。批量生成时，每个岗位保存 1 条可编辑招呼语，并绑定当时使用的简历。</p>
+    <img src="assets/boss-list.png" alt="BOSS 职位列表示例">
+  </div></section>
+
+  <section><span>05</span><div>
+    <h2>批量生成招呼语</h2>
+    <p>在投递清单点击"批量生成招呼语"。页面会显示当前岗位、耗时和接收字符数；生成后可展开卡片检查岗位、绑定简历和招呼语，并直接修改保存。</p>
+  </div></section>
+
+  <section><span>06</span><div>
+    <h2>开始投递与失败恢复</h2>
+    <p>点击"开始投递"后，插件逐项打开详情，按岗位 ID 和标题核验目标，再处理正常沟通弹层、发送简历图片和招呼语。连续 3 次失败会自动停止。普通失败项可展开并点击"保存修改"恢复待投递；"已发送待归档"不可重发。</p>
+  </div></section>
+
+  <aside>
+    <b>发送前请确认岗位、招呼语和绑定简历。</b>
+    正常的"已向 BOSS 发送消息 / 继续沟通"弹层会自动处理；验证码、滑块、安全验证、访问异常或操作限制不会自动绕过，请手动完成后再重试。服务商返回 usage 时，当前岗位分析会显示 Token 用量和费用估算。
+  </aside>
+</main>
+</body>
+</html>
