@@ -7,7 +7,7 @@ export const MESSAGE_TYPES = {
   AI_CALL: {
     direction: "panel→background",
     payload: { config: "Object", messages: "Array", maxTokens: "number", jsonMode: "boolean?", timeoutMs: "number?" },
-    response: { ok: "boolean", text: "string", usage: "{ prompt_tokens, completion_tokens, total_tokens }?" },
+    response: { ok: "boolean", text: "string?", usage: "{ prompt_tokens, completion_tokens, total_tokens }?", error: "string?", rawResponse: "string?" },
   },
   PARSE_JSON: {
     direction: "panel→background",
@@ -76,6 +76,11 @@ export const MESSAGE_TYPES = {
     payload: {},
     response: { ok: "boolean" },
   },
+  PREPARE_COMMUNICATION: {
+    direction: "panel→content",
+    payload: {},
+    response: { ok: "boolean", ready: "boolean", blocked: "boolean", mode: "chat-page|inline-chat?", action: "string?", reason: "string?" },
+  },
   SEND_MESSAGE: {
     direction: "panel→content",
     payload: { greeting: "string", images: "Array?" },
@@ -83,7 +88,7 @@ export const MESSAGE_TYPES = {
   },
   SELF_CHECK: {
     direction: "panel→content",
-    payload: {},
+    payload: { requireImages: "boolean?" },
     response: { ok: "boolean", missing: "string[]" },
   },
   VERIFY_JOB: {
@@ -105,11 +110,12 @@ export const MESSAGE_TYPES = {
   // Stream（port 连接，非 sendMessage）
   AI_CALL_STREAM: {
     direction: "panel→background（port）",
-    payload: { config: "Object", messages: "Array", maxTokens: "number" },
+    payload: { config: "Object", messages: "Array", maxTokens: "number", jsonMode: "boolean?" },
     events: {
       DELTA: { text: "string" },
+      PROGRESS: { phase: "reasoning|retrying" },
       DONE: { text: "string", usage: "{ prompt_tokens, completion_tokens, total_tokens }?" },
-      ERROR: { error: "string" },
+      ERROR: { error: "string", rawResponse: "string?" },
     },
   },
 };

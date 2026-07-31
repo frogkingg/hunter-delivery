@@ -8,13 +8,16 @@ export async function ai(messages, maxTokens, jsonMode = false) {
   if (!state.config.apiKey) throw new Error("请先在设置中填写 AI API Key。");
   await ensureAiConsent();
   const response = await send({ type: "AI_CALL", payload: { config: state.config, messages, maxTokens, jsonMode } });
- if (!response?.ok) throw new Error(response?.error || "AI 请求失败");
+  if (!response?.ok) {
+    const error = new Error(response?.error || "AI 请求失败");
+    error.rawResponse = String(response?.rawResponse || "").slice(0, 20000);
+    throw error;
+  }
   return response;
 }
 
-// 流式 AI 调用：通过 chrome.runtime.connect 长连接接收增量，onDelta(text) 在每次增量时回调（text 为累计全文）。
-// 返回完整文本。用于 parseResume（纯文本逐字显示）。
-export function aiStream(messages, maxTokens, onDelta) {
+// 流式 AI 调用：返回完整文本与 usage；界面可订阅累计文本和阶段进度。
+export function aiStreamResponse(messages, maxTokens, onDelta, options = {}) {
   return new Promise((resolve, reject) => {
     (async () => {
       await persistConfig(false);
@@ -25,25 +28,37 @@ export function aiStream(messages, maxTokens, onDelta) {
       port.onMessage.addListener((message) => {
         if (message.type === "DELTA") {
           if (!settled && typeof onDelta === "function") onDelta(message.text);
+        } else if (message.type === "PROGRESS") {
+          if (!settled && typeof options.onProgress === "function") options.onProgress(message);
         } else if (message.type === "DONE") {
           settled = true;
           port.disconnect();
-          resolve(message.text);
+          resolve({ text: message.text, usage: message.usage });
         } else if (message.type === "ERROR") {
           settled = true;
           port.disconnect();
-          reject(new Error(message.error || "AI 流式请求失败"));
+          const error = new Error(message.error || "AI 流式请求失败");
+          error.rawResponse = String(message.rawResponse || "").slice(0, 20000);
+          reject(error);
         }
       });
       port.onDisconnect.addListener(() => {
-        if (!settled) reject(new Error("AI 流式连接已断开。"));
+        if (!settled) {
+          settled = true;
+          reject(new Error("AI 流式连接已断开。"));
+        }
       });
       port.postMessage({
         type: "AI_CALL_STREAM",
-        payload: { config: state.config, messages, maxTokens },
+        payload: { config: state.config, messages, maxTokens, jsonMode: !!options.jsonMode },
       });
     })().catch(reject);
   });
+}
+
+// 简历解析只需要最终文本，保留原有简洁接口。
+export async function aiStream(messages, maxTokens, onDelta) {
+  return (await aiStreamResponse(messages, maxTokens, onDelta)).text;
 }
 
 export async function parseAiJson(text) {

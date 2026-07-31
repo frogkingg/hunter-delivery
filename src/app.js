@@ -35,6 +35,7 @@ async function initConfig() {
     endpoint: "https://api.openai.com/v1",
     model: "gpt-4.1-mini",
     apiKey: "",
+    disableThinking: true,
     candidateProfile: "",
     greetingPrompt: DEFAULT_GREETING_PROMPT,
     resumeImages: [],
@@ -80,7 +81,7 @@ function bindEvents() {
     try {
       await allowApiOrigin();
       await persistConfig(false);
-      await ai([{ role: "user", content: "只回复：连接成功" }], 20);
+      await ai([{ role: "user", content: "只回复：连接成功" }], 200);
       toast("AI 连接成功");
     } catch (error) {
       toast(error.message);

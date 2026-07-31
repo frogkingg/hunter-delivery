@@ -7,11 +7,12 @@ const text = el => (el?.innerText || el?.textContent || "").replace(/\s+/g, " ")
 const decodeSalary = value => String(value || "").replace(new RegExp(`[\\u${SALARY_FONT_START.toString(16)}-\\u${SALARY_FONT_END.toString(16)}]`, "g"), char => String(char.charCodeAt(0) - SALARY_FONT_START));
 const firstText = selectors => {
   for (const selector of selectors) {
-    const el = document.querySelector(selector);
-    if (visible(el) && text(el)) return text(el);
+    const el = [...document.querySelectorAll(selector)].find(element => visible(element) && text(element));
+    if (el) return text(el);
   }
   return "";
 };
+const cleanCompanyName = value => String(value || "").replace(/^公司名称\s*/i, "").trim();
 const longestText = selectors => selectors
   .flatMap(s => [...document.querySelectorAll(s)].filter(visible).map(text))
   .filter(value => value.length > 20)
@@ -38,7 +39,17 @@ function extractJob() {
     : scopedText(".job-primary.detail-box", ["h1", ".name h1"]);
   const company = isListPage
     ? (scopedText(".job-card-wrap.active", [".boss-name"]) || scopedText(".job-detail-container", [".boss-info-attr"]))
-    : scopedText(".job-primary.detail-box", [".brand-name", ".company-name"]);
+    : cleanCompanyName(
+        scopedText(".job-primary.detail-box", [".brand-name", ".company-name"]) ||
+        firstText([
+          ".company-info a[href*='/gongsi/']",
+          ".sider-company a[href*='/gongsi/']",
+          ".job-detail-company a[href*='/gongsi/']",
+          ".sider-company .company-name",
+          ".job-detail-company .company-name",
+          ".company-name",
+        ])
+      );
   const salary = isListPage
     ? scopedText(".job-detail-container", [".job-detail-header .job-salary", ".job-salary"])
     : scopedText(".job-primary.detail-box", [".salary"]);
@@ -105,41 +116,130 @@ function openCurrentJobDetail(target) {
 function verifyJob(expected) {
   const actual = extractJob();
   const normal = value => String(value || "").replace(/\s+/g, "").toLowerCase();
+  const jobIdFrom = job => {
+    if (job?.jobId) return String(job.jobId).trim();
+    const source = String(job?.detailUrl || job?.key || job?.url || "");
+    return (source.match(/\/job_detail\/([^./?]+)(?:\.html)?/) || [])[1] || "";
+  };
+  const expectedJobId = jobIdFrom(expected);
+  const actualJobId = jobIdFrom(actual);
+  const jobIdOk = !expectedJobId || !!actualJobId && actualJobId === expectedJobId;
   const titleOk = !expected.title || normal(actual.title) === normal(expected.title);
-  const companyOk = !expected.company || normal(actual.company).includes(normal(expected.company)) || normal(expected.company).includes(normal(actual.company));
-  return { ok: titleOk && companyOk, actual, reason: titleOk ? "公司不一致" : "岗位名称不一致" };
-}
-
-async function waitForElement(selector, timeoutMs, label) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const element = document.querySelector(selector);
-    if (element) return element;
-    await delay(300);
+  const actualCompany = normal(actual.company);
+  const expectedCompany = normal(expected.company);
+  const companyOk = !expectedCompany || !!actualCompany && (actualCompany.includes(expectedCompany) || expectedCompany.includes(actualCompany));
+  let ok = false;
+  let reason = "";
+  if (!jobIdOk) {
+    reason = actualJobId ? "岗位唯一标识不一致" : "未读取到岗位唯一标识";
+  } else if (!titleOk) {
+    reason = "岗位名称不一致";
+  } else if (expectedJobId) {
+    ok = true;
+    if (!companyOk) reason = actualCompany
+      ? "岗位 ID 与名称一致；公司展示名称不同，已按岗位 ID 确认"
+      : "岗位 ID 与名称一致；公司未读取到，已按岗位 ID 确认";
+  } else if (companyOk) {
+    ok = true;
+  } else {
+    reason = "公司不一致或未读取到公司";
   }
-  throw new Error(`等待 ${label} 超时，请确认已进入 BOSS 沟通页。`);
+  return {
+    ok,
+    actual,
+    reason,
+    confidence: expectedJobId ? "high" : "medium",
+    checks: { jobIdOk, titleOk, companyOk, expectedJobId, actualJobId },
+  };
 }
 
 function visibleNow(element) { return !!(element && (element.offsetWidth || element.offsetHeight || element.getClientRects().length)); }
 
-// BOSS 从详情页跳到聊天页后，偶尔会弹出“沟通新职位”或“已向 BOSS 发送消息”。
-// 这些弹层会挡住工具栏，让图片 input 看似不存在。这里沿用社区最佳实践：
-// 只点明确的“沟通新职位”，以及已发送提示中的“留在此页”，绝不误点“继续沟通”。
-async function prepareChatForSending() {
-  for (let round = 0; round < 3; round++) {
-    for (const box of document.querySelectorAll(".greet-boss-container")) {
-      if (visibleNow(box)) box.querySelector("a.cancel-btn")?.click();
-    }
-    for (const dialog of document.querySelectorAll(".change-job-tip-dialog")) {
-      if (!visibleNow(dialog)) continue;
-      const confirm = [...dialog.querySelectorAll(".boss-dialog__button:not(.button-outline)")].find(button => text(button) === "沟通新职位");
-      confirm?.click();
-    }
-    const input = document.querySelector("div#chat-input.chat-input");
-    if (input?.getAttribute("contenteditable") === "true") return input;
-    await delay(450);
+const CHAT_COMPOSER_SELECTORS = [
+  "div#chat-input.chat-input",
+  ".message-controls .chat-input",
+  ".greet-boss-container .chat-input",
+  ".chat-input[contenteditable='true']",
+];
+const handledCommunicationActions = new WeakSet();
+
+function findChatComposer() {
+  for (const selector of CHAT_COMPOSER_SELECTORS) {
+    const input = [...document.querySelectorAll(selector)].find(visibleNow);
+    if (input) return input;
   }
-  return waitForElement("div#chat-input.chat-input", 9000, "聊天输入框");
+  return null;
+}
+
+function findSecurityInterruption() {
+  const candidates = document.querySelectorAll(
+    "[role='dialog'], .boss-dialog, .dialog-container, [class*='captcha'], [class*='verify']"
+  );
+  return [...candidates].find(element =>
+    visibleNow(element) &&
+    /安全验证|滑动验证|拖动滑块|访问异常|账号异常|操作频繁|请完成验证|验证码/.test(text(element))
+  );
+}
+
+function clickCommunicationAction(container, labels) {
+  const clickableSelector = "button, a, [role='button'], .boss-dialog__button, .btn, [class*='btn']";
+  let action = [...container.querySelectorAll(clickableSelector)].find(element =>
+    visibleNow(element) && labels.includes(text(element))
+  );
+  if (!action) {
+    const labelNode = [...container.querySelectorAll("*")].find(element =>
+      visibleNow(element) &&
+      labels.includes(text(element)) &&
+      ![...element.children].some(child => visibleNow(child) && labels.includes(text(child)))
+    );
+    const clickableAncestor = labelNode?.closest?.(clickableSelector);
+    action = clickableAncestor && container.contains(clickableAncestor) ? clickableAncestor : labelNode;
+  }
+  if (!action) return "";
+  if (handledCommunicationActions.has(action)) return "";
+  const label = text(action);
+  handledCommunicationActions.add(action);
+  action.click();
+  return label;
+}
+
+function advanceCommunicationFlow() {
+  const securityInterruption = findSecurityInterruption();
+  if (securityInterruption) {
+    return {
+      ready: false,
+      blocked: true,
+      reason: "检测到 BOSS 安全验证或操作限制，请在页面中手动完成后再重试。",
+    };
+  }
+
+  const input = findChatComposer();
+  if (input) return { ready: true, blocked: false, mode: window.location.pathname.includes("/web/geek/chat") ? "chat-page" : "inline-chat" };
+
+  for (const box of document.querySelectorAll(".greet-boss-container, .dialog-container, [role='dialog'], .boss-dialog")) {
+    if (!visibleNow(box)) continue;
+    if (!box.classList?.contains("greet-boss-container") && !/已向BOSS发送消息/.test(text(box))) continue;
+    const action = clickCommunicationAction(box, ["继续沟通"]);
+    if (action) return { ready: false, blocked: false, action };
+  }
+
+  for (const dialog of document.querySelectorAll(".change-job-tip-dialog")) {
+    if (!visibleNow(dialog)) continue;
+    const action = clickCommunicationAction(dialog, ["沟通新职位"]);
+    if (action) return { ready: false, blocked: false, action };
+  }
+
+  return { ready: false, blocked: false, action: "" };
+}
+
+async function prepareChatForSending() {
+  for (let round = 0; round < 20; round++) {
+    const state = advanceCommunicationFlow();
+    if (state.blocked) throw new Error(state.reason);
+    if (state.ready) return findChatComposer();
+    await delay(400);
+  }
+  throw new Error("等待聊天输入框超时。若页面出现安全验证，请先手动完成；否则请刷新 BOSS 页面后重试。");
 }
 
 function findImageUploader() {
@@ -160,29 +260,71 @@ async function waitForImageUploader(timeoutMs = 10000) {
 }
 
 async function setComposer(value) {
-  // BOSS 聊天页使用 contenteditable div，并非普通 textarea/input。
-  // 必须锁定参考插件实测的 #chat-input，避免误写左侧「搜索联系人」输入框。
-  const input = await waitForElement("div#chat-input.chat-input", 8000, "聊天输入框");
+  const input = await prepareChatForSending();
   input.focus();
-  // 先清空再写入。这里不能借用 textarea/input 的原生 setter：
-  // BOSS 的输入框是 contenteditable div，错误调用 setter 会触发
-  // “Illegal invocation”。
-  input.textContent = "";
-  input.textContent = value;
+  const isFormInput = /^(INPUT|TEXTAREA)$/.test(input.tagName || "");
+  if (isFormInput) {
+    const prototype = input.tagName === "TEXTAREA" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+    if (setter) setter.call(input, value);
+    else input.value = value;
+  } else {
+    input.textContent = "";
+    input.textContent = value;
+  }
   input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: value }));
   input.dispatchEvent(new Event("change", { bubbles: true }));
-  if (!input.textContent.trim()) throw new Error("招呼语未能写入 BOSS 聊天输入框。");
+  const currentValue = isFormInput ? input.value : input.textContent;
+  if (!String(currentValue || "").trim()) throw new Error("招呼语未能写入 BOSS 聊天输入框。");
+  return input;
 }
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-async function waitForEnabledSendButton() {
-  const deadline = Date.now() + 1800;
-  while (Date.now() < deadline) {
-    const button = document.querySelector("button.btn-send");
-    if (button && !button.disabled && !button.classList.contains("disabled")) return button;
-    await delay(80);
+function sendButtonCandidates(input) {
+  const selector = "button.btn-send, .btn-send";
+  const scope = input?.closest?.(".message-controls, .greet-boss-container, .chat-dialog, .chat-container");
+  const scoped = scope ? [...scope.querySelectorAll(selector)] : [];
+  return [...new Set([...scoped, ...document.querySelectorAll(selector)])].filter(visibleNow);
+}
+
+async function waitForEnabledSendButton(input) {
+  const findEnabled = () => sendButtonCandidates(input).find(candidate =>
+    !candidate.disabled && !candidate.classList.contains("disabled")
+  );
+  let button = findEnabled();
+  if (!button && typeof MutationObserver === "function") {
+    button = await new Promise(resolve => {
+      let settled = false;
+      const finish = value => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        observer.disconnect();
+        resolve(value);
+      };
+      const observer = new MutationObserver(() => {
+        const enabled = findEnabled();
+        if (enabled) finish(enabled);
+      });
+      const timer = setTimeout(() => finish(null), 5000);
+      observer.observe(document.body, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["class", "disabled", "aria-disabled"],
+      });
+      const enabled = findEnabled();
+      if (enabled) finish(enabled);
+    });
+  } else if (!button) {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline && !button) {
+      await delay(250);
+      button = findEnabled();
+    }
   }
+  if (button) return button;
   throw new Error("招呼语已写入，但 BOSS 的发送按钮没有激活。请点击输入框后手动发送。");
 }
 
@@ -236,19 +378,20 @@ async function waitForResumeDelivered(beforeCount, timeoutMs = 15000) {
 }
 
 async function sendGreetingAndConfirm(greeting) {
+  if (await waitForDeliveredText(0, greeting)) return { status: "已送达", alreadySent: true };
   const beforeCount = outgoingMessages().length;
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt > 1 && await waitForDeliveredText(beforeCount, greeting)) return { status: "已送达" };
-    await setComposer(greeting);
-    const input = await waitForElement("div#chat-input.chat-input", 2000, "聊天输入框");
-    const button = await waitForEnabledSendButton();
+    const input = await setComposer(greeting);
+    const button = await waitForEnabledSendButton(input);
     button.click();
     await delay(700);
-    if (input.textContent.trim()) {
+    const composerValue = () => String(/^(INPUT|TEXTAREA)$/.test(input.tagName || "") ? input.value : input.textContent || "").trim();
+    if (composerValue()) {
       ["pointerdown", "mousedown", "pointerup", "mouseup", "click"].forEach(type => button.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window })));
       await delay(500);
     }
-    if (input.textContent.trim()) throw new Error("招呼语已填入，但 BOSS 未确认发送；请手动点击右下角“发送”。");
+    if (composerValue()) throw new Error("招呼语已填入，但 BOSS 未确认发送；请手动点击右下角“发送”。");
     try { return await waitForOutgoingMessage(beforeCount, greeting); }
     catch (error) {
       // 明确的 status-error 才重试一次；超时是“不确定态”，绝不能自动重发造成双发。
@@ -304,15 +447,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ ok: true, ...openCurrentJobDetail(message.job || {}) });
     }
     if (message.type === "VERIFY_JOB") sendResponse(verifyJob(message.job || {}));
+    if (message.type === "PREPARE_COMMUNICATION") {
+      sendResponse({ ok: true, ...advanceCommunicationFlow() });
+    }
     if (message.type === "SELF_CHECK") {
-      const CRITICAL_SELECTORS = [
-        { selector: "div#chat-input.chat-input", name: "聊天输入框" },
-        { selector: "button.btn-send", name: "发送按钮" },
-        { selector: ".btn-sendimg input[type='file']", name: "图片上传入口" },
-      ];
-      const missing = CRITICAL_SELECTORS
-        .filter(item => !document.querySelector(item.selector))
-        .map(item => item.name);
+      const input = findChatComposer();
+      const missing = [];
+      if (!input) missing.push("聊天输入框");
+      if (!sendButtonCandidates(input).length) missing.push("发送按钮");
+      if (message.requireImages && !findImageUploader()) missing.push("图片上传入口");
       sendResponse({ ok: true, missing });
     }
 
@@ -320,11 +463,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       (async () => {
         try {
           await prepareChatForSending();
+          if (await waitForDeliveredText(0, message.greeting)) {
+            sendResponse({
+              ok: true,
+              messageSent: true,
+              delivery: { status: "已送达", alreadySent: true },
+              resume: { sent: false, reason: "检测到相同招呼语已送达，未重复发送简历图片" },
+            });
+            return;
+          }
           // 先逐张确认简历图片已送达，再发送文字；若图片失败，避免出现“只发了招呼语、没发简历”的半成品投递。
           const resume = await sendResume(message.images);
           await delay(500);
-          await sendGreetingAndConfirm(message.greeting);
-          sendResponse({ ok: true, messageSent: true, resume });
+          const delivery = await sendGreetingAndConfirm(message.greeting);
+          sendResponse({ ok: true, messageSent: true, delivery, resume });
         } catch (error) {
           sendResponse({ ok: false, error: error.message });
         }
