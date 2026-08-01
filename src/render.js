@@ -36,7 +36,6 @@ export function renderAnalysis(data) {
 
   const firstGreeting = greetings[0]?.text || data.greeting || "";
   $("greeting").value = firstGreeting;
-  $("greeting").dataset.original = firstGreeting;
   $("jobGreetingPrompt").value = state.jobPromptOverride || state.config.greetingPrompt || DEFAULT_GREETING_PROMPT;
   const priorities = Array.isArray(data.jd_priorities) ? data.jd_priorities : [];
   const matches = Array.isArray(data.matching_points) ? data.matching_points : [];
@@ -65,13 +64,16 @@ export function switchGreeting(index) {
   });
   const newText = currentGreetings[index]?.text || "";
   textarea.value = newText;
-  textarea.dataset.original = newText;
 }
 
 export function renderUsage(usage) {
   if (!usage || typeof usage.total_tokens !== "number") return;
-  const cost = (usage.total_tokens / 1000000 * 2).toFixed(4);
-  const html = `<p class="usage-info" style="color:#6b7280;font-size:12px;margin-top:8px;">本次消耗：${usage.total_tokens} tokens（提示 ${usage.prompt_tokens} + 生成 ${usage.completion_tokens}），约 ¥${cost}（按 DeepSeek 标准价格估算）</p>`;
+  const promptTokens = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : "—";
+  const completionTokens = typeof usage.completion_tokens === "number" ? usage.completion_tokens : "—";
+  // 价格估算只对 DeepSeek 服务商有意义；其他服务商只展示 token 用量，避免误导。
+  const isDeepSeek = /deepseek/i.test(`${state.config.endpoint || ""} ${state.config.model || ""}`);
+  const costLine = isDeepSeek ? `，约 ¥${(usage.total_tokens / 1000000 * 2).toFixed(4)}（按 DeepSeek 标准价格估算）` : "";
+  const html = `<p class="usage-info" style="color:#6b7280;font-size:12px;margin-top:8px;">本次消耗：${usage.total_tokens} tokens（提示 ${promptTokens} + 生成 ${completionTokens}）${costLine}</p>`;
   const existing = document.querySelector(".usage-info");
   if (existing) existing.remove();
   $("greeting").insertAdjacentHTML("afterend", html);
@@ -99,7 +101,7 @@ function renderQueueItem(item, response) {
   const deliveryLocked = item.status === "已发送待归档";
   const meta = escapeHtml([item.company, item.location, item.status, item.progress, item.error].filter(Boolean).join(" · "));
   const diagnostics = item.rawAiResponse ? `<details class="queue-diagnostic"><summary>查看 AI 原始返回</summary><p class="hint">这是本次批量生成收到的完整返回（最多保留 20,000 个字符），可复制后发给我排查。</p><textarea class="queue-raw-response" rows="12" readonly>${escapeHtml(item.rawAiResponse)}</textarea></details>` : "";
-  const details = `<div class="queue-details"><p><b>使用简历：</b>${escapeHtml(item.profileName || "未绑定，请重新生成")}</p><p><b>薪资：</b>${escapeHtml(item.salary || "未读取")}</p><p><b>岗位描述：</b></p><div class="queue-jd">${escapeHtml(item.description || "未读取")}</div>${item.detailUrl ? `<p><a class="queue-link" href="${safeUrl(item.detailUrl)}" target="_blank" rel="noopener">在 BOSS 打开岗位详情</a></p>` : ""}${item.greeting ? `<p><b>打招呼语：</b></p><textarea class="queue-greeting" data-key="${key}" rows="5" ${deliveryLocked ? "readonly" : ""}>${escapeHtml(item.greeting)}</textarea><div class="row"><button class="secondary queue-save" data-key="${key}" ${response?.running || deliveryLocked ? "disabled" : ""}>${deliveryLocked ? "消息已送达，禁止重发" : "保存修改"}</button></div>` : `<p>招呼语尚未生成，请先点击“批量生成招呼语”。</p>`}${diagnostics}</div>`;
+  const details = `<div class="queue-details"><p><b>使用简历：</b>${escapeHtml(item.profileName || "未绑定，请重新生成")}</p><p><b>薪资：</b>${escapeHtml(item.salary || "未读取")}</p><p><b>岗位描述：</b></p><div class="queue-jd">${escapeHtml(item.description || "未读取")}</div>${item.detailUrl ? `<p><a class="queue-link" href="${safeUrl(item.detailUrl)}" target="_blank" rel="noopener">在 BOSS 打开岗位详情</a></p>` : ""}${item.greeting ? `<p><b>打招呼语：</b></p><textarea class="queue-greeting" data-key="${key}" rows="5" ${deliveryLocked ? "readonly" : ""}>${escapeHtml(item.greeting)}</textarea><div class="row"><button class="secondary queue-save" data-key="${key}" data-status="${escapeHtml(item.status)}" ${response?.running || deliveryLocked ? "disabled" : ""}>${deliveryLocked ? "消息已送达，禁止重发" : (item.status === "已中断" || item.status === "发送结果未知") ? "确认结果后重发" : "保存修改"}</button></div>` : `<p>招呼语尚未生成，请先点击“批量生成招呼语”。</p>`}${diagnostics}</div>`;
   return `<details class="library-item queue-item" data-key="${key}"><summary><input class="queue-select" type="checkbox" data-key="${key}" ${state.selectedQueueKeys.has(item.key) ? "checked" : ""} ${response?.running ? "disabled" : ""} aria-label="选择 ${escapeHtml(item.title)}"><div class="queue-summary-content"><h3>${escapeHtml(item.title)} <span aria-hidden="true">⌄</span></h3><p>${meta}</p></div><button class="queue-delete" type="button" data-key="${key}" ${response?.running ? "disabled" : ""}>删除</button></summary>${details}</details>`;
 }
 
@@ -144,27 +146,36 @@ export async function loadQueue() {
     if (!recentKeys.has(key)) removingDeliveredKeys.delete(key);
   }
   recent.forEach(item => scheduleDeliveredRemoval(item.key));
-  $("queueList").innerHTML = (recent.length || queue.length)
-    ? [
-        ...recent.filter(item => !removingDeliveredKeys.has(item.key)).map(item => renderDeliveredItem(item)),
-        ...queue.map(item => renderQueueItem(item, response)),
-      ].join("")
-    : `<div class="guide-card"><b>ℹ️ 清单为空</b><span>浏览岗位时点击“加入投递清单”。</span></div>`;
-  document.querySelectorAll(".queue-save").forEach(button => button.onclick = async () => {
+  // 轮询时若用户正在编辑招呼语输入框，跳过列表重渲染，避免 1s 覆盖正在输入的内容；
+  // 失焦后下一次轮询恢复正常渲染。
+  const editingGreeting = document.activeElement &&
+    [...(document.activeElement.classList || [])].includes("queue-greeting");
+  if (!editingGreeting) {
+    $("queueList").innerHTML = (recent.length || queue.length)
+      ? [
+          ...recent.filter(item => !removingDeliveredKeys.has(item.key)).map(item => renderDeliveredItem(item)),
+          ...queue.map(item => renderQueueItem(item, response)),
+        ].join("")
+      : `<div class="guide-card"><b>ℹ️ 清单为空</b><span>浏览岗位时点击“加入投递清单”。</span></div>`;
+  }
+  if (!editingGreeting) document.querySelectorAll(".queue-save").forEach(button => button.onclick = async () => {
     try {
       const key = decodeURIComponent(button.dataset.key);
+      const status = button.dataset.status || "";
+      const uncertain = status === "已中断" || status === "发送结果未知";
+      if (uncertain && !confirm("该岗位之前可能已实际发出但未确认送达。为避免重复发送，请确认是否继续？")) return;
       const greeting = sanitizeGreeting(document.querySelector(`.queue-greeting[data-key="${button.dataset.key}"]`).value);
       button.disabled = true; button.textContent = "正在保存…";
-      const result = await send({ type: "QUEUE_UPDATE", key, patch: { greeting, status: "待投递", error: "", progress: "等待开始批量投递", rawAiResponse: "" } });
+      const result = await send({ type: "QUEUE_UPDATE", key, patch: { greeting, status: "待投递", error: "", progress: "等待开始批量投递", rawAiResponse: "", ...(uncertain ? { confirmResend: true } : {}) } });
       if (!result?.ok) throw new Error(result?.error || "保存失败");
       toast("招呼语已保存，已加入待投递队列"); await loadQueue();
     } catch (error) { handleError("保存招呼语", error, (msg) => { toast(`保存失败：${msg}`); button.disabled = false; button.textContent = "保存修改"; }); }
   });
-  document.querySelectorAll(".queue-select").forEach(input => {
+  if (!editingGreeting) document.querySelectorAll(".queue-select").forEach(input => {
     input.onclick = event => event.stopPropagation();
     input.onchange = () => { const key = decodeURIComponent(input.dataset.key); if (input.checked) state.selectedQueueKeys.add(key); else state.selectedQueueKeys.delete(key); $("removeSelected").textContent = `移除所选（${state.selectedQueueKeys.size}）`; };
   });
-  document.querySelectorAll(".queue-delete").forEach(button => button.onclick = async event => {
+  if (!editingGreeting) document.querySelectorAll(".queue-delete").forEach(button => button.onclick = async event => {
     event.preventDefault(); event.stopPropagation();
     try {
       const key = decodeURIComponent(button.dataset.key);
@@ -180,7 +191,8 @@ export async function loadQueue() {
   $("selectAll").disabled = response?.running || !queue.length;
   $("stopQueue").hidden = !response?.running;
   // 批量生成/开始投递均遵循勾选：按“勾选 ∩ 可操作”动态显示计数
-  const generateTargets = queue.filter(item => !["投递中", "已成功", "已发送待归档"].includes(item.status));
+  // 已中断/发送结果未知需要人工确认，不能通过一键批量生成静默覆盖。
+  const generateTargets = queue.filter(item => !["投递中", "已成功", "已发送待归档", "已中断", "发送结果未知"].includes(item.status));
   const selectedGenerate = generateTargets.filter(item => state.selectedQueueKeys.has(item.key)).length;
   $("generateQueue").textContent = selectedGenerate ? `批量生成招呼语（${selectedGenerate}）` : "批量生成招呼语";
   const selectedReady = queue.filter(item => ["待投递", "待确认"].includes(item.status) && state.selectedQueueKeys.has(item.key)).length;
