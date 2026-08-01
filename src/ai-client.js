@@ -3,11 +3,22 @@ import { state } from "./state.js";
 import { send } from "./chrome-helpers.js";
 import { persistConfig, ensureAiConsent } from "./config.js";
 
+// 只传 AI 调用真正需要的字段：config 里还包含简历图片 dataURL 等大对象，
+// 整份发送会让消息体积翻倍并接近 chrome 消息大小上限。
+function aiConfig() {
+  return {
+    endpoint: state.config.endpoint,
+    model: state.config.model,
+    apiKey: state.config.apiKey,
+    disableThinking: state.config.disableThinking,
+  };
+}
+
 export async function ai(messages, maxTokens, jsonMode = false) {
   await persistConfig(false);
   if (!state.config.apiKey) throw new Error("请先在设置中填写 AI API Key。");
   await ensureAiConsent();
-  const response = await send({ type: "AI_CALL", payload: { config: state.config, messages, maxTokens, jsonMode } });
+  const response = await send({ type: "AI_CALL", payload: { config: aiConfig(), messages, maxTokens, jsonMode } });
   if (!response?.ok) {
     const error = new Error(response?.error || "AI 请求失败");
     error.rawResponse = String(response?.rawResponse || "").slice(0, 20000);
@@ -50,7 +61,7 @@ export function aiStreamResponse(messages, maxTokens, onDelta, options = {}) {
       });
       port.postMessage({
         type: "AI_CALL_STREAM",
-        payload: { config: state.config, messages, maxTokens, jsonMode: !!options.jsonMode },
+        payload: { config: aiConfig(), messages, maxTokens, jsonMode: !!options.jsonMode },
       });
     })().catch(reject);
   });

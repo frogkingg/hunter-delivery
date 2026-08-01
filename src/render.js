@@ -68,8 +68,12 @@ export function switchGreeting(index) {
 
 export function renderUsage(usage) {
   if (!usage || typeof usage.total_tokens !== "number") return;
-  const cost = (usage.total_tokens / 1000000 * 2).toFixed(4);
-  const html = `<p class="usage-info" style="color:#6b7280;font-size:12px;margin-top:8px;">本次消耗：${usage.total_tokens} tokens（提示 ${usage.prompt_tokens} + 生成 ${usage.completion_tokens}），约 ¥${cost}（按 DeepSeek 标准价格估算）</p>`;
+  const promptTokens = typeof usage.prompt_tokens === "number" ? usage.prompt_tokens : "—";
+  const completionTokens = typeof usage.completion_tokens === "number" ? usage.completion_tokens : "—";
+  // 价格估算只对 DeepSeek 服务商有意义；其他服务商只展示 token 用量，避免误导。
+  const isDeepSeek = /deepseek/i.test(`${state.config.endpoint || ""} ${state.config.model || ""}`);
+  const costLine = isDeepSeek ? `，约 ¥${(usage.total_tokens / 1000000 * 2).toFixed(4)}（按 DeepSeek 标准价格估算）` : "";
+  const html = `<p class="usage-info" style="color:#6b7280;font-size:12px;margin-top:8px;">本次消耗：${usage.total_tokens} tokens（提示 ${promptTokens} + 生成 ${completionTokens}）${costLine}</p>`;
   const existing = document.querySelector(".usage-info");
   if (existing) existing.remove();
   $("greeting").insertAdjacentHTML("afterend", html);
@@ -142,13 +146,19 @@ export async function loadQueue() {
     if (!recentKeys.has(key)) removingDeliveredKeys.delete(key);
   }
   recent.forEach(item => scheduleDeliveredRemoval(item.key));
-  $("queueList").innerHTML = (recent.length || queue.length)
-    ? [
-        ...recent.filter(item => !removingDeliveredKeys.has(item.key)).map(item => renderDeliveredItem(item)),
-        ...queue.map(item => renderQueueItem(item, response)),
-      ].join("")
-    : `<div class="guide-card"><b>ℹ️ 清单为空</b><span>浏览岗位时点击“加入投递清单”。</span></div>`;
-  document.querySelectorAll(".queue-save").forEach(button => button.onclick = async () => {
+  // 轮询时若用户正在编辑招呼语输入框，跳过列表重渲染，避免 1s 覆盖正在输入的内容；
+  // 失焦后下一次轮询恢复正常渲染。
+  const editingGreeting = document.activeElement &&
+    [...(document.activeElement.classList || [])].includes("queue-greeting");
+  if (!editingGreeting) {
+    $("queueList").innerHTML = (recent.length || queue.length)
+      ? [
+          ...recent.filter(item => !removingDeliveredKeys.has(item.key)).map(item => renderDeliveredItem(item)),
+          ...queue.map(item => renderQueueItem(item, response)),
+        ].join("")
+      : `<div class="guide-card"><b>ℹ️ 清单为空</b><span>浏览岗位时点击“加入投递清单”。</span></div>`;
+  }
+  if (!editingGreeting) document.querySelectorAll(".queue-save").forEach(button => button.onclick = async () => {
     try {
       const key = decodeURIComponent(button.dataset.key);
       const status = button.dataset.status || "";
@@ -161,11 +171,11 @@ export async function loadQueue() {
       toast("招呼语已保存，已加入待投递队列"); await loadQueue();
     } catch (error) { handleError("保存招呼语", error, (msg) => { toast(`保存失败：${msg}`); button.disabled = false; button.textContent = "保存修改"; }); }
   });
-  document.querySelectorAll(".queue-select").forEach(input => {
+  if (!editingGreeting) document.querySelectorAll(".queue-select").forEach(input => {
     input.onclick = event => event.stopPropagation();
     input.onchange = () => { const key = decodeURIComponent(input.dataset.key); if (input.checked) state.selectedQueueKeys.add(key); else state.selectedQueueKeys.delete(key); $("removeSelected").textContent = `移除所选（${state.selectedQueueKeys.size}）`; };
   });
-  document.querySelectorAll(".queue-delete").forEach(button => button.onclick = async event => {
+  if (!editingGreeting) document.querySelectorAll(".queue-delete").forEach(button => button.onclick = async event => {
     event.preventDefault(); event.stopPropagation();
     try {
       const key = decodeURIComponent(button.dataset.key);

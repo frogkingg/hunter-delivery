@@ -7,7 +7,7 @@ function createChrome(initialStore = {}, options = {}) {
   const store = structuredClone(initialStore);
   const listeners = [];
   const connectListeners = [];
-  const calls = { createdTabs: 0, sentMessages: [], injectedFiles: [] };
+  const calls = { createdTabs: 0, sentMessages: [], injectedFiles: [], downloads: [] };
   const tab = {
     id: 1,
     status: "complete",
@@ -68,7 +68,12 @@ function createChrome(initialStore = {}, options = {}) {
         calls.injectedFiles.push(files);
       },
     },
-    downloads: { download: async () => 1 },
+    downloads: {
+      download: async (options) => {
+        calls.downloads.push(options);
+        return 1;
+      },
+    },
   };
 
   return { chrome, store, listeners, connectListeners, calls };
@@ -579,4 +584,62 @@ test("QUEUE_UPDATE 对已中断/发送结果未知项要求确认标志", async 
   assert.equal(approved.ok, true);
   assert.equal(approved.item.status, "待投递");
   assert.equal(approved.item.confirmResend, undefined);
+});
+
+
+test("QUEUE_ADD 用同岗位语义去重（jobId/detailUrl 等价）", async () => {
+  const mock = createChrome({
+    deliveryQueue: [queuedJob({ key: "job-1", jobId: "job-1", detailUrl: "https://www.zhipin.com/job_detail/job-1.html" })],
+  });
+  const dispatch = await bootBackground(mock);
+
+  const dup = await dispatch({
+    type: "QUEUE_ADD",
+    job: {
+      title: "AI 产品经理",
+      company: "目标公司",
+      location: "北京",
+      detailUrl: "https://www.zhipin.com/job_detail/job-1.html?securityId=xyz",
+    },
+  });
+  assert.equal(dup.ok, false);
+  assert.match(dup.error, /已在投递清单/);
+});
+
+test("批量投递运行中禁止移除岗位", async () => {
+  const mock = createChrome({
+    deliveryQueue: [queuedJob()],
+    profiles: [{ name: "AI 方向", resumeImages: [] }],
+  }, {
+    sendMessage: async (message) => {
+      if (message.type === "SEND_MESSAGE") {
+        await new Promise(resolve => setTimeout(resolve, 150));
+        return { ok: true, resume: { sent: true } };
+      }
+      if (message.type === "VERIFY_JOB") return { ok: true };
+      if (message.type === "OPEN_COMMUNICATION") return { ok: true };
+      if (message.type === "PREPARE_COMMUNICATION") return { ok: true, ready: true, mode: "chat-page" };
+      throw new Error(`Unexpected tab message: ${message.type}`);
+    },
+  });
+  const dispatch = await bootBackground(mock);
+
+  await dispatch({ type: "QUEUE_START" });
+  const running = await dispatch({ type: "QUEUE_GET" });
+  assert.equal(running.running, true);
+
+  const removed = await dispatch({ type: "QUEUE_REMOVE", key: "job-1" });
+  assert.equal(removed.ok, false);
+  assert.match(removed.error, /投递进行中/);
+  await waitForQueueToStop(dispatch);
+});
+
+test("EXPORT_JOBS 使用 blob URL 导出", async () => {
+  const mock = createChrome({ jobLibrary: [queuedJob({ status: "已沟通", sentAt: "2026-08-02" })] });
+  const dispatch = await bootBackground(mock);
+
+  const response = await dispatch({ type: "EXPORT_JOBS" });
+  assert.equal(response.ok, true);
+  assert.equal(mock.calls.downloads.length, 1);
+  assert.ok(String(mock.calls.downloads[0].url || "").startsWith("blob:"));
 });

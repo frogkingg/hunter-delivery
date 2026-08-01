@@ -329,7 +329,9 @@ async function exportJobs() {
     ["投递状态", "status"], ["岗位链接", "url"]
   ];
   const csv = "\uFEFF" + [columns.map(([label]) => escapeCsv(label)).join(","), ...jobLibrary.map(job => columns.map(([, key]) => escapeCsv(key === "url" ? (job.detailUrl || job.url) : job[key])).join(","))].join("\r\n");
-  const url = `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
+  // 岗位库可能很大，data URL 会超出 downloads 限制，改用 blob URL。
+  // MV3 service worker 终止时会自动释放 blob URL，无需手动 revoke。
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
   await chrome.downloads.download({ url, filename: `猎投-岗位库-${new Date().toISOString().slice(0, 10)}.csv`, saveAs: true });
 }
 
@@ -422,7 +424,8 @@ async function queueJob(job) {
     const queue = await getQueue();
     const key = job.jobId || job.detailUrl;
     if (!key) throw new Error("未读取到岗位唯一标识，请在岗位页重新分析后再加入清单。");
-    if (queue.some(item => item.key === key)) throw new Error("该岗位已在投递清单中。");
+    // 与岗位库一致：按 jobId/detailUrl/标题公司兜底做语义去重，而不是只比 key 字符串。
+    if (queue.some(item => sameJob(item, job))) throw new Error("该岗位已在投递清单中。");
     if (queue.filter(item => item.status !== "已成功").length >= 20) throw new Error("投递清单最多保留 20 条待处理岗位。");
     const item = { ...job, key, greeting: job.greeting || "", status: job.greeting ? "待投递" : "待生成", queuedAt: new Date().toLocaleString("zh-CN"), error: "" };
     queue.unshift(item); await setQueue(queue); return item;
@@ -637,8 +640,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       sendResponse({ ok: true, item: await updateQueueItem(message.key, patch) });
     } else if (message.type === "QUEUE_REMOVE") {
+      if (queueRunning) throw new Error("投递进行中，不能移除岗位。");
       sendResponse({ ok: await removeQueueItem(message.key) });
     } else if (message.type === "QUEUE_REMOVE_MANY") {
+      if (queueRunning) throw new Error("投递进行中，不能移除岗位。");
       const result = await removeQueueItems(message.keys);
       sendResponse({ ok: result.removedCount === result.requestedCount, ...result });
     } else if (message.type === "QUEUE_REMOVE_RECENT") {
