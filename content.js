@@ -99,20 +99,6 @@ function findCommunicationButton() {
     [...document.querySelectorAll("button, a")].find(el => visible(el) && /^(立即沟通|继续沟通)$/.test(text(el)));
 }
 
-function openCurrentJobDetail(target) {
-  if (!window.location.pathname.includes("/web/geek/jobs")) return { navigated: false };
-  const cards = [...document.querySelectorAll(".job-card-wrap")];
-  const card = cards.find(item => {
-    const title = text(item.querySelector("a.job-name"));
-    const cardText = text(item);
-    return title === target.title && (!target.company || cardText.includes(target.company));
-  });
-  const link = card?.querySelector("a.job-name[href*='/job_detail/']");
-  if (!link?.href) throw new Error(`后台列表中未找到当前岗位：${target.title}`);
-  window.location.href = link.href;
-  return { navigated: true };
-}
-
 function verifyJob(expected) {
   const actual = extractJob();
   const normal = value => String(value || "").replace(/\s+/g, "").toLowerCase();
@@ -456,9 +442,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const button = findCommunicationButton();
       if (!button) throw new Error("未找到“立即沟通”或“继续沟通”按钮。");
       const state = text(button); button.click(); sendResponse({ ok: true, state });
-    }
-    if (message.type === "OPEN_CURRENT_JOB_DETAIL") {
-      sendResponse({ ok: true, ...openCurrentJobDetail(message.job || {}) });
     }
     if (message.type === "VERIFY_JOB") sendResponse(verifyJob(message.job || {}));
     if (message.type === "PREPARE_COMMUNICATION") {

@@ -96,11 +96,6 @@ export const MESSAGE_TYPES = {
     payload: { job: "Object" },
     response: { ok: "boolean", reason: "string?" },
   },
-  OPEN_CURRENT_JOB_DETAIL: {
-    direction: "panel→content",
-    payload: { job: "Object?" },
-    response: { ok: "boolean", navigated: "boolean?" },
-  },
   DIAGNOSE_PAGE: {
     direction: "panel→content",
     payload: {},

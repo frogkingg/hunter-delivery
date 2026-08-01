@@ -36,7 +36,6 @@ export function renderAnalysis(data) {
 
   const firstGreeting = greetings[0]?.text || data.greeting || "";
   $("greeting").value = firstGreeting;
-  $("greeting").dataset.original = firstGreeting;
   $("jobGreetingPrompt").value = state.jobPromptOverride || state.config.greetingPrompt || DEFAULT_GREETING_PROMPT;
   const priorities = Array.isArray(data.jd_priorities) ? data.jd_priorities : [];
   const matches = Array.isArray(data.matching_points) ? data.matching_points : [];
@@ -65,7 +64,6 @@ export function switchGreeting(index) {
   });
   const newText = currentGreetings[index]?.text || "";
   textarea.value = newText;
-  textarea.dataset.original = newText;
 }
 
 export function renderUsage(usage) {

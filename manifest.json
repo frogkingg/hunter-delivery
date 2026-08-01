@@ -1,14 +1,4 @@
 {
-  "web_accessible_resources": [
-    {
-      "resources": [
-        "README.md", "guide.html", "product.html", "guide.css", "product.css", "icons/icon48.png", "icons/icon128.png"
-      ],
-      "matches": [
-        "<all_urls>"
-      ]
-    }
-  ],
   "manifest_version": 3,
   "name": "猎投",
   "version": "1.2.0",
@@ -32,8 +22,6 @@
   "permissions": [
     "storage",
     "unlimitedStorage",
-    "activeTab",
-    "tabs",
     "scripting",
     "sidePanel",
     "downloads"

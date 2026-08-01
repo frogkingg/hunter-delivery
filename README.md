@@ -69,19 +69,18 @@ Chrome 扩展。自动读取 BOSS 直聘岗位信息，用 AI 对比简历生成
 ## 技术栈
 
 - Chrome Manifest V3
-- ES Modules（无框架依赖）
+- ES Modules（无框架依赖，直接加载源码，无需构建）
 - OpenAI 兼容 API
-- Rollup 打包
 
 ## 开发
 
 ```bash
 npm install        # 安装依赖
 npm run check      # 语法检查
-npm test           # 运行测试（当前 104 个）
-npm run build      # 生产构建
-npm run dev        # 开发模式（watch）
+npm test           # 运行测试
 ```
+
+扩展以 Manifest V3 ES Module 方式直接加载源码，修改代码后刷新 `chrome://extensions` 页面的扩展即可生效，无需构建步骤。
 
 ## 隐私说明
 
