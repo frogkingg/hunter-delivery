@@ -338,12 +338,13 @@ const isFailed = statusEl => /status-error/.test(statusEl?.className || "") || /
 
 // 不能只看“出现了一个我方消息”：BOSS 失败消息也会先显示气泡。必须在新增气泡中，
 // 找到含本次招呼语内容指纹的那一条，再看它是否为 status-delivery / status-read。
-async function waitForOutgoingMessage(beforeCount, greeting, timeoutMs = 9000) {
+async function waitForOutgoingMessage(beforeCount, greeting, timeoutMs = 9000, isKnownFailed = () => false) {
   const deadline = Date.now() + timeoutMs;
   const fingerprint = normalize(greeting).slice(0, 16);
   while (Date.now() < deadline) {
     const messages = outgoingMessages();
     for (const message of messages.slice(beforeCount)) {
+      if (isKnownFailed(message)) continue;
       if (fingerprint && !normalize(text(message)).includes(fingerprint)) continue;
       const statusEl = message.querySelector(".message-status");
       if (isFailed(statusEl)) throw new Error(`BOSS 显示招呼语发送失败：${text(statusEl) || "状态异常"}`);
@@ -385,6 +386,8 @@ async function waitForResumeDelivered(beforeCount, timeoutMs = 15000) {
 async function sendGreetingAndConfirm(greeting) {
   if (await waitForDeliveredText(0, greeting)) return { status: "已送达", alreadySent: true };
   const beforeCount = outgoingMessages().length;
+  // 重试时跳过已确认失败的气泡：第一次失败的气泡若未从 DOM 消失，会挡住第二次成功结果的判定。
+  const failedBubbles = new Set();
   for (let attempt = 1; attempt <= 2; attempt++) {
     if (attempt > 1 && await waitForDeliveredText(beforeCount, greeting)) return { status: "已送达" };
     const input = await setComposer(greeting);
@@ -397,10 +400,16 @@ async function sendGreetingAndConfirm(greeting) {
       await delay(500);
     }
     if (composerValue()) throw new Error("招呼语已填入，但 BOSS 未确认发送；请手动点击右下角“发送”。");
-    try { return await waitForOutgoingMessage(beforeCount, greeting); }
+    try { return await waitForOutgoingMessage(beforeCount, greeting, 9000, message => failedBubbles.has(message)); }
     catch (error) {
       // 明确的 status-error 才重试一次；超时是“不确定态”，绝不能自动重发造成双发。
-      if (attempt === 1 && /BOSS 显示招呼语发送失败/.test(error.message || "")) { await delay(900); continue; }
+      if (attempt === 1 && /BOSS 显示招呼语发送失败/.test(error.message || "")) {
+        for (const message of outgoingMessages().slice(beforeCount)) {
+          if (isFailed(message.querySelector(".message-status"))) failedBubbles.add(message);
+        }
+        await delay(900);
+        continue;
+      }
       throw error;
     }
   }

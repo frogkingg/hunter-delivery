@@ -360,3 +360,44 @@ test("SEND_MESSAGE 送达确认超时返回 uncertain 标志", async () => {
     outgoing = [];
   }
 });
+
+test("SEND_MESSAGE 重试时跳过已确认失败的旧气泡", async () => {
+  composer = chatInput;
+  chatInput.textContent = "";
+  outgoing = [];
+  const greeting = "您好，我对这个岗位很感兴趣，期待进一步沟通。";
+  const statusEl = className => visibleElement({ className, textContent: className.includes("error") ? "发送失败" : "已读" });
+  const failedMsg = () => visibleElement({
+    textContent: `${greeting}（发送失败）`,
+    querySelector: selector => selector === ".message-status" ? statusEl("status-error") : null,
+  });
+  const deliveredMsg = () => visibleElement({
+    textContent: greeting,
+    querySelector: selector => selector === ".message-status" ? statusEl("status-read") : null,
+  });
+  // 真实 DOM 中，第一次失败的气泡节点会一直保留到会话刷新；这里复用同一节点模拟。
+  const failedNode = failedMsg();
+  let clicks = 0;
+  sendButtons = [visibleElement({
+    disabled: false,
+    classList: { contains: () => false },
+    click: () => {
+      clicks++;
+      outgoing = clicks === 1 ? [failedNode] : [failedNode, deliveredMsg()];
+      chatInput.textContent = "";
+    },
+  })];
+  try {
+    const response = await dispatchNoTimeout({
+      type: "SEND_MESSAGE",
+      greeting,
+      images: [],
+    });
+    assert.equal(clicks, 2);
+    assert.equal(response.ok, true);
+    assert.equal(response.delivery.status, "已读");
+  } finally {
+    sendButtons = [];
+    outgoing = [];
+  }
+});
