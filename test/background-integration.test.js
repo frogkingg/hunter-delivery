@@ -488,3 +488,95 @@ test("AI_CALL 允许显式开启 DeepSeek 思考模式", async () => {
   assert.equal(response.ok, true);
   assert.equal(Object.hasOwn(requestBody, "thinking"), false);
 });
+
+test("QUEUE_GET 将遗留的投递中/发送中项恢复为已中断", async () => {
+  const mock = createChrome({
+    deliveryQueue: [
+      queuedJob({ key: "job-1", jobId: "job-1", status: "投递中", detailUrl: "https://www.zhipin.com/job_detail/job-1.html" }),
+      queuedJob({ key: "job-2", jobId: "job-2", status: "发送中", detailUrl: "https://www.zhipin.com/job_detail/job-2.html" }),
+    ],
+  });
+  const dispatch = await bootBackground(mock);
+
+  const response = await dispatch({ type: "QUEUE_GET" });
+  assert.equal(response.ok, true);
+  const byKey = Object.fromEntries(response.queue.map(item => [item.key, item]));
+  assert.equal(byKey["job-1"].status, "已中断");
+  assert.equal(byKey["job-2"].status, "已中断");
+  assert.match(byKey["job-1"].error, /人工确认/);
+});
+
+test("批量投递在发送前将状态持久化为发送中", async () => {
+  let statusAtSend = null;
+  const mock = createChrome({
+    deliveryQueue: [queuedJob()],
+    profiles: [{ name: "AI 方向", resumeImages: [] }],
+  }, {
+    sendMessage: async (message) => {
+      if (message.type === "SEND_MESSAGE") {
+        statusAtSend = mock.store.deliveryQueue.find(item => item.key === "job-1")?.status;
+        return { ok: true, resume: { sent: true } };
+      }
+      if (message.type === "VERIFY_JOB") return { ok: true };
+      if (message.type === "OPEN_COMMUNICATION") return { ok: true };
+      if (message.type === "PREPARE_COMMUNICATION") return { ok: true, ready: true, mode: "chat-page" };
+      throw new Error(`Unexpected tab message: ${message.type}`);
+    },
+  });
+  const dispatch = await bootBackground(mock);
+
+  await dispatch({ type: "QUEUE_START" });
+  const stopped = await waitForQueueToStop(dispatch);
+
+  assert.equal(statusAtSend, "发送中");
+  assert.equal(stopped.recentDeliveries.length, 1);
+});
+
+test("SEND_MESSAGE 结果不确定时标记发送结果未知且不可自动重投", async () => {
+  const mock = createChrome({
+    deliveryQueue: [queuedJob()],
+    profiles: [{ name: "AI 方向", resumeImages: [] }],
+  }, {
+    sendMessage: async (message) => {
+      if (message.type === "SEND_MESSAGE") return { ok: false, error: "发送状态确认超时", uncertain: true };
+      if (message.type === "VERIFY_JOB") return { ok: true };
+      if (message.type === "OPEN_COMMUNICATION") return { ok: true };
+      if (message.type === "PREPARE_COMMUNICATION") return { ok: true, ready: true, mode: "chat-page" };
+      throw new Error(`Unexpected tab message: ${message.type}`);
+    },
+  });
+  const dispatch = await bootBackground(mock);
+
+  await dispatch({ type: "QUEUE_START" });
+  const stopped = await waitForQueueToStop(dispatch);
+
+  assert.equal(stopped.queue[0].status, "发送结果未知");
+  assert.match(stopped.queue[0].error, /超时/);
+  const restarted = await dispatch({ type: "QUEUE_START" });
+  assert.equal(restarted.ok, false);
+  assert.match(restarted.error, /没有已生成招呼语/);
+});
+
+test("QUEUE_UPDATE 对已中断/发送结果未知项要求确认标志", async () => {
+  const mock = createChrome({
+    deliveryQueue: [queuedJob({ status: "发送结果未知", error: "发送状态确认超时" })],
+  });
+  const dispatch = await bootBackground(mock);
+
+  const rejected = await dispatch({
+    type: "QUEUE_UPDATE",
+    key: "job-1",
+    patch: { status: "待投递", greeting: "新招呼语" },
+  });
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /人工确认|发送结果未知/);
+
+  const approved = await dispatch({
+    type: "QUEUE_UPDATE",
+    key: "job-1",
+    patch: { status: "待投递", greeting: "新招呼语", confirmResend: true },
+  });
+  assert.equal(approved.ok, true);
+  assert.equal(approved.item.status, "待投递");
+  assert.equal(approved.item.confirmResend, undefined);
+});

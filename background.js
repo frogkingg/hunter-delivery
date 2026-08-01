@@ -340,6 +340,25 @@ let workerTabId = null;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const queueMutex = mutex();
 
+// 批量投递中断恢复：SW 重启/面板关闭后，遗留的"投递中/发送中"项无法确认真实
+// 发送结果，标记为"已中断"并要求人工确认，绝不静默回退成待投递（避免重复发送）。
+const INTERRUPTED_MESSAGE = "投递过程被系统中断（面板关闭或浏览器休眠），发送结果未知；请人工确认后点击保存修改再重试。";
+async function recoverInterruptedQueue() {
+  return queueMutex.run(async () => {
+    const queue = await getQueue();
+    let changed = false;
+    const next = queue.map(item => {
+      if (item.status === "投递中" || item.status === "发送中") {
+        changed = true;
+        return { ...item, status: "已中断", progress: "", error: item.error || INTERRUPTED_MESSAGE };
+      }
+      return item;
+    });
+    if (changed) await setQueue(next);
+    return changed;
+  });
+}
+
 async function getQueue() {
   const { deliveryQueue = [] } = await chrome.storage.local.get("deliveryQueue");
   // 只读：成功岗位在投递完成时已从清单移除，这里不再写回，避免与并发写者竞争。
@@ -532,9 +551,14 @@ async function runQueue(keySet = null) {
         await updateQueueItem(item.key, { progress: "正在处理沟通弹层并等待聊天输入框" });
         await waitForCommunicationReady(tabId);
         await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "打开沟通页", status: "ok" });
-        await updateQueueItem(item.key, { progress: "正在发送招呼语和简历图片" });
+        // 先落盘"发送中"再真正发送：SW 若在发送瞬间被回收，恢复逻辑能把该项标记为需人工确认，避免重复投递。
+        await updateQueueItem(item.key, { status: "发送中", progress: "正在发送招呼语和简历图片" });
         const sent = await sendToTab(tabId, { type: "SEND_MESSAGE", greeting, images: profile.resumeImages || [] });
-        if (!sent?.ok) throw new Error(sent?.error || "发送失败");
+        if (!sent?.ok) {
+          const sendError = new Error(sent?.error || "发送失败");
+          if (sent?.uncertain) sendError.uncertain = true;
+          throw sendError;
+        }
         messageSent = true;
         const resumeStatus = sent.resume?.sent ? "简历图片已确认送达" : (sent.resume?.reason || "未发送");
         // 从此处起消息已经不可撤销。先持久化不可重试状态，归档失败也不能回到普通失败状态。
@@ -557,7 +581,9 @@ async function runQueue(keySet = null) {
         }
         consecutiveFailures++;
         const message = logError(`投递岗位「${item.title}」`, error);
-        await updateQueueItem(item.key, { status: "失败", progress: "", error: message });
+        // 发送结果不确定（BOSS 未确认送达）与确定失败区分开：前者禁止无确认重发。
+        const failureStatus = error?.uncertain ? "发送结果未知" : "失败";
+        await updateQueueItem(item.key, { status: failureStatus, progress: "", error: message });
         await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "投递失败", status: "fail", message });
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           // 连续多次失败通常意味着 BOSS 风控或登录失效，继续发送只会加剧封号风险，自动熔断。
@@ -598,13 +624,18 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === "QUEUE_ADD") {
       sendResponse({ ok: true, item: await queueJob(message.job) });
     } else if (message.type === "QUEUE_GET") {
+      if (!queueRunning) await recoverInterruptedQueue();
       sendResponse({ ok: true, queue: await getQueue(), recentDeliveries: await getRecentDeliveries(), running: queueRunning, batch: queueBatch });
     } else if (message.type === "QUEUE_UPDATE") {
       const current = (await getQueue()).find(item => item.key === message.key);
       if (current?.status === "已发送待归档") {
         throw new Error("该岗位消息已送达，仅本地归档未完成；为避免重复发送，不能重新加入待投递队列。");
       }
-      sendResponse({ ok: true, item: await updateQueueItem(message.key, message.patch || {}) });
+      const { confirmResend, ...patch } = message.patch || {};
+      if (["已中断", "发送结果未知"].includes(current?.status) && patch.status === "待投递" && !confirmResend) {
+        throw new Error("该岗位发送结果未知，请先人工确认后再重试。");
+      }
+      sendResponse({ ok: true, item: await updateQueueItem(message.key, patch) });
     } else if (message.type === "QUEUE_REMOVE") {
       sendResponse({ ok: await removeQueueItem(message.key) });
     } else if (message.type === "QUEUE_REMOVE_MANY") {
@@ -614,6 +645,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ ok: true, removedCount: await removeRecentDeliveries(message.keys) });
     } else if (message.type === "QUEUE_START") {
       if (queueRunning) { sendResponse({ ok: true, alreadyRunning: true }); return; }
+      await recoverInterruptedQueue();
       await pruneRecentDeliveries();
       const allReady = (await getQueue()).filter(item => ["待投递", "待确认"].includes(item.status));
       const keySet = Array.isArray(message.keys) && message.keys.length ? new Set(message.keys) : null;

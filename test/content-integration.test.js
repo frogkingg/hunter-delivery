@@ -27,6 +27,8 @@ const detailScope = {
 const chatInput = visibleElement({
   textContent: "",
   getAttribute: name => name === "contenteditable" ? "true" : null,
+  focus: () => {},
+  dispatchEvent: () => {},
 });
 composer = chatInput;
 
@@ -90,6 +92,12 @@ function dispatch(message) {
       clearTimeout(timer);
       resolve(response);
     });
+  });
+}
+
+function dispatchNoTimeout(message) {
+  return new Promise(resolve => {
+    listener(message, {}, resolve);
   });
 }
 
@@ -324,4 +332,31 @@ test("SEND_MESSAGE 忽略隐藏禁用按钮并使用可见启用按钮", async (
   sendButtons = [];
   outgoing = [];
   delete globalThis.MutationObserver;
+});
+
+
+test("SEND_MESSAGE 送达确认超时返回 uncertain 标志", async () => {
+  composer = chatInput;
+  chatInput.textContent = "";
+  outgoing = [];
+  let sent = false;
+  sendButtons = [visibleElement({
+    disabled: false,
+    classList: { contains: () => false },
+    click: () => { sent = true; chatInput.textContent = ""; },
+  })];
+  try {
+    const response = await dispatchNoTimeout({
+      type: "SEND_MESSAGE",
+      greeting: "您好，我对这个岗位很感兴趣，期待进一步沟通。",
+      images: [],
+    });
+    assert.equal(sent, true);
+    assert.equal(response.ok, false);
+    assert.equal(response.uncertain, true);
+    assert.match(response.error, /确认超时/);
+  } finally {
+    sendButtons = [];
+    outgoing = [];
+  }
 });

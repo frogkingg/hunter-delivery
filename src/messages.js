@@ -37,7 +37,7 @@ export const MESSAGE_TYPES = {
   QUEUE_GET: {
     direction: "panel→background",
     payload: {},
-    response: { ok: "boolean", queue: "Array", running: "boolean", batch: "{ current, total }" },
+    response: { ok: "boolean", queue: "Array", recentDeliveries: "Array", running: "boolean", batch: "{ current, total }" },
   },
   QUEUE_UPDATE: {
     direction: "panel→background",
@@ -84,7 +84,7 @@ export const MESSAGE_TYPES = {
   SEND_MESSAGE: {
     direction: "panel→content",
     payload: { greeting: "string", images: "Array?" },
-    response: { ok: "boolean", resume: "{ sent, count?, reason? }?" },
+    response: { ok: "boolean", error: "string?", uncertain: "boolean?", messageSent: "boolean?", delivery: "{ status, alreadySent? }?", resume: "{ sent, count?, reason? }?" },
   },
   SELF_CHECK: {
     direction: "panel→content",

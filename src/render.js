@@ -99,7 +99,7 @@ function renderQueueItem(item, response) {
   const deliveryLocked = item.status === "已发送待归档";
   const meta = escapeHtml([item.company, item.location, item.status, item.progress, item.error].filter(Boolean).join(" · "));
   const diagnostics = item.rawAiResponse ? `<details class="queue-diagnostic"><summary>查看 AI 原始返回</summary><p class="hint">这是本次批量生成收到的完整返回（最多保留 20,000 个字符），可复制后发给我排查。</p><textarea class="queue-raw-response" rows="12" readonly>${escapeHtml(item.rawAiResponse)}</textarea></details>` : "";
-  const details = `<div class="queue-details"><p><b>使用简历：</b>${escapeHtml(item.profileName || "未绑定，请重新生成")}</p><p><b>薪资：</b>${escapeHtml(item.salary || "未读取")}</p><p><b>岗位描述：</b></p><div class="queue-jd">${escapeHtml(item.description || "未读取")}</div>${item.detailUrl ? `<p><a class="queue-link" href="${safeUrl(item.detailUrl)}" target="_blank" rel="noopener">在 BOSS 打开岗位详情</a></p>` : ""}${item.greeting ? `<p><b>打招呼语：</b></p><textarea class="queue-greeting" data-key="${key}" rows="5" ${deliveryLocked ? "readonly" : ""}>${escapeHtml(item.greeting)}</textarea><div class="row"><button class="secondary queue-save" data-key="${key}" ${response?.running || deliveryLocked ? "disabled" : ""}>${deliveryLocked ? "消息已送达，禁止重发" : "保存修改"}</button></div>` : `<p>招呼语尚未生成，请先点击“批量生成招呼语”。</p>`}${diagnostics}</div>`;
+  const details = `<div class="queue-details"><p><b>使用简历：</b>${escapeHtml(item.profileName || "未绑定，请重新生成")}</p><p><b>薪资：</b>${escapeHtml(item.salary || "未读取")}</p><p><b>岗位描述：</b></p><div class="queue-jd">${escapeHtml(item.description || "未读取")}</div>${item.detailUrl ? `<p><a class="queue-link" href="${safeUrl(item.detailUrl)}" target="_blank" rel="noopener">在 BOSS 打开岗位详情</a></p>` : ""}${item.greeting ? `<p><b>打招呼语：</b></p><textarea class="queue-greeting" data-key="${key}" rows="5" ${deliveryLocked ? "readonly" : ""}>${escapeHtml(item.greeting)}</textarea><div class="row"><button class="secondary queue-save" data-key="${key}" data-status="${escapeHtml(item.status)}" ${response?.running || deliveryLocked ? "disabled" : ""}>${deliveryLocked ? "消息已送达，禁止重发" : (item.status === "已中断" || item.status === "发送结果未知") ? "确认结果后重发" : "保存修改"}</button></div>` : `<p>招呼语尚未生成，请先点击“批量生成招呼语”。</p>`}${diagnostics}</div>`;
   return `<details class="library-item queue-item" data-key="${key}"><summary><input class="queue-select" type="checkbox" data-key="${key}" ${state.selectedQueueKeys.has(item.key) ? "checked" : ""} ${response?.running ? "disabled" : ""} aria-label="选择 ${escapeHtml(item.title)}"><div class="queue-summary-content"><h3>${escapeHtml(item.title)} <span aria-hidden="true">⌄</span></h3><p>${meta}</p></div><button class="queue-delete" type="button" data-key="${key}" ${response?.running ? "disabled" : ""}>删除</button></summary>${details}</details>`;
 }
 
@@ -153,9 +153,12 @@ export async function loadQueue() {
   document.querySelectorAll(".queue-save").forEach(button => button.onclick = async () => {
     try {
       const key = decodeURIComponent(button.dataset.key);
+      const status = button.dataset.status || "";
+      const uncertain = status === "已中断" || status === "发送结果未知";
+      if (uncertain && !confirm("该岗位之前可能已实际发出但未确认送达。为避免重复发送，请确认是否继续？")) return;
       const greeting = sanitizeGreeting(document.querySelector(`.queue-greeting[data-key="${button.dataset.key}"]`).value);
       button.disabled = true; button.textContent = "正在保存…";
-      const result = await send({ type: "QUEUE_UPDATE", key, patch: { greeting, status: "待投递", error: "", progress: "等待开始批量投递", rawAiResponse: "" } });
+      const result = await send({ type: "QUEUE_UPDATE", key, patch: { greeting, status: "待投递", error: "", progress: "等待开始批量投递", rawAiResponse: "", ...(uncertain ? { confirmResend: true } : {}) } });
       if (!result?.ok) throw new Error(result?.error || "保存失败");
       toast("招呼语已保存，已加入待投递队列"); await loadQueue();
     } catch (error) { handleError("保存招呼语", error, (msg) => { toast(`保存失败：${msg}`); button.disabled = false; button.textContent = "保存修改"; }); }
@@ -180,7 +183,8 @@ export async function loadQueue() {
   $("selectAll").disabled = response?.running || !queue.length;
   $("stopQueue").hidden = !response?.running;
   // 批量生成/开始投递均遵循勾选：按“勾选 ∩ 可操作”动态显示计数
-  const generateTargets = queue.filter(item => !["投递中", "已成功", "已发送待归档"].includes(item.status));
+  // 已中断/发送结果未知需要人工确认，不能通过一键批量生成静默覆盖。
+  const generateTargets = queue.filter(item => !["投递中", "已成功", "已发送待归档", "已中断", "发送结果未知"].includes(item.status));
   const selectedGenerate = generateTargets.filter(item => state.selectedQueueKeys.has(item.key)).length;
   $("generateQueue").textContent = selectedGenerate ? `批量生成招呼语（${selectedGenerate}）` : "批量生成招呼语";
   const selectedReady = queue.filter(item => ["待投递", "待确认"].includes(item.status) && state.selectedQueueKeys.has(item.key)).length;

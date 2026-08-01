@@ -351,7 +351,10 @@ async function waitForOutgoingMessage(beforeCount, greeting, timeoutMs = 9000) {
     }
     await delay(180);
   }
-  throw new Error("招呼语发送状态确认超时：为避免重复发送，已停止本岗位，不会写入岗位库。");
+  const timeoutError = new Error("招呼语发送状态确认超时：为避免重复发送，已停止本岗位，不会写入岗位库。");
+  // 超时是不确定态：消息可能已实际送达，标记后由上层禁止无确认重发。
+  timeoutError.uncertain = true;
+  throw timeoutError;
 }
 
 function hasDeliveredImageSince(beforeCount) {
@@ -374,7 +377,9 @@ async function waitForResumeDelivered(beforeCount, timeoutMs = 15000) {
     }
     await delay(220);
   }
-  throw new Error("简历图片上传或送达确认超时；已停止发送招呼语，避免出现只发文字未发简历的情况。");
+  const timeoutError = new Error("简历图片上传或送达确认超时；已停止发送招呼语，避免出现只发文字未发简历的情况。");
+  timeoutError.uncertain = true;
+  throw timeoutError;
 }
 
 async function sendGreetingAndConfirm(greeting) {
@@ -478,7 +483,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           const delivery = await sendGreetingAndConfirm(message.greeting);
           sendResponse({ ok: true, messageSent: true, delivery, resume });
         } catch (error) {
-          sendResponse({ ok: false, error: error.message });
+          sendResponse({ ok: false, error: error.message, ...(error.uncertain ? { uncertain: true } : {}) });
         }
       })();
       return true;

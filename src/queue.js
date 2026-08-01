@@ -95,7 +95,7 @@ export async function generateQueue() {
     if (!state.selectedQueueKeys.size) throw new Error("请先勾选要生成招呼语的岗位，或点击“全选”。");
     const items = allItems.filter(item =>
       state.selectedQueueKeys.has(item.key) &&
-      !["投递中", "已成功", "已发送待归档"].includes(item.status)
+      !["投递中", "已成功", "已发送待归档", "已中断", "发送结果未知"].includes(item.status)
     );
     if (!items.length) throw new Error("所选岗位中没有可生成招呼语的岗位，请重新勾选或先加入投递清单。");
     button.disabled = true;
