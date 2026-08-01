@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "猎投",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "读取 BOSS 当前岗位，用你的简历生成招呼语并记录投递。",
   "icons": {
     "16": "icons/icon16.png",
