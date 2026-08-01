@@ -169,6 +169,9 @@ test("QUEUE_START 真正执行队列、保留最终状态并仅回退注入 cont
   const stopped = await waitForQueueToStop(dispatch);
 
   assert.equal(stopped.queue.length, 0);
+  assert.equal(stopped.recentDeliveries.length, 1);
+  assert.equal(stopped.recentDeliveries[0].status, "已成功");
+  assert.equal(stopped.recentDeliveries[0].key, "job-1");
   assert.equal(mock.store.jobLibrary.length, 1);
   assert.equal(mock.store.jobLibrary[0].status, "已沟通");
   assert.deepEqual(mock.calls.injectedFiles, [["content.js"]]);
@@ -217,6 +220,53 @@ test("消息送达后归档失败会停在不可重试状态", async () => {
   });
   assert.equal(requeued.ok, false);
   assert.match(requeued.error, /避免重复发送/);
+});
+
+test("QUEUE_START 仅投递勾选的岗位", async () => {
+  const mock = createChrome({
+    deliveryQueue: [
+      queuedJob({ key: "job-1", jobId: "job-1", detailUrl: "https://www.zhipin.com/job_detail/job-1.html" }),
+      queuedJob({ key: "job-2", jobId: "job-2", detailUrl: "https://www.zhipin.com/job_detail/job-2.html" }),
+    ],
+    profiles: [{ name: "AI 方向", resumeImages: [] }],
+  });
+  const dispatch = await bootBackground(mock);
+
+  const started = await dispatch({ type: "QUEUE_START", keys: ["job-1"] });
+  assert.deepEqual(started, { ok: true, count: 1 });
+  const stopped = await waitForQueueToStop(dispatch);
+
+  assert.equal(stopped.recentDeliveries.length, 1);
+  assert.equal(stopped.recentDeliveries[0].key, "job-1");
+  assert.equal(stopped.queue.length, 1);
+  assert.equal(stopped.queue[0].key, "job-2");
+  assert.equal(stopped.queue[0].status, "待投递");
+  assert.equal(mock.calls.sentMessages.filter(message => message.type === "SEND_MESSAGE").length, 1);
+});
+
+test("QUEUE_REMOVE_RECENT 移除已投递成功卡片", async () => {
+  const mock = createChrome({
+    recentDeliveries: [queuedJob({ key: "job-1", status: "已成功", deliveredAt: Date.now() })],
+  });
+  const dispatch = await bootBackground(mock);
+
+  const removed = await dispatch({ type: "QUEUE_REMOVE_RECENT", keys: ["job-1"] });
+  assert.deepEqual(removed, { ok: true, removedCount: 1 });
+  const after = await dispatch({ type: "QUEUE_GET" });
+  assert.equal(after.recentDeliveries.length, 0);
+});
+
+test("QUEUE_GET 过滤超过 TTL 的已投递成功记录", async () => {
+  const mock = createChrome({
+    recentDeliveries: [
+      queuedJob({ key: "old", status: "已成功", deliveredAt: Date.now() - 120000 }),
+      queuedJob({ key: "fresh", status: "已成功", deliveredAt: Date.now() }),
+    ],
+  });
+  const dispatch = await bootBackground(mock);
+
+  const response = await dispatch({ type: "QUEUE_GET" });
+  assert.deepEqual(response.recentDeliveries.map(item => item.key), ["fresh"]);
 });
 
 test("AI_CALL 透传 token usage", async () => {

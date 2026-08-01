@@ -44,14 +44,26 @@ async function waitForCommunicationReady(tabId, timeoutMs = 15000) {
   throw new Error(`未能进入可发送状态。${lastError ? `最后状态：${lastError}。` : ""}请检查 BOSS 页面是否出现验证或沟通弹层。`);
 }
 
+// 分析完成后高亮「确认沟通并发送」，引导用户完成投递（不自动发送）。
+function highlightSendButton() {
+  const sendBtn = $("send");
+  if (!sendBtn) return;
+  sendBtn.classList.add("highlight-send");
+  sendBtn.scrollIntoView({ behavior: "smooth", block: "center" });
+  setTimeout(() => sendBtn.classList.remove("highlight-send"), 3000);
+}
+
 export async function analyze() {
   let progressTimer = null;
+  let completed = false;
   try {
     const promptField = $("jobGreetingPrompt");
     const requestedOverride = promptField?.value.trim() || "";
     const button = $("analyze");
+    const progressEl = $("analyzeProgress");
     button.disabled = true;
-    button.textContent = "正在读取岗位…";
+    button.textContent = "正在生成…";
+    if (progressEl) progressEl.textContent = "正在读取岗位…";
     const nextJob = await extractJob();
     state.jobPromptOverride = resolveJobPromptOverride(state.currentJob, nextJob, requestedOverride);
     state.currentJob = nextJob;
@@ -61,10 +73,11 @@ export async function analyze() {
     const startedAt = Date.now();
     let receivedChars = 0;
     let phase = "正在分析岗位与简历";
+    // 字数/耗时/阶段写入按钮下方进度行，避免长文本把按钮撑成两行。
     const renderProgress = () => {
       const seconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
-      button.textContent = receivedChars
-        ? `正在生成 · ${receivedChars} 字 · ${seconds} 秒`
+      if (progressEl) progressEl.textContent = receivedChars
+        ? `正在生成 · 已接收 ${receivedChars} 字 · ${seconds} 秒`
         : `${phase} · ${seconds} 秒`;
     };
     progressTimer = setInterval(renderProgress, 500);
@@ -87,13 +100,20 @@ export async function analyze() {
     const result = await parseAiJson(aiResponse.text);
     renderAnalysis(result);
     if (aiResponse.usage) renderUsage(aiResponse.usage);
+    completed = true;
+    if (progressEl) progressEl.textContent = "分析完成，请确认招呼语后点击“确认沟通并发送”。";
     toast("已完成 JD 与简历匹配，生成招呼语");
+    highlightSendButton();
   } catch (error) {
     handleError("分析岗位", error, toast);
   } finally {
     clearInterval(progressTimer);
     $("analyze").disabled = false;
-    $("analyze").textContent = "分析当前岗位";
+    $("analyze").textContent = "分析当前岗位并投递";
+    if (!completed) {
+      const progressEl = $("analyzeProgress");
+      if (progressEl) progressEl.textContent = "";
+    }
   }
 }
 

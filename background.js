@@ -446,6 +446,54 @@ async function setQueue(queue) {
   await chrome.storage.local.set({ deliveryQueue: queue });
 }
 
+// —— 已投递成功卡片：投递成功后先保留展示“确认态”，面板 5 秒后延迟消失 ——
+// 与 deliveryQueue 分离：不占 20 条待处理名额，也不参与批量投递/生成逻辑。
+const RECENT_DELIVERY_TTL_MS = 60 * 1000; // 面板关闭时的兜底清理时长
+
+async function getRecentDeliveries() {
+  const { recentDeliveries = [] } = await chrome.storage.local.get("recentDeliveries");
+  const list = Array.isArray(recentDeliveries) ? recentDeliveries : [];
+  const now = Date.now();
+  return list.filter(item => now - (item.deliveredAt || 0) < RECENT_DELIVERY_TTL_MS);
+}
+
+async function addRecentDelivery(item) {
+  return queueMutex.run(async () => {
+    const recent = await getRecentDeliveries();
+    recent.unshift({
+      ...item,
+      status: "已成功",
+      progress: "",
+      error: "",
+      deliveredAt: Date.now(),
+      updatedAt: new Date().toISOString(),
+    });
+    await chrome.storage.local.set({ recentDeliveries: recent });
+    return recent[0];
+  });
+}
+
+async function removeRecentDeliveries(keys) {
+  return queueMutex.run(async () => {
+    const recent = await getRecentDeliveries();
+    const keySet = new Set((Array.isArray(keys) ? keys : []).filter(Boolean));
+    const next = recent.filter(item => !keySet.has(item.key));
+    if (next.length !== recent.length) await chrome.storage.local.set({ recentDeliveries: next });
+    return recent.length - next.length;
+  });
+}
+
+// 清理超过 TTL 的已投递记录，防止面板未打开时堆积。
+async function pruneRecentDeliveries() {
+  return queueMutex.run(async () => {
+    const raw = (await chrome.storage.local.get("recentDeliveries")).recentDeliveries || [];
+    const list = Array.isArray(raw) ? raw : [];
+    const now = Date.now();
+    const next = list.filter(item => now - (item.deliveredAt || 0) < RECENT_DELIVERY_TTL_MS);
+    if (next.length !== list.length) await chrome.storage.local.set({ recentDeliveries: next });
+  });
+}
+
 async function queueJob(job) {
   return queueMutex.run(async () => {
     const queue = await getQueue();
@@ -539,12 +587,15 @@ async function ensureWorker(url) {
   return workerTabId;
 }
 
-async function runQueue() {
+async function runQueue(keySet = null) {
   queueStopRequested = false;
   const MAX_CONSECUTIVE_FAILURES = 3;
   let consecutiveFailures = 0;
   try {
-    const items = (await getQueue()).filter(item => ["待投递", "待确认"].includes(item.status)).slice(0, 20);
+    const items = (await getQueue())
+      .filter(item => ["待投递", "待确认"].includes(item.status))
+      .filter(item => !keySet || keySet.has(item.key))
+      .slice(0, 20);
     if (!items.length) throw new Error("没有待投递岗位。");
     queueBatch = { current: 0, total: items.length };
     for (let index = 0; index < items.length; index++) {
@@ -587,8 +638,10 @@ async function runQueue() {
         await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "发送招呼语", status: "ok", message: sent.resume?.sent ? "简历图片已确认送达" : (sent.resume?.reason || "未发送简历") }).catch(error => logError("记录发送日志", error));
         await saveJob({ ...item, greeting, status: "已沟通", sentAt: new Date().toLocaleString("zh-CN"), resumeStatus });
         await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "投递完成", status: "ok" }).catch(error => logError("记录投递完成日志", error));
-        // 岗位库已保存成功记录，待投递清单实时移除，避免和历史记录重复出现。
+        // 岗位库已保存成功记录，移出待投递清单；卡片保留在“已投递成功”临时区，
+        // 供面板展示打勾确认态并在延迟后消失（清理失败不影响投递结果）。
         if (!await removeQueueItem(item.key)) throw new Error("投递记录已保存，但未能从投递清单移除");
+        await addRecentDelivery({ ...item, greeting, status: "已成功" }).catch(error => logError(`记录已投递成功卡片「${item.title}」`, error));
         consecutiveFailures = 0;
       } catch (error) {
         if (messageSent) {
@@ -641,7 +694,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === "QUEUE_ADD") {
       sendResponse({ ok: true, item: await queueJob(message.job) });
     } else if (message.type === "QUEUE_GET") {
-      sendResponse({ ok: true, queue: await getQueue(), running: queueRunning, batch: queueBatch });
+      sendResponse({ ok: true, queue: await getQueue(), recentDeliveries: await getRecentDeliveries(), running: queueRunning, batch: queueBatch });
     } else if (message.type === "QUEUE_UPDATE") {
       const current = (await getQueue()).find(item => item.key === message.key);
       if (current?.status === "已发送待归档") {
@@ -653,14 +706,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === "QUEUE_REMOVE_MANY") {
       const result = await removeQueueItems(message.keys);
       sendResponse({ ok: result.removedCount === result.requestedCount, ...result });
+    } else if (message.type === "QUEUE_REMOVE_RECENT") {
+      sendResponse({ ok: true, removedCount: await removeRecentDeliveries(message.keys) });
     } else if (message.type === "QUEUE_START") {
       if (queueRunning) { sendResponse({ ok: true, alreadyRunning: true }); return; }
-      const count = (await getQueue()).filter(item => ["待投递", "待确认"].includes(item.status)).slice(0, 20).length;
+      await pruneRecentDeliveries();
+      const allReady = (await getQueue()).filter(item => ["待投递", "待确认"].includes(item.status));
+      const keySet = Array.isArray(message.keys) && message.keys.length ? new Set(message.keys) : null;
+      const ready = keySet ? allReady.filter(item => keySet.has(item.key)) : allReady;
+      const count = ready.slice(0, 20).length;
       if (!count) throw new Error("没有已生成招呼语的岗位。");
       // getQueue() 让出了事件循环；再次检查后再同步置锁，确保并发启动只有一个获胜者。
       if (queueRunning) { sendResponse({ ok: true, alreadyRunning: true }); return; }
       queueRunning = true; // 在 await 让出前同步置锁，避免并发 QUEUE_START 双启动。
-      runQueue().catch(error => console.error("[猎投] runQueue 失败：", error));
+      runQueue(keySet).catch(error => console.error("[猎投] runQueue 失败：", error));
       sendResponse({ ok: true, count });
     } else if (message.type === "QUEUE_STOP") {
       if (!queueRunning) { sendResponse({ ok: false, error: "当前没有正在进行的投递。" }); return; }

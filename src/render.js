@@ -85,24 +85,71 @@ export function renderSavedResumes() {
 export async function loadLibrary() {
   const response = await send({ type: "LIBRARY_GET" });
   const jobLibrary = response?.jobLibrary || [];
-  $("libraryList").innerHTML = jobLibrary.length ? jobLibrary.map(job => `<article class="library-item"><h3>${escapeHtml(job.title)}</h3><p>${escapeHtml([job.company, job.location, job.sentAt, job.status].filter(Boolean).join(" · "))}</p></article>`).join("") : `<div class="guide-card"><b>还没有投递记录</b><span>成功发送后，岗位会自动保存在这里。</span></div>`;
+  $("libraryList").innerHTML = jobLibrary.length ? jobLibrary.map(job => `<article class="library-item"><h3>${escapeHtml(job.title)}</h3><p>${escapeHtml([job.company, job.location, job.sentAt, job.status].filter(Boolean).join(" · "))}</p></article>`).join("") : `<div class="guide-card"><b>ℹ️ 还没有投递记录</b><span>成功发送后，岗位会自动保存在这里。</span></div>`;
+}
+
+// —— 已投递成功卡片：确认态展示 5 秒后淡出消失 ——
+const removalTimers = new Map();          // key -> setTimeout id
+const removingDeliveredKeys = new Set();  // 淡出期间避免轮询重渲染“复活”卡片
+const DELIVERED_CARD_KEEP_MS = 5000;      // 停留时长
+const DELIVERED_CARD_FADE_MS = 300;       // 淡出动画时长
+
+function renderQueueItem(item, response) {
+  const key = encodeURIComponent(item.key);
+  const deliveryLocked = item.status === "已发送待归档";
+  const meta = escapeHtml([item.company, item.location, item.status, item.progress, item.error].filter(Boolean).join(" · "));
+  const diagnostics = item.rawAiResponse ? `<details class="queue-diagnostic"><summary>查看 AI 原始返回</summary><p class="hint">这是本次批量生成收到的完整返回（最多保留 20,000 个字符），可复制后发给我排查。</p><textarea class="queue-raw-response" rows="12" readonly>${escapeHtml(item.rawAiResponse)}</textarea></details>` : "";
+  const details = `<div class="queue-details"><p><b>使用简历：</b>${escapeHtml(item.profileName || "未绑定，请重新生成")}</p><p><b>薪资：</b>${escapeHtml(item.salary || "未读取")}</p><p><b>岗位描述：</b></p><div class="queue-jd">${escapeHtml(item.description || "未读取")}</div>${item.detailUrl ? `<p><a class="queue-link" href="${safeUrl(item.detailUrl)}" target="_blank" rel="noopener">在 BOSS 打开岗位详情</a></p>` : ""}${item.greeting ? `<p><b>打招呼语：</b></p><textarea class="queue-greeting" data-key="${key}" rows="5" ${deliveryLocked ? "readonly" : ""}>${escapeHtml(item.greeting)}</textarea><div class="row"><button class="secondary queue-save" data-key="${key}" ${response?.running || deliveryLocked ? "disabled" : ""}>${deliveryLocked ? "消息已送达，禁止重发" : "保存修改"}</button></div>` : `<p>招呼语尚未生成，请先点击“批量生成招呼语”。</p>`}${diagnostics}</div>`;
+  return `<details class="library-item queue-item" data-key="${key}"><summary><input class="queue-select" type="checkbox" data-key="${key}" ${state.selectedQueueKeys.has(item.key) ? "checked" : ""} ${response?.running ? "disabled" : ""} aria-label="选择 ${escapeHtml(item.title)}"><div class="queue-summary-content"><h3>${escapeHtml(item.title)} <span aria-hidden="true">⌄</span></h3><p>${meta}</p></div><button class="queue-delete" type="button" data-key="${key}" ${response?.running ? "disabled" : ""}>删除</button></summary>${details}</details>`;
+}
+
+// 已投递成功：勾选框固定打勾，绿色确认态，可展开查看送达说明。
+function renderDeliveredItem(item) {
+  const key = encodeURIComponent(item.key);
+  const meta = escapeHtml([item.company, item.location, "已投递成功"].filter(Boolean).join(" · "));
+  return `<details class="library-item queue-item queue-delivered" data-key="${key}"><summary><input class="queue-select" type="checkbox" checked disabled aria-label="已投递 ${escapeHtml(item.title)}"><div class="queue-summary-content"><h3>${escapeHtml(item.title)} <span aria-hidden="true">⌄</span></h3><p>${meta}</p></div></summary><div class="queue-details"><p class="queue-delivered-note">✅ 招呼语已确认送达并记入岗位库，卡片稍后自动消失。</p></div></details>`;
+}
+
+function scheduleDeliveredRemoval(key) {
+  if (removalTimers.has(key)) return;
+  const timer = setTimeout(async () => {
+    removalTimers.delete(key);
+    removingDeliveredKeys.add(key);
+    const card = [...document.querySelectorAll(".queue-item[data-key]")].find((el) => {
+      try { return decodeURIComponent(el.dataset.key) === key; } catch (_) { return false; }
+    });
+    if (card) card.classList.add("leaving");
+    await new Promise(resolve => setTimeout(resolve, DELIVERED_CARD_FADE_MS));
+    try { await send({ type: "QUEUE_REMOVE_RECENT", keys: [key] }); } catch (_) {}
+    removingDeliveredKeys.delete(key);
+    loadQueue().catch(() => {});
+  }, DELIVERED_CARD_KEEP_MS);
+  removalTimers.set(key, timer);
 }
 
 export async function loadQueue() {
   const response = await send({ type: "QUEUE_GET" });
   const queue = response?.queue || [];
+  const recent = response?.recentDeliveries || [];
   state.selectedQueueKeys = new Set([...state.selectedQueueKeys].filter(key => queue.some(item => item.key === key)));
   const batch = response?.batch || { current: 0, total: 0 };
   const batchText = response?.running && batch.total ? `正在投递第 ${batch.current || 1}/${batch.total} 个岗位` : "";
   $("queueProgress").textContent = batchText;
-  $("queueList").innerHTML = queue.length ? queue.map(item => {
-    const key = encodeURIComponent(item.key);
-    const deliveryLocked = item.status === "已发送待归档";
-    const meta = escapeHtml([item.company, item.location, item.status, item.progress, item.error].filter(Boolean).join(" · "));
-    const diagnostics = item.rawAiResponse ? `<details class="queue-diagnostic"><summary>查看 AI 原始返回</summary><p class="hint">这是本次批量生成收到的完整返回（最多保留 20,000 个字符），可复制后发给我排查。</p><textarea class="queue-raw-response" rows="12" readonly>${escapeHtml(item.rawAiResponse)}</textarea></details>` : "";
-    const details = `<div class="queue-details"><p><b>使用简历：</b>${escapeHtml(item.profileName || "未绑定，请重新生成")}</p><p><b>薪资：</b>${escapeHtml(item.salary || "未读取")}</p><p><b>岗位描述：</b></p><div class="queue-jd">${escapeHtml(item.description || "未读取")}</div>${item.detailUrl ? `<p><a class="queue-link" href="${safeUrl(item.detailUrl)}" target="_blank" rel="noopener">在 BOSS 打开岗位详情</a></p>` : ""}${item.greeting ? `<p><b>打招呼语：</b></p><textarea class="queue-greeting" data-key="${key}" rows="5" ${deliveryLocked ? "readonly" : ""}>${escapeHtml(item.greeting)}</textarea><div class="row"><button class="secondary queue-save" data-key="${key}" ${response?.running || deliveryLocked ? "disabled" : ""}>${deliveryLocked ? "消息已送达，禁止重发" : "保存修改"}</button></div>` : `<p>招呼语尚未生成，请先点击“批量生成招呼语”。</p>`}${diagnostics}</div>`;
-    return `<details class="library-item queue-item"><summary><input class="queue-select" type="checkbox" data-key="${key}" ${state.selectedQueueKeys.has(item.key) ? "checked" : ""} ${response?.running ? "disabled" : ""} aria-label="选择 ${escapeHtml(item.title)}"><div class="queue-summary-content"><h3>${escapeHtml(item.title)} <span aria-hidden="true">⌄</span></h3><p>${meta}</p></div><button class="queue-delete" type="button" data-key="${key}" ${response?.running ? "disabled" : ""}>删除</button></summary>${details}</details>`;
-  }).join("") : `<div class="guide-card"><b>清单为空</b><span>浏览岗位时点击“加入投递清单”。</span></div>`;
+  // 已投递成功卡片：先启动延迟消失定时器，再渲染确认态
+  const recentKeys = new Set(recent.map(item => item.key));
+  for (const [key, timer] of removalTimers) {
+    if (!recentKeys.has(key)) { clearTimeout(timer); removalTimers.delete(key); }
+  }
+  for (const key of removingDeliveredKeys) {
+    if (!recentKeys.has(key)) removingDeliveredKeys.delete(key);
+  }
+  recent.forEach(item => scheduleDeliveredRemoval(item.key));
+  $("queueList").innerHTML = (recent.length || queue.length)
+    ? [
+        ...recent.filter(item => !removingDeliveredKeys.has(item.key)).map(item => renderDeliveredItem(item)),
+        ...queue.map(item => renderQueueItem(item, response)),
+      ].join("")
+    : `<div class="guide-card"><b>ℹ️ 清单为空</b><span>浏览岗位时点击“加入投递清单”。</span></div>`;
   document.querySelectorAll(".queue-save").forEach(button => button.onclick = async () => {
     try {
       const key = decodeURIComponent(button.dataset.key);
@@ -132,8 +179,13 @@ export async function loadQueue() {
   $("selectAll").textContent = queue.length && state.selectedQueueKeys.size === queue.length ? "取消全选" : "全选";
   $("selectAll").disabled = response?.running || !queue.length;
   $("stopQueue").hidden = !response?.running;
-  const readyCount = queue.filter(item => ["待投递", "待确认"].includes(item.status)).length;
-  $("startQueue").textContent = response?.running ? (batch.total ? `正在投递（${batch.current || 1}/${batch.total}）` : "正在投递，请查看岗位状态…") : `开始投递（${readyCount}）`;
+  // 批量生成/开始投递均遵循勾选：按“勾选 ∩ 可操作”动态显示计数
+  const generateTargets = queue.filter(item => !["投递中", "已成功", "已发送待归档"].includes(item.status));
+  const selectedGenerate = generateTargets.filter(item => state.selectedQueueKeys.has(item.key)).length;
+  $("generateQueue").textContent = selectedGenerate ? `批量生成招呼语（${selectedGenerate}）` : "批量生成招呼语";
+  const selectedReady = queue.filter(item => ["待投递", "待确认"].includes(item.status) && state.selectedQueueKeys.has(item.key)).length;
+  $("startQueue").textContent = response?.running ? (batch.total ? `正在投递（${batch.current || 1}/${batch.total}）` : "正在投递，请查看岗位状态…") : (selectedReady ? `开始投递（${selectedReady}）` : "开始投递");
   $("startQueue").disabled = !!response?.running;
   return response;
 }
+
