@@ -28,7 +28,7 @@ function confidenceFor(hit, label) {
 export function matchRules(fields, resumeFields) {
   const resume = resumeFields || {};
   return (Array.isArray(fields) ? fields : []).map(field => {
-    const base = { fieldId: field.id, fieldKey: "", value: "", confidence: null, source: "rule", status: "manual", reason: "" };
+    const base = { fieldId: field.id, fieldKey: "", value: "", confidence: null, source: "rule", status: "manual", reason: "", label: field.label ?? field.rawLabel ?? "", type: field.type ?? "text" };
     if (field.skipped) return { ...base, reason: "该控件不支持自动填充（密码/文件/隐藏）" };
     const label = normalizeLabel(field.label);
     if (!label) return { ...base, reason: "未识别到字段标签" };
@@ -41,6 +41,9 @@ export function matchRules(fields, resumeFields) {
     const value = String(resume[best.key] ?? "").trim();
     const confidence = confidenceFor(best, label);
     if (!value) return { ...base, fieldKey: best.key, confidence, reason: `简历中缺少「${RESUME_FIELD_LABELS[best.key]}」信息` };
+    if (field.type === "checkbox" && !/^(是|有|true|1|同意|愿意|会|否|无|false|0|不同意|不愿意|不会)$/i.test(value)) {
+      return { ...base, fieldKey: best.key, value, confidence, status: "manual", reason: "勾选框需手动确认（简历值非明确布尔）" };
+    }
     return { ...base, fieldKey: best.key, value, confidence, status: "match", reason: `规则命中「${RESUME_FIELD_LABELS[best.key]}」` };
   });
 }

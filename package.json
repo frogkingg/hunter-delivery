@@ -5,7 +5,19 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "rollup -c",
+    "dev": "rollup -c -w",
+    "clean": "rm -rf dist",
     "test": "node --test \"test/**/*.test.js\" \"tests/**/*.test.js\"",
     "check": "node --check background.js && node --check content.js && node --check lib/shared.js && node --check src/ai-client.js && node --check src/app.js && node --check src/chrome-helpers.js && node --check src/config.js && node --check src/current-job.js && node --check src/delivery-log.js && node --check src/error-handler.js && node --check src/messages.js && node --check src/prompts.js && node --check src/pure-utils.js && node --check src/queue.js && node --check src/render.js && node --check src/resume.js && node --check src/state.js"
+  },
+  "files": [
+    "dist/"
+  ],
+  "devDependencies": {
+    "@rollup/plugin-node-resolve": "^16.0.3",
+    "@rollup/plugin-terser": "^1.0.0",
+    "jsdom": "^30.0.1",
+    "rollup": "^4.62.3"
   }
 }

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>Ant Design 通用申请表</title></head>
+<body>
+<form id="applyForm">
+  <div class="ant-form-item"><div class="ant-form-item-label"><label for="name">姓名</label></div><div class="ant-form-item-control"><input id="name" class="ant-input" type="text" required></div></div>
+  <div class="ant-form-item"><div class="ant-form-item-label"><label for="mobile">手机号码</label></div><div class="ant-form-item-control"><input id="mobile" class="ant-input" type="tel"></div></div>
+  <div class="ant-form-item"><div class="ant-form-item-label"><label for="email">邮箱</label></div><div class="ant-form-item-control"><input id="email" class="ant-input" type="email"></div></div>
+  <div class="ant-form-item"><div class="ant-form-item-label"><label>性别</label></div><div class="ant-form-item-control"><label><input type="radio" name="gender" value="男">男</label><label><input type="radio" name="gender" value="女">女</label></div></div>
+  <div class="ant-form-item"><div class="ant-form-item-label"><label for="degree">最高学历</label></div><div class="ant-form-item-control"><select id="degree"><option value="">请选择</option><option value="本科">本科</option><option value="硕士">硕士</option><option value="博士">博士</option></select></div></div>
+  <div class="ant-form-item"><div class="ant-form-item-label"><label for="school">毕业院校</label></div><div class="ant-form-item-control"><input id="school" class="ant-input" type="text"></div></div>
+  <div class="ant-form-item"><div class="ant-form-item-label"><label for="salary">期望薪资</label></div><div class="ant-form-item-control"><input id="salary" class="ant-input" type="text"></div></div>
+  <div class="ant-form-item"><div class="ant-form-item-label"><label for="intro">自我评价</label></div><div class="ant-form-item-control"><textarea id="intro" rows="3"></textarea></div></div>
+  <div class="ant-form-item"><div class="ant-form-item-label"><label for="arrival">到岗时间</label></div><div class="ant-form-item-control"><div class="ant-select" id="arrival"><input class="ant-select-selection-search-input" type="text"></div></div></div>
+  <div class="ant-select-dropdown"><div class="ant-select-item-option" data-value="随时到岗">随时到岗</div><div class="ant-select-item-option" data-value="一个月内">一个月内</div></div>
+  <div class="ant-form-item"><div class="ant-form-item-label"><label for="skill">技能</label></div><div class="ant-form-item-control"><label><input type="checkbox" id="skill" value="Python">Python</label></div></div>
+  <div class="ant-form-item"><div class="ant-form-item-label"><label for="pwd">密码</label></div><div class="ant-form-item-control"><input id="pwd" type="password"></div></div>
+  <div class="ant-form-item"><div class="ant-form-item-label"><label for="resumeFile">上传简历</label></div><div class="ant-form-item-control"><input id="resumeFile" type="file"></div></div>
+</form>
+</body>
+</html>

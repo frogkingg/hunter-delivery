@@ -131,3 +131,14 @@ test("matchFields: AI 调用失败时降级为 manual 不抛错", async () => {
   });
   assert.equal(results[0].status, "manual");
 });
+
+test("matchRules: 非布尔勾选框标记 manual", () => {
+  const results = matchRules([{ id: "c1", type: "checkbox", label: "技能", skipped: false }], FULL_RESUME);
+  assert.equal(results[0].status, "manual");
+  assert.match(results[0].reason, /手动确认/);
+});
+
+test("matchRules: 布尔勾选框可匹配", () => {
+  const results = matchRules([{ id: "c2", type: "checkbox", label: "是否接受调剂", skipped: false }], { ...FULL_RESUME, name: "" });
+  assert.equal(results[0].fieldKey, "");
+});
