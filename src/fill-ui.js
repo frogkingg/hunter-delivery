@@ -1,10 +1,10 @@
 // 智能填充：侧边栏交互逻辑（扫描/匹配/填充/模板/历史）。
-import { state, activeProfile, setFillScanFields, setFillScanPage, setFillMatches, setFillSelected, setFillValues, setFillFailedIds, setFillAiEnabled, setFillTemplateEnabled } from "./state.js";
+import { state, activeProfile, setFillScanFields, setFillScanPage, setFillScanSession, setFillRepeaters, setFillMatches, setFillSelected, setFillValues, setFillFailedIds, setFillAiEnabled, setFillTemplateEnabled } from "./state.js";
 import { $, toast, fillMessagePage } from "./chrome-helpers.js";
 import { escapeHtml } from "./pure-utils.js";
 import { RESUME_FIELD_LABELS, GROUP_LABELS } from "./form-fields.js";
-import { matchRules, applyAiResults, buildAiMatchPrompt } from "./matcher.js";
-import { applyTemplate, saveTemplateFromResults, capTemplates } from "./site-templates.js";
+import { matchRules, applyAiResults, buildAiMatchPrompt, validateBinding } from "./matcher.js";
+import { applyTemplate, saveTemplateFromResults, capTemplates, templateKey } from "./site-templates.js";
 import { appendFillLog, summarizeResults } from "./fill-log.js";
 import { RESUME_FIELDS_SCHEMA, ENTRY_GROUPS, extractResumeFieldsLocal, buildResumeExtractPrompt, mergeResumeFields, aggregateResumeFields } from "./resume-fields.js";
 import { switchProfile, saveProfiles } from "./config.js";
@@ -127,6 +127,7 @@ export async function saveResumeFields() {
   await saveProfiles();
   toast("简历字段已保存（经历条目已同步聚合到匹配字段）");
   renderResumeFields();
+  if (state.fillScanFields.length) await buildMatches();
 }
 
 let entrySeq = 0;
@@ -171,6 +172,7 @@ export async function extractResumeFields() {
     profile.resumeFields = merged;
     await saveProfiles();
     renderResumeFields();
+    if (state.fillScanFields.length) await buildMatches();
     toast("简历字段提取完成，请检查后保存");
   } finally {
     button.disabled = false;
@@ -200,11 +202,21 @@ export async function scanFillPage() {
     await ensureOriginPermission(tab);
     const response = await fillMessagePage(tab, { type: "SMART_FILL_SCAN" });
     if (!response?.ok) throw new Error(response?.error || "扫描失败");
+    if (response.engineVersion !== 3) throw new Error("页面仍在运行旧版填充引擎，请刷新网申页面后重新扫描。");
     const fields = response.fields || [];
     if (!fields.length) throw new Error("未检测到可填写的表单项。");
     setFillScanFields(fields);
+    setFillRepeaters(response.repeaters || []);
     setFillScanPage(response.page || { title: tab.title || "", url: tab.url, host: pageUrl.hostname });
+    setFillScanSession({
+      tabId: tab.id,
+      scanId: response.scanId,
+      documentFingerprint: response.documentFingerprint,
+      formFingerprint: response.formFingerprint,
+      url: response.page?.url || tab.url,
+    });
     $("fillCurrentSite").textContent = `当前站点：${pageUrl.hostname}（识别到 ${fields.length} 个表单项）`;
+    renderPrepareFillAction();
     await buildMatches();
     await renderFillTemplate();
     toast(`已识别 ${fields.length} 个表单项`);
@@ -215,12 +227,124 @@ export async function scanFillPage() {
   }
 }
 
+const REPEATER_TARGETS = {
+  education: resume => Array.isArray(resume.education) ? resume.education.length : 0,
+  internships: resume => Array.isArray(resume.internships) ? resume.internships.length : 0,
+  workHistory: resume => {
+    const count = Array.isArray(resume.workHistory) ? resume.workHistory.length : 0;
+    return count || (resume.currentCompany || resume.currentTitle ? 1 : 0);
+  },
+  projects: resume => Array.isArray(resume.projects) ? resume.projects.length : 0,
+  awardEntries: resume => {
+    const count = Array.isArray(resume.awardEntries) ? resume.awardEntries.length : 0;
+    return count || (resume.awards ? 1 : 0);
+  },
+  languageEntries: resume => {
+    const count = Array.isArray(resume.languageEntries) ? resume.languageEntries.length : 0;
+    return count || (resume.languages ? 1 : 0);
+  },
+  gameExperiences: resume => {
+    const count = Array.isArray(resume.gameExperiences) ? resume.gameExperiences.length : 0;
+    return count || (resume.gameName || resume.gameLevel || resume.gameDuration ? 1 : 0);
+  },
+};
+
+export function buildRepeaterPlans(repeaters, resumeFields) {
+  const resume = resumeFields || {};
+  return (Array.isArray(repeaters) ? repeaters : []).flatMap(repeater => {
+    const target = REPEATER_TARGETS[repeater.arrayKey];
+    if (!target) return [];
+    const targetCount = Math.min(10, Math.max(0, Number(target(resume)) || 0));
+    if (targetCount <= Number(repeater.currentCount || 0)) return [];
+    return [{
+      id: repeater.id,
+      fingerprint: repeater.fingerprint,
+      arrayKey: repeater.arrayKey,
+      title: repeater.title,
+      currentCount: Number(repeater.currentCount || 0),
+      targetCount,
+    }];
+  });
+}
+
+function renderPrepareFillAction() {
+  const button = $("prepareFillSections");
+  if (!button) return;
+  const plans = buildRepeaterPlans(state.fillRepeaters, activeProfile()?.resumeFields || {});
+  const additions = plans.reduce((sum, plan) => sum + plan.targetCount - plan.currentCount, 0);
+  button.disabled = !additions;
+  button.textContent = additions ? `展开简历经历（+${additions}）` : "无需展开经历";
+}
+
+function applyScanResponse(response, tab) {
+  setFillScanFields(response.fields || []);
+  setFillRepeaters(response.repeaters || []);
+  setFillScanPage(response.page || state.fillScanPage);
+  setFillScanSession({
+    tabId: tab.id,
+    scanId: response.scanId,
+    documentFingerprint: response.documentFingerprint,
+    formFingerprint: response.formFingerprint,
+    url: response.page?.url || tab.url,
+  });
+}
+
+export async function prepareFillSections() {
+  const session = state.fillScanSession;
+  if (!session?.scanId || !session?.tabId) throw new Error("请先扫描当前网申页面。");
+  const plans = buildRepeaterPlans(state.fillRepeaters, activeProfile()?.resumeFields || {});
+  if (!plans.length) throw new Error("当前简历没有需要展开的经历条目。");
+  const button = $("prepareFillSections");
+  const progress = $("fillProgress");
+  button.disabled = true;
+  button.textContent = "正在展开并校验…";
+  progress.textContent = `正在展开 ${plans.length} 类经历区块，请勿切换页面…`;
+  try {
+    const tab = await currentTab();
+    if (!tab || tab.id !== session.tabId) throw new Error("当前标签页不是刚才扫描的页面，请切回后重新扫描。");
+    const response = await fillMessagePage(tab, {
+      type: "SMART_FILL_PREPARE",
+      scanId: session.scanId,
+      documentFingerprint: session.documentFingerprint,
+      formFingerprint: session.formFingerprint,
+      plans: plans.map(({ id, fingerprint, targetCount }) => ({ id, fingerprint, targetCount })),
+    });
+    if (response?.fields?.length) {
+      applyScanResponse(response, tab);
+      $("fillCurrentSite").textContent = `当前站点：${state.fillScanPage?.host || new URL(tab.url).hostname}（识别到 ${response.fields.length} 个表单项）`;
+      progress.textContent = "经历区块已展开，正在重新匹配字段…";
+      await buildMatches();
+      await renderFillTemplate();
+    }
+    if (!response?.ok) {
+      const failed = (response?.results || []).find(result => !result.ok);
+      throw new Error(failed?.error || response?.error || "展开经历区块失败");
+    }
+    const added = (response.results || []).reduce((sum, result) => sum + Number(result.added || 0), 0);
+    progress.textContent = `已展开 ${added} 个经历区块并重新扫描。`;
+    toast(`已展开 ${added} 个经历区块并重新扫描`);
+    return response;
+  } catch (error) {
+    progress.textContent = `展开失败：${error.message}`;
+    throw error;
+  } finally {
+    renderPrepareFillAction();
+  }
+}
+
+function currentTemplateStorageKey() {
+  const url = state.fillScanPage?.url || state.fillScanSession?.url || "";
+  return templateKey(url, state.fillScanSession?.formFingerprint || "");
+}
+
 async function buildMatches() {
   const resume = activeProfile()?.resumeFields || {};
-  const host = state.fillScanPage?.host || "";
   let matches = matchRules(state.fillScanFields, resume);
   const templates = await getTemplates();
-  matches = applyTemplate(matches, templates[host] || null);
+  const storageKey = currentTemplateStorageKey();
+  matches = applyTemplate(matches, templates[storageKey] || null, resume, {
+    formFingerprint: state.fillScanSession?.formFingerprint || "",
+  });
   if (state.fillAiEnabled && state.config.apiKey) {
     const needs = matches.filter(m => m.status === "manual" || m.confidence === "low");
     if (needs.length) {
@@ -228,7 +352,7 @@ async function buildMatches() {
         const messages = buildAiMatchPrompt(needs, resume);
         const response = await ai(messages, 1200, true);
         const data = await parseAiJson(response.text);
-        matches = applyAiResults(matches, data);
+        matches = applyAiResults(matches, data, state.fillScanFields, resume);
       } catch (_error) {
         // AI 失败不阻塞：未识别字段保持「需手动」
       }
@@ -238,6 +362,7 @@ async function buildMatches() {
   setFillSelected(new Set(matches.filter(m => m.status === "match" && m.value).map(m => m.fieldId)));
   setFillValues(Object.fromEntries(matches.map(m => [m.fieldId, m.value])));
   renderFillMatches();
+  renderPrepareFillAction();
 }
 
 // —— 匹配列表渲染 ——
@@ -251,6 +376,42 @@ function updateFillButtons() {
   $("fillSelected").textContent = `填充选中项（${count}）`;
 }
 
+function resumeBindingChoices() {
+  const resume = activeProfile()?.resumeFields || {};
+  const choices = Object.entries(RESUME_FIELD_LABELS).map(([key, label]) => ({ value: key, label }));
+  const appendEntries = (arrayKey, keyMap, title) => {
+    const entries = Array.isArray(resume[arrayKey]) ? resume[arrayKey] : [];
+    entries.forEach((_entry, index) => {
+      for (const [fieldKey, entryKey] of Object.entries(keyMap)) {
+        choices.push({
+          value: `${fieldKey}@@${arrayKey}[${index}].${entryKey}`,
+          label: `${title} ${index + 1} · ${RESUME_FIELD_LABELS[fieldKey] || fieldKey}`,
+        });
+      }
+    });
+  };
+  appendEntries("education", {
+    school: "school", schoolLocation: "schoolLocation", college: "college",
+    degree: "degree", major: "major", educationStart: "start",
+    graduationYear: "end", studyMode: "studyMode",
+  }, "教育经历");
+  appendEntries("workHistory", {
+    currentCompany: "company", workIndustry: "industry", workLocation: "location",
+    currentTitle: "title", workStart: "start", workEnd: "end", workDescription: "description",
+  }, "工作经历");
+  appendEntries("internships", {
+    internshipCompany: "company", internshipIndustry: "industry", internshipLocation: "location",
+    internshipTitle: "title", internshipStart: "start",
+    internshipEnd: "end", internshipDescription: "description",
+  }, "实习经历");
+  appendEntries("projects", {
+    projectName: "name", projectCompany: "company", projectRole: "role",
+    projectStart: "start", projectEnd: "end", projectDescription: "description",
+    projectResponsibility: "responsibility",
+  }, "项目经历");
+  return choices;
+}
+
 export function renderFillMatches() {
   const target = $("fillResultList");
   const matches = state.fillMatches;
@@ -260,26 +421,35 @@ export function renderFillMatches() {
     updateFillButtons();
     return;
   }
-  target.innerHTML = matches.map(match => {
+  const fieldKeyOptions = resumeBindingChoices()
+    .map(choice => `<option value="${escapeHtml(choice.value)}">${escapeHtml(choice.label)}</option>`)
+    .join("");
+  const rows = matches.map(match => {
     const selected = state.fillSelected.has(match.fieldId);
     const value = state.fillValues[match.fieldId] ?? match.value ?? "";
-    const editable = match.status === "match";
+    const editable = !match.skipped && (match.status === "match" || !!match.fieldKey);
+    const keyEditable = !match.skipped;
+    const bindingChoice = match.valueRef?.source === "resume" && match.valueRef.path !== match.fieldKey
+      ? `${match.fieldKey}@@${match.valueRef.path}`
+      : match.fieldKey || "";
     const badges = [
       `<span class="fill-badge type">${escapeHtml(match.type)}</span>`,
       match.confidence ? `<span class="fill-badge conf-${match.confidence}">置信${CONF_LABEL[match.confidence]}</span>` : "",
       `<span class="fill-badge src-${match.source}">${SRC_LABEL[match.source] || match.source}</span>`,
       match.status === "manual" ? `<span class="fill-badge status-manual">需手动</span>` : "",
     ].filter(Boolean).join("");
-    const keyHint = match.fieldKey ? ` · ${escapeHtml(RESUME_FIELD_LABELS[match.fieldKey] || match.fieldKey)}` : "";
+    const evidence = (match.evidence || []).slice(0, 2).map(item => `${item.source}:${item.text}`).join(" · ");
     return `<div class="fill-row${match.status === "manual" ? " manual" : ""}">
       <input type="checkbox" data-fill-id="${match.fieldId}" ${selected ? "checked" : ""} ${editable ? "" : "disabled"}>
       <div class="fill-row-main">
         <div class="fill-row-label">${escapeHtml(match.label || "（未识别标签）")}${match.required ? `<span class="req">*</span>` : ""}${badges}</div>
-        <input type="text" data-fill-value-id="${match.fieldId}" value="${escapeHtml(value)}" ${editable ? "" : "disabled"} placeholder="${editable ? "可手动修改" : "需手动填写"}">
-        <div class="fill-meta">${escapeHtml(match.reason || "")}${keyHint}</div>
+        <input type="text" list="fillFieldKeyOptions" data-fill-key-id="${match.fieldId}" value="${escapeHtml(bindingChoice)}" ${keyEditable ? "" : "disabled"} placeholder="搜索并选择简历字段">
+        <input type="text" data-fill-value-id="${match.fieldId}" value="${escapeHtml(value)}" ${editable ? "" : "disabled"} placeholder="${editable ? (match.status === "match" ? "可手动修改" : "可手动填写，完成后确认") : "选择正确的简历字段后启用"}">
+        <div class="fill-meta">${escapeHtml(match.reason || "")}${evidence ? ` · ${escapeHtml(evidence)}` : ""}</div>
       </div>
     </div>`;
   }).join("");
+  target.innerHTML = `<datalist id="fillFieldKeyOptions">${fieldKeyOptions}</datalist>${rows}`;
   updateFillButtons();
 }
 
@@ -288,23 +458,49 @@ let fillRunning = false;
 
 export async function runFill(all = false) {
   if (fillRunning) throw new Error("填充进行中，请等待完成或点击停止。");
-  fillRunning = true;
-  const tab = await currentTab();
   if (!state.fillMatches.length) throw new Error("请先扫描页面。");
-  const fills = state.fillMatches
-    .filter(m => m.status === "match" && (all || state.fillSelected.has(m.fieldId)))
-    .map(m => ({ id: m.fieldId, value: state.fillValues[m.fieldId] ?? m.value, type: m.type }));
+  const session = state.fillScanSession;
+  if (!session?.scanId || !session?.tabId) throw new Error("扫描会话已失效，请重新扫描页面。");
+  const tab = await currentTab();
+  if (!tab || tab.id !== session.tabId) throw new Error("当前标签页不是刚才扫描的页面，请切回后重新扫描。");
+  const resume = activeProfile()?.resumeFields || {};
+  const selectedMatches = state.fillMatches.filter(match => match.status === "match" && (all || state.fillSelected.has(match.fieldId)));
+  const fills = selectedMatches.map(match => {
+    const field = state.fillScanFields.find(item => item.id === match.fieldId) || match;
+    const value = state.fillValues[match.fieldId] ?? match.value;
+    const validated = validateBinding(field, match.fieldKey, resume, {
+      source: "manual",
+      confidence: "high",
+      userConfirmed: true,
+      valueOverride: value,
+      reason: "填充前本地校验通过",
+    });
+    if (validated.status !== "match") throw new Error(`${match.label || "字段"}：${validated.reason}`);
+    return { id: match.fieldId, value: validated.value, type: match.type, fingerprint: match.fingerprint, fieldKey: match.fieldKey };
+  });
   if (!fills.length) throw new Error(all ? "没有可填充的表单项。" : "请先勾选要填充的表单项。");
+  fillRunning = true;
   $("scanFillPage").disabled = true;
+  $("prepareFillSections").disabled = true;
   $("fillSelected").disabled = true;
   $("fillAll").disabled = true;
   const start = Date.now();
   $("fillProgress").textContent = `正在填充 0/${fills.length}…`;
   $("stopFill").hidden = false;
   try {
-    const response = await fillMessagePage(tab, { type: "SMART_FILL_APPLY", fills });
+    const response = await fillMessagePage(tab, {
+      type: "SMART_FILL_APPLY",
+      scanId: session.scanId,
+      documentFingerprint: session.documentFingerprint,
+      formFingerprint: session.formFingerprint,
+      fills,
+    });
     if (!response?.ok) throw new Error(response?.error || "填充失败");
     const results = response.results || [];
+    const fillById = new Map(fills.map(fill => [fill.id, fill]));
+    if (results.some(result => result.ok && result.resolvedFingerprint !== fillById.get(result.id)?.fingerprint)) {
+      throw new Error("字段目标校验不一致，已停止记录本次填充结果。");
+    }
     const summary = summarizeResults(results);
     const failedIds = results.filter(r => !r.ok).map(r => r.id);
     setFillFailedIds(failedIds);
@@ -318,25 +514,30 @@ export async function runFill(all = false) {
     fillRunning = false;
     $("stopFill").hidden = true;
     $("scanFillPage").disabled = false;
+    renderPrepareFillAction();
     updateFillButtons();
   }
 }
 
 export async function stopFill() {
-  const tab = await currentTab();
-  if (tab?.url && /^https?:/i.test(tab.url)) {
+  const session = state.fillScanSession;
+  const tab = session?.tabId ? { id: session.tabId, url: session.url } : await currentTab();
+  if (tab?.id && tab?.url && /^https?:/i.test(tab.url)) {
     fillMessagePage(tab, { type: "SMART_FILL_CANCEL" }).catch(() => {});
   }
   $("fillProgress").textContent = "已请求停止填充…";
 }
 
 export async function clearFill() {
-  const tab = await currentTab();
-  if (tab?.url && /^https?:/i.test(tab.url) && state.fillFailedIds.length) {
+  const session = state.fillScanSession;
+  const tab = session?.tabId ? { id: session.tabId, url: session.url } : await currentTab();
+  if (tab?.id && tab?.url && /^https?:/i.test(tab.url) && state.fillFailedIds.length) {
     fillMessagePage(tab, { type: "SMART_FILL_HIGHLIGHT", ids: state.fillFailedIds, on: false }).catch(() => {});
   }
   setFillScanFields([]);
   setFillScanPage(null);
+  setFillScanSession(null);
+  setFillRepeaters([]);
   setFillMatches([]);
   setFillSelected(new Set());
   setFillValues({});
@@ -352,13 +553,20 @@ async function afterFill(tab, results, durationMs) {
   const host = state.fillScanPage?.host || "";
   if (state.fillTemplateEnabled && host) {
     const templates = await getTemplates();
+    const storageKey = currentTemplateStorageKey();
     const okIds = new Set(results.filter(r => r.ok).map(r => r.id));
-    // 仅填充成功（或成功且被用户修正）的字段入模板；失败字段标记 manual 不入模板，避免下次复用错误值。
+    // 仅成功字段的语义映射入模板；Template V2 不保存具体填写值。
     const templateMatches = state.fillMatches.map(m => {
       if (!okIds.has(m.fieldId)) return { ...m, status: "manual" };
       return { ...m, value: state.fillValues[m.fieldId] ?? m.value, edited: state.fillValues[m.fieldId] !== m.value };
     });
-    templates[host] = saveTemplateFromResults(host, state.fillScanPage?.url || tab.url, templateMatches, templates[host]);
+    templates[storageKey] = saveTemplateFromResults(
+      host,
+      state.fillScanPage?.url || tab.url,
+      templateMatches,
+      templates[storageKey],
+      { formFingerprint: state.fillScanSession?.formFingerprint || "" }
+    );
     await chrome.storage.local.set({ smartFillTemplates: capTemplates(templates) });
     renderFillTemplate();
   }
@@ -386,20 +594,24 @@ async function afterFill(tab, results, durationMs) {
 export async function renderFillTemplate() {
   const host = state.fillScanPage?.host || "";
   const templates = await getTemplates();
-  const template = templates[host];
+  const storageKey = currentTemplateStorageKey();
+  const template = templates[storageKey];
+  const legacy = host ? templates[host] : null;
   const info = $("fillTemplateInfo");
   const button = $("deleteFillTemplate");
   if (!info || !button) return;
   if (!template) {
-    info.textContent = "未保存模板";
-    button.disabled = true;
+    const hasLegacy = legacy && legacy.schemaVersion !== 2;
+    info.textContent = hasLegacy ? "检测到旧版模板，已停止自动套用；可删除或在成功填充后生成安全模板" : "未保存模板";
+    button.disabled = !hasLegacy;
     $("fillTemplateList").innerHTML = "";
     return;
   }
-  info.textContent = `${host} · ${template.fields.length} 个字段 · ${String(template.updatedAt || "").slice(0, 10)}`;
+  const mappings = template.mappings || [];
+  info.textContent = `${host} · ${mappings.length} 个语义映射 · ${String(template.updatedAt || "").slice(0, 10)}`;
   button.disabled = false;
-  $("fillTemplateList").innerHTML = template.fields.length
-    ? template.fields.map(f => `<div class="fill-template-item">${escapeHtml(f.siteLabel || f.fieldKey)} → ${escapeHtml(f.value)}${f.edited ? "（已修正）" : ""}</div>`).join("")
+  $("fillTemplateList").innerHTML = mappings.length
+    ? mappings.map(mapping => `<div class="fill-template-item">${escapeHtml(mapping.siteLabel || mapping.fieldKey)} → ${escapeHtml(RESUME_FIELD_LABELS[mapping.fieldKey] || mapping.fieldKey)}${mapping.userConfirmed ? "（已确认）" : ""}</div>`).join("")
     : `<p class="hint">模板为空</p>`;
 }
 
@@ -408,6 +620,7 @@ export async function deleteFillTemplate() {
   if (!host) return;
   if (!confirm(`删除 ${host} 的站点模板？`)) return;
   const templates = await getTemplates();
+  delete templates[currentTemplateStorageKey()];
   delete templates[host];
   await chrome.storage.local.set({ smartFillTemplates: templates });
   toast("已删除站点模板");
@@ -424,8 +637,59 @@ export async function renderFillLogs() {
 }
 
 // —— 初始化与事件 ——
+export function rebindFillField(fieldId, fieldKey) {
+  const field = state.fillScanFields.find(item => item.id === fieldId);
+  const match = state.fillMatches.find(item => item.fieldId === fieldId);
+  if (!field || !match) return;
+  const choice = String(fieldKey || "").trim();
+  const [key, valuePath] = choice.split("@@", 2);
+  const validated = key
+    ? validateBinding(field, key, activeProfile()?.resumeFields || {}, {
+      source: "manual",
+      confidence: "high",
+      userConfirmed: true,
+      valueRef: { source: "resume", path: valuePath || key },
+      reason: "用户确认字段语义",
+    })
+    : { ...match, fieldKey: "", value: "", confidence: null, source: "manual", status: "manual", reason: "未选择简历字段", userConfirmed: true };
+  const nextMatches = state.fillMatches.map(item => item.fieldId === fieldId ? { ...item, ...validated, source: "manual", userConfirmed: true } : item);
+  setFillMatches(nextMatches);
+  state.fillValues[fieldId] = validated.value || "";
+  const selected = new Set(state.fillSelected);
+  if (validated.status === "match" && validated.value) selected.add(fieldId);
+  else selected.delete(fieldId);
+  setFillSelected(selected);
+  renderFillMatches();
+}
+
+export function confirmManualFillValue(fieldId, value) {
+  const field = state.fillScanFields.find(item => item.id === fieldId);
+  const match = state.fillMatches.find(item => item.fieldId === fieldId);
+  if (!field || !match?.fieldKey) return;
+  const validated = validateBinding(field, match.fieldKey, activeProfile()?.resumeFields || {}, {
+    source: "manual",
+    confidence: "high",
+    userConfirmed: true,
+    valueOverride: String(value || "").trim(),
+    reason: "用户确认填写值",
+  });
+  const nextMatches = state.fillMatches.map(item =>
+    item.fieldId === fieldId
+      ? { ...item, ...validated, source: "manual", userConfirmed: true, edited: true }
+      : item
+  );
+  setFillMatches(nextMatches);
+  state.fillValues[fieldId] = validated.value || String(value || "").trim();
+  const selected = new Set(state.fillSelected);
+  if (validated.status === "match" && validated.value) selected.add(fieldId);
+  else selected.delete(fieldId);
+  setFillSelected(selected);
+  renderFillMatches();
+}
+
 function bindFillEvents() {
   $("scanFillPage").onclick = () => scanFillPage().catch(error => toast(error.message));
+  $("prepareFillSections").onclick = () => prepareFillSections().catch(error => toast(error.message));
   $("fillSelected").onclick = () => runFill(false).catch(error => toast(error.message));
   $("fillAll").onclick = () => runFill(true).catch(error => toast(error.message));
   $("stopFill").onclick = () => stopFill().catch(error => toast(error.message));
@@ -438,6 +702,7 @@ function bindFillEvents() {
       await switchProfile(parseInt(event.target.value, 10));
       renderFillProfileSelect();
       renderResumeFields();
+      if (state.fillScanFields.length) await buildMatches();
       toast(`已切换到"${activeProfile()?.name || "未命名"}"`);
     } catch (error) { toast(error.message); }
   };
@@ -451,6 +716,16 @@ function bindFillEvents() {
     chrome.storage.local.set({ smartFillSettings: { aiEnabled: state.fillAiEnabled, templateEnabled: state.fillTemplateEnabled } }).catch(() => {});
   };
   document.addEventListener("change", (event) => {
+    const keyInput = event.target.closest("input[data-fill-key-id]");
+    if (keyInput) {
+      rebindFillField(keyInput.dataset.fillKeyId, keyInput.value);
+      return;
+    }
+    const valueInput = event.target.closest("input[data-fill-value-id]");
+    if (valueInput) {
+      confirmManualFillValue(valueInput.dataset.fillValueId, valueInput.value);
+      return;
+    }
     const checkbox = event.target.closest("input[data-fill-id]");
     if (!checkbox) return;
     const next = new Set(state.fillSelected);
@@ -461,7 +736,12 @@ function bindFillEvents() {
   });
   document.addEventListener("input", (event) => {
     const valueInput = event.target.closest("input[data-fill-value-id]");
-    if (valueInput) state.fillValues[valueInput.dataset.fillValueId] = valueInput.value;
+    if (valueInput) {
+      const fieldId = valueInput.dataset.fillValueId;
+      state.fillValues[fieldId] = valueInput.value;
+      const match = state.fillMatches.find(item => item.fieldId === fieldId);
+      if (match) match.edited = valueInput.value !== match.value;
+    }
   });
   document.addEventListener("click", (event) => {
     const addButton = event.target.closest("[data-add-entry]");
@@ -504,4 +784,5 @@ export async function initFillUi() {
 export function refreshFillUi() {
   renderFillProfileSelect();
   renderResumeFields();
+  if (state.fillScanFields.length) buildMatches().catch(() => {});
 }

@@ -15,6 +15,8 @@ export const state = {
   // 智能填充
   fillScanFields: [],
   fillScanPage: null,
+  fillScanSession: null,
+  fillRepeaters: [],
   fillMatches: [],
   fillSelected: new Set(),
   fillValues: {},
@@ -36,6 +38,8 @@ export function setActiveProfileIndex(index) { state.activeProfileIndex = index;
 
 export function setFillScanFields(fields) { state.fillScanFields = fields; }
 export function setFillScanPage(page) { state.fillScanPage = page; }
+export function setFillScanSession(session) { state.fillScanSession = session; }
+export function setFillRepeaters(repeaters) { state.fillRepeaters = repeaters; }
 export function setFillMatches(matches) { state.fillMatches = matches; }
 export function setFillSelected(keys) { state.fillSelected = keys; }
 export function setFillValues(values) { state.fillValues = values; }

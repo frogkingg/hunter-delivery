@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>西山居校园招聘申请</title></head>
+<body>
+<div id="applicationInformation">
+  <div class="index-itemInputBox-a1">
+    <div class="index-label-a1"><span class="index-labelText-a1">推荐码</span></div>
+    <input class="index-itemInput-a1" type="text" placeholder="请填写">
+  </div>
+</div>
+<div id="personalInformation">
+  <div class="index-itemInputBox-a1">
+    <div class="index-label-a1"><span class="index-labelText-a1">姓名</span><span>*</span></div>
+    <input class="index-itemInput-a1" type="text" placeholder="请填写">
+  </div>
+  <div class="index-itemInputBox-a1">
+    <div class="index-label-a1"><span class="index-labelText-a1">手机号码</span><span>*</span></div>
+    <div class="index-itemBox-a1">
+      <div class="ant-select index-phoneSelect-a1">
+        <input class="ant-select-selection-search-input" type="text" placeholder="请填写" autocomplete="off">
+      </div>
+      <input class="index-phoneInput-a1" type="number" placeholder="请填写">
+    </div>
+  </div>
+  <div class="index-itemInputBox-a1">
+    <div class="index-label-a1"><span>邮箱</span><span>*</span></div>
+    <input class="index-itemInput-a1" type="text" placeholder="请填写">
+  </div>
+  <div class="index-itemInputBox-a1">
+    <div class="index-label-a1"><span>性别</span><span>*</span></div>
+    <div class="index-itemBox-a1 index-genderBox-a1">
+      <label class="ant-radio-wrapper"><span class="ant-radio"><input type="radio" value="男"></span><span>男生</span></label>
+      <label class="ant-radio-wrapper"><span class="ant-radio"><input type="radio" value="女"></span><span>女生</span></label>
+    </div>
+  </div>
+  <div class="index-itemInputBox-a1">
+    <div class="index-label-a1"><span>QQ</span><span>*</span></div>
+    <input class="index-itemInput-a1" type="text" placeholder="请填写">
+  </div>
+  <div class="index-itemInputBox-a1">
+    <div class="index-label-a1"><span>所在地</span><span>*</span></div>
+    <input class="index-itemInput-a1" type="text" placeholder="请填写">
+  </div>
+</div>
+<script>
+  document.querySelector(".ant-select").addEventListener("click", function () {
+    if (document.querySelector("[role=listbox]")) return;
+    const list = document.createElement("div");
+    list.className = "ant-select-dropdown";
+    list.innerHTML = '<div class="ant-select-dropdown-menu-item">+86 中国大陆</div><div class="ant-select-dropdown-menu-item">+852 中国香港</div>';
+    document.body.appendChild(list);
+    list.querySelector(".ant-select-dropdown-menu-item").addEventListener("click", () => {
+      document.querySelector(".ant-select").dataset.selected = "+86";
+      document.querySelector(".ant-select-selection-search-input").value = "+86";
+    });
+  });
+</script>
+</body>
+</html>

@@ -64,6 +64,12 @@ fill-content.js（自包含 classic 脚本：扫描/高亮/填充执行）
   options: string[],     // select/radio/custom-select 的选项文本
   value: string,         // 当前值
   skipped: boolean,      // password/file 等不可自动填充控件
+  fingerprint: string,   // 字段语义指纹，填充前后必须一致
+  evidence: Array,       // label/name/id/autocomplete/placeholder/上下文等全部证据
+  context: Object,       // form/section/group
+  adapter: string,       // native/antd/element/date-range 等执行适配器
+  slot: string,          // 复合控件逻辑 slot（single/start/end）
+  locators: Array,       // 多定位候选；位置型 CSS 仅作低权重召回
 }
 ```
 
@@ -71,8 +77,9 @@ fill-content.js（自包含 classic 脚本：扫描/高亮/填充执行）
 
 | type | direction | payload | response |
 |---|---|---|---|
-| `SMART_FILL_SCAN` | panel→content | `{}` | `{ ok, fields, page: { title, url, host } }` |
-| `SMART_FILL_APPLY` | panel→content | `{ fills: [{ id, value }] }` | `{ ok, results: [{ id, ok, error? }] }` |
+| `SMART_FILL_SCAN` | panel→content | `{}` | `{ ok, engineVersion, scanId, documentFingerprint, formFingerprint, fields, repeaters, page }` |
+| `SMART_FILL_PREPARE` | panel→content | `{ scanId, documentFingerprint, formFingerprint, plans: [{ id, fingerprint, targetCount }] }` | `{ ok, fields, repeaters, results, scanId, documentFingerprint, formFingerprint }` |
+| `SMART_FILL_APPLY` | panel→content | `{ scanId, documentFingerprint, formFingerprint, fills: [{ id, value, type, fingerprint }] }` | `{ ok, results: [{ id, ok, resolvedFingerprint?, error? }] }` |
 | `SMART_FILL_HIGHLIGHT` | panel→content | `{ ids, on }` | `{ ok }` |
 | `SMART_FILL_CANCEL` | panel→content | `{}` | `{ ok }` |
 | `SMART_FILL_PROGRESS` | content→panel（事件） | `{ index, total, id, ok, error? }` | — |
@@ -83,7 +90,7 @@ background.js 增加中继分支：SMART_FILL_* 消息在页面无监听者时�
 
 name/phone/email/gender/birthDate/idCard/hometown/currentCity/address/postcode/school/degree/major/graduationYear/workYears/currentCompany/currentTitle/expectedCity/expectedSalary/expectedPosition/selfEvaluation/skills/languages/hobbies/availableTime/referral/github/linkedin/politicalStatus/maritalStatus/portfolio。
 
-每个字段含 3-8 个中文关键词与 2-5 个英文关键词；匹配规则：归一化标签对每个字段做「关键词子串命中」，按命中关键词总长度 + 类型兼容性打分取最高者；命中但简历值缺失 → 置信度降级为 low 且置为「需手动」。
+每个字段含中英文关键词。匹配综合 label、aria、name/id、autocomplete、placeholder、section/group、控件类型与选项；使用候选得分和 Top1/Top2 分差判定置信度。紧急联系人等负向上下文、类型冲突、值格式冲突、选项不匹配或证据不足一律置为「需手动」。规则、模板、AI 和人工 fieldKey 选择统一经过本地 `validateBinding`。
 
 ### 4.4 匹配结果
 
@@ -97,11 +104,11 @@ name/phone/email/gender/birthDate/idCard/hometown/currentCity/address/postcode/s
 }
 ```
 
-优先级（高→低）：用户手动编辑 > 站点模板 > 规则 > AI。AI 仅处理规则层未命中或低置信字段；未配置 API / 未授权 / 请求失败时自动降级为「需手动」。
+优先级（高→低）：用户确认 > 站点模板语义映射 > 高置信规则 > 有本地/强类型证据佐证的 AI 语义分类。AI 只返回 fieldKey，不接收简历字段值、不返回最终 value；通用 text 控件缺少本地证据时只展示 AI 建议并要求人工确认，最终值始终从当前 profile 的 ValueRef 解析并通过本地中央校验。
 
 ### 4.5 简历结构化字段（profile.resumeFields）
 
-30 个标量字段 + 数组字段（education[]、workHistory[]）。本地正则负责常见字段（手机 `1[3-9]\d{9}`、邮箱、姓名、出生日期、性别、院校/学历/专业等），AI 负责复杂字段（教育/工作经历/自我评价/技能）。侧边栏可编辑，「重新提取」可重跑。首用智能填充时若为空自动提取一次。
+78 个规范字段 + 数组字段（education[]、workHistory[]、internships[]、projects[]）。本地正则负责常见字段（手机、邮箱、姓名、出生日期、院校/学历/专业等），AI 负责复杂字段与多条经历；侧边栏可编辑并重新提取。
 
 ## 5. 填充执行
 
@@ -109,22 +116,24 @@ name/phone/email/gender/birthDate/idCard/hometown/currentCity/address/postcode/s
 - `select`：设值 + change；选项缺失 → 失败「选项未找到」。
 - `radio`：按值/文本匹配点击；`checkbox`：仅简历值明确布尔/命中时操作，否则跳过。
 - 自定义下拉：点击容器 → 模糊匹配下拉选项文本点击 → 1.5 s 超时回退隐藏 input + 事件。
-- 字段间 100 ms 间隔；可取消（SMART_FILL_CANCEL）；逐字段回读校验（宽松归一化比较），失败字段高亮。
+- Apply 前整批校验 tab/scanId/document/form fingerprint、字段 fingerprint 和重复 target；任何身份冲突时 0 写入并要求重扫。
+- 字段间 100 ms 间隔；可取消（SMART_FILL_CANCEL）；逐字段校验“目标指纹 + 业务值”，失败字段高亮。
 - 交互前仅对目标字段 `scrollIntoView`，不滚动劫持页面。
 
 ## 6. 站点模板与日志
 
-- 模板 key = hostname；每站 1 份：`{ origin, fields: [{ fieldKey, path, siteLabel, value, edited, updatedAt }], updatedAt }`；全局上限 50 站点（LRU 淘汰最旧）。
-- 模板匹配：扫描字段的归一化标签与模板 siteLabel 相同 → 套用模板值（source=template）。
+- Template V2 key = `hostname::formFingerprint`；模板只保存 `{ fieldFingerprint, fieldKey, valueRef, pathHint, userConfirmed }` 语义映射，不保存姓名、手机号等具体值；全局上限 50 份（LRU 淘汰最旧）。
+- 旧版模板不再自动套用具体值；用户可删除，成功填充后生成 V2 模板。
 - 日志：`{ time, host, url, total, matched, filled, success, manual, corrections, durationMs }`，上限 200 条。
 
 ## 7. 面板 UI（新增「智能填充」tab）
 
 - 简历选择（复用 profiles）+ 简历字段（可编辑折叠区 + 提取按钮）。
 - 扫描区：当前站点判断 → 按站点申请主机权限 → 扫描 → 匹配列表（勾选、标签、类型徽标、可编辑值、置信度、来源、状态）。
+- 动态经历：扫描只登记新增按钮；用户显式点击「展开简历经历」后，按简历数组目标数逐次点击并验证字段数量增长，再生成新 scanId 重扫。
 - 操作：填充选中项 / 全部填充 / 停止 / 清空重扫；AI 开关（默认开）、模板自动保存开关（默认开）。
 - 模板管理：当前站点模板查看/删除；历史：最近填充记录列表。
-- 隐私提示：复杂字段 AI 匹配会把「表单字段标签 + 简历字段」发送到你配置的 AI 服务。
+- 隐私提示：复杂字段 AI 匹配只发送表单字段标签、控件属性、选项和上下文，不发送简历字段值；重新提取简历字段仍会发送简历全文。
 
 ## 8. 权限与版本
 

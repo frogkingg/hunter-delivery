@@ -106,12 +106,17 @@ export const MESSAGE_TYPES = {
   SMART_FILL_SCAN: {
     direction: "panel→content",
     payload: {},
-    response: { ok: "boolean", fields: "FieldDescriptor[]", page: "{ title, url, host }?" },
+    response: { ok: "boolean", engineVersion: "number", fields: "FieldDescriptor[]", repeaters: "RepeaterDescriptor[]", page: "{ title, url, host }?", scanId: "string", documentFingerprint: "string", formFingerprint: "string" },
+  },
+  SMART_FILL_PREPARE: {
+    direction: "panel→content",
+    payload: { scanId: "string", documentFingerprint: "string", formFingerprint: "string", plans: "[{ id, fingerprint, targetCount }]" },
+    response: { ok: "boolean", fields: "FieldDescriptor[]", repeaters: "RepeaterDescriptor[]", results: "[{ id, arrayKey, ok, added, currentCount?, error? }]", scanId: "string", documentFingerprint: "string", formFingerprint: "string", error: "string?" },
   },
   SMART_FILL_APPLY: {
     direction: "panel→content",
-    payload: { fills: "[{ id, value }]" },
-    response: { ok: "boolean", results: "[{ id, ok, error? }]", error: "string?" },
+    payload: { scanId: "string", documentFingerprint: "string", formFingerprint: "string", fills: "[{ id, value, type, fingerprint }]" },
+    response: { ok: "boolean", results: "[{ id, ok, resolvedFingerprint?, verification?, error?, errorCode? }]", error: "string?", errorCode: "string?" },
   },
   SMART_FILL_HIGHLIGHT: {
     direction: "panel→content",

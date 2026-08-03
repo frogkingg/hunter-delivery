@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { RESUME_FIELDS_SCHEMA, extractResumeFieldsLocal, buildResumeExtractPrompt, mergeResumeFields, EMPTY_RESUME_FIELDS } from "../src/resume-fields.js";
+import { RESUME_FIELDS_SCHEMA, extractResumeFieldsLocal, buildResumeExtractPrompt, mergeResumeFields, EMPTY_RESUME_FIELDS, resolveResumeValueRef } from "../src/resume-fields.js";
 
 const SAMPLE = `张三
 男 | 1998-06 | 上海
@@ -45,6 +45,12 @@ test("extractResumeFieldsLocal: 空输入返回空对象", () => {
   assert.equal(fields.name, "");
 });
 
+test("extractResumeFieldsLocal: 提取 QQ 与推荐码", () => {
+  const fields = extractResumeFieldsLocal("张三\nQQ：12345678\n推荐码：SSG2026");
+  assert.equal(fields.qq, "12345678");
+  assert.equal(fields.referralCode, "SSG2026");
+});
+
 test("buildResumeExtractPrompt: 要求输出 JSON 且包含全部字段 key", () => {
   const messages = buildResumeExtractPrompt();
   const content = messages[0].content;
@@ -72,7 +78,7 @@ test("mergeResumeFields: AI 为空时保留本地值", () => {
 
 test("EMPTY_RESUME_FIELDS: 标量字段为空字符串，经历数组为空数组", () => {
   for (const [key, value] of Object.entries(EMPTY_RESUME_FIELDS)) {
-    if (["education", "internships", "projects"].includes(key)) assert.deepEqual(value, [], `${key} 应为空数组`);
+    if (["education", "workHistory", "internships", "projects"].includes(key)) assert.deepEqual(value, [], `${key} 应为空数组`);
     else assert.equal(value, "", `${key} 应为空串`);
   }
 });
@@ -167,6 +173,21 @@ test("extractResumeFieldsLocal: 多条教育经历全部提取", () => {
   assert.equal(fields.degree, "硕士");
 });
 
+test("extractResumeFieldsLocal: 多条工作经历全部提取并聚合最新公司岗位", () => {
+  const text = `张三
+工作经历
+2022-01 至 2023-06 甲公司 产品经理
+- 负责需求分析
+2023-07 至 2025-06 乙公司 高级产品经理
+- 负责产品规划
+项目经历`;
+  const fields = extractResumeFieldsLocal(text);
+  assert.equal(fields.workHistory.length, 2);
+  assert.equal(fields.workHistory[1].company, "乙公司");
+  assert.equal(fields.currentCompany, "乙公司");
+  assert.equal(fields.currentTitle, "高级产品经理");
+});
+
 test("extractResumeFieldsLocal: 多条项目经历全部提取", () => {
   const text = `张三
 项目经历
@@ -196,4 +217,18 @@ test("mergeResumeFields: AI 经历数组替换本地数组并重新聚合", () =
   assert.equal(merged.internshipCompany, "最新公司", "聚合应取 AI 最新一条");
   assert.equal(merged.internshipDescription, "最新描述");
   assert.equal(merged.name, "张三", "常见标量仍以本地为准");
+});
+
+test("resolveResumeValueRef: 支持标量与经历数组路径并拒绝危险路径", () => {
+  const resume = {
+    name: "张三",
+    education: [
+      { school: "复旦大学" },
+      { school: "清华大学" },
+    ],
+  };
+  assert.equal(resolveResumeValueRef(resume, { source: "resume", path: "name" }), "张三");
+  assert.equal(resolveResumeValueRef(resume, { source: "resume", path: "education[1].school" }), "清华大学");
+  assert.equal(resolveResumeValueRef(resume, { source: "resume", path: "__proto__.x" }), "");
+  assert.equal(resolveResumeValueRef(resume, { source: "manual", path: "name" }), "");
 });

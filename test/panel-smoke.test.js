@@ -45,7 +45,7 @@ test("面板初始化：所有关键按钮绑定事件且无未捕获异常", as
       if (scan && typeof scan.onclick === "function") break;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "scanFillPage", "fillSelected", "fillAll", "clearFill", "extractResumeFields", "saveResumeFields", "deleteFillTemplate", "darkToggle"];
+    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "scanFillPage", "prepareFillSections", "fillSelected", "fillAll", "clearFill", "extractResumeFields", "saveResumeFields", "deleteFillTemplate", "darkToggle"];
     for (const id of ids) {
       const el = window.document.getElementById(id);
       assert.ok(el, `元素 #${id} 应存在`);
@@ -72,8 +72,8 @@ test("简历字段条目编辑器：多条目卡片渲染、添加/删除、保�
     runtime: { sendMessage: (_m, cb) => cb && cb({ ok: true }), onMessage: { addListener() {} }, connect: () => ({ onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }), getURL: p => p },
     tabs: { query: async () => [] },
   };
-  const { state, setProfiles, setActiveProfileIndex } = await import("../src/state.js");
-  const { renderResumeFields, addResumeEntry, removeResumeEntry, saveResumeFields, collectResumeFields } = await import("../src/fill-ui.js");
+    const { state, setProfiles, setActiveProfileIndex, setFillScanFields, setFillMatches, setFillSelected, setFillValues } = await import("../src/state.js");
+    const { renderResumeFields, addResumeEntry, removeResumeEntry, saveResumeFields, collectResumeFields, rebindFillField, confirmManualFillValue, buildRepeaterPlans } = await import("../src/fill-ui.js");
   try {
     setProfiles([{ name: "测试简历", resumeFields: {
       name: "张三",
@@ -84,8 +84,8 @@ test("简历字段条目编辑器：多条目卡片渲染、添加/删除、保�
     setActiveProfileIndex(0);
     renderResumeFields();
 
-    // 卡片渲染：3 个条目分组，实习卡片摘要正确
-    assert.equal(window.document.querySelectorAll(".resume-entries-group").length, 3);
+    // 卡片渲染：4 个条目分组，实习卡片摘要正确
+    assert.equal(window.document.querySelectorAll(".resume-entries-group").length, 4);
     const internCard = window.document.querySelector('[data-entry-group="internships"] .resume-entry-card');
     assert.ok(internCard, "实习经历卡片应渲染");
     assert.ok(internCard.textContent.includes("字节跳动"));
@@ -118,6 +118,34 @@ test("简历字段条目编辑器：多条目卡片渲染、添加/删除、保�
     // 删除条目 → 聚合回退到剩余一条
     removeResumeEntry("internships", saved.internships[1].id);
     assert.equal(collectResumeFields().internships.length, 1);
+
+    // manual 字段可通过搜索 fieldKey 修正语义，并从当前 profile 解析值。
+    setFillScanFields([{ id: "manual-name", type: "text", label: "申请人", skipped: false, options: [], fingerprint: "fp-name" }]);
+    setFillMatches([{ fieldId: "manual-name", fieldKey: "", value: "", type: "text", label: "申请人", status: "manual", source: "rule" }]);
+    setFillSelected(new Set());
+    setFillValues({});
+    rebindFillField("manual-name", "name");
+    assert.equal(state.fillMatches[0].fieldKey, "name");
+    assert.equal(state.fillMatches[0].value, "张三");
+    assert.equal(state.fillMatches[0].status, "match");
+    assert.equal(state.fillMatches[0].source, "manual");
+    assert.equal(state.fillSelected.has("manual-name"), true);
+
+    setFillScanFields([{ id: "manual-gender", type: "custom-select", label: "性别", skipped: false, options: ["男", "女"], fingerprint: "fp-gender" }]);
+    setFillMatches([{ fieldId: "manual-gender", fieldKey: "gender", value: "", type: "custom-select", label: "性别", status: "manual", source: "rule" }]);
+    setFillSelected(new Set());
+    setFillValues({});
+    confirmManualFillValue("manual-gender", "男");
+    assert.equal(state.fillMatches[0].status, "match");
+    assert.equal(state.fillMatches[0].value, "男");
+    assert.equal(state.fillSelected.has("manual-gender"), true);
+
+    const plans = buildRepeaterPlans([
+      { id: "edu", arrayKey: "education", title: "教育经历", currentCount: 0, fingerprint: "fp-edu" },
+      { id: "intern", arrayKey: "internships", title: "实习经历", currentCount: 1, fingerprint: "fp-intern" },
+    ], saved);
+    assert.equal(plans.find(plan => plan.arrayKey === "education").targetCount, 1);
+    assert.equal(plans.some(plan => plan.arrayKey === "internships"), false, "已有足够实习区块时不应继续新增");
   } finally {
     delete globalThis.window;
     delete globalThis.document;
@@ -163,11 +191,11 @@ test("基础字段紧凑布局：单行标签、空值折叠、多行字段整�
     assert.equal(grid.dataset.hideEmpty, "on", "默认隐藏空字段");
     const emptyFields = window.document.querySelectorAll(".resume-field.is-empty");
     const filledFields = window.document.querySelectorAll(".resume-field:not(.is-empty)");
-    assert.equal(emptyFields.length, 17, `空字段应为 17 个，实际 ${emptyFields.length}`);
+    assert.equal(emptyFields.length, 40, `空字段应为 40 个，实际 ${emptyFields.length}`);
     assert.equal(filledFields.length, 15, `有值字段应为 15 个，实际 ${filledFields.length}`);
     // 折叠提示按钮
     const toggle = window.document.querySelector("[data-empty-toggle]");
-    assert.ok(toggle && toggle.textContent.includes("展开空字段（17）"), "折叠按钮文案应含空字段数");
+    assert.ok(toggle && toggle.textContent.includes("展开空字段（40）"), "折叠按钮文案应含空字段数");
     // 多行字段整行且为 textarea
     const skills = window.document.querySelector('[data-resume-key="skills"]');
     assert.ok(skills && skills.tagName === "TEXTAREA", "专业技能应为 textarea");
@@ -176,7 +204,7 @@ test("基础字段紧凑布局：单行标签、空值折叠、多行字段整�
     const nameField = window.document.querySelector('[data-resume-key="name"]').closest(".resume-field");
     assert.ok(nameField.querySelector("span").textContent.includes("姓名"), "标签在输入左侧");
     // 状态计数
-    assert.ok(window.document.getElementById("resumeFieldsStatus").textContent.includes("已填 15 / 共 35"));
+    assert.ok(window.document.getElementById("resumeFieldsStatus").textContent.includes("已填 15 / 共 59"));
 
     // 切换展开空字段
     toggleResumeEmptyFields();

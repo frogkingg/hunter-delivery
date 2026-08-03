@@ -6,6 +6,7 @@ import { CANONICAL_FIELDS } from "./form-fields.js";
 export const EMPTY_RESUME_FIELDS = {
   ...Object.fromEntries(CANONICAL_FIELDS.map(f => [f.key, ""])),
   education: [],
+  workHistory: [],
   internships: [],
   projects: [],
 };
@@ -19,25 +20,51 @@ export const ENTRY_GROUPS = [
     key: "education", title: "教育经历", resumeKey: "education",
     fields: [
       { key: "school", label: "学校" },
+      { key: "schoolLocation", label: "学校所在地" },
+      { key: "college", label: "学院" },
       { key: "degree", label: "学历" },
       { key: "major", label: "专业" },
+      { key: "studyMode", label: "学习形式" },
       { key: "start", label: "开始时间" },
       { key: "end", label: "结束时间" },
     ],
     summary: entry => [entry.start, entry.end, entry.school, entry.degree].filter(Boolean).join(" · "),
-    empty: (seq = 0) => ({ id: `edu-${Date.now()}-${seq}`, start: "", end: "", school: "", degree: "", major: "" }),
+    empty: (seq = 0) => ({
+      id: `edu-${Date.now()}-${seq}`,
+      start: "", end: "", school: "", schoolLocation: "", college: "",
+      degree: "", major: "", studyMode: "",
+    }),
+  },
+  {
+    key: "workHistory", title: "工作经历", resumeKey: "workHistory",
+    fields: [
+      { key: "company", label: "公司" },
+      { key: "industry", label: "所在行业" },
+      { key: "location", label: "工作地点" },
+      { key: "title", label: "岗位" },
+      { key: "start", label: "开始时间" },
+      { key: "end", label: "结束时间" },
+      { key: "description", label: "工作内容", textarea: true },
+    ],
+    summary: entry => [entry.start, entry.end, entry.company, entry.title].filter(Boolean).join(" · "),
+    empty: (seq = 0) => ({
+      id: `work-${Date.now()}-${seq}`,
+      start: "", end: "", company: "", industry: "", location: "", title: "", description: "",
+    }),
   },
   {
     key: "internships", title: "实习经历", resumeKey: "internships",
     fields: [
       { key: "company", label: "公司" },
+      { key: "industry", label: "所在行业" },
+      { key: "location", label: "工作地点" },
       { key: "title", label: "岗位" },
       { key: "start", label: "开始时间" },
       { key: "end", label: "结束时间" },
       { key: "description", label: "实习内容", textarea: true },
     ],
     summary: entry => [entry.start, entry.end, entry.company, entry.title].filter(Boolean).join(" · "),
-    empty: (seq = 0) => ({ id: `int-${Date.now()}-${seq}`, start: "", end: "", company: "", title: "", description: "" }),
+    empty: (seq = 0) => ({ id: `int-${Date.now()}-${seq}`, start: "", end: "", company: "", industry: "", location: "", title: "", description: "" }),
   },
   {
     key: "projects", title: "项目经历", resumeKey: "projects",
@@ -48,16 +75,17 @@ export const ENTRY_GROUPS = [
       { key: "start", label: "开始时间" },
       { key: "end", label: "结束时间" },
       { key: "description", label: "项目内容", textarea: true },
+      { key: "responsibility", label: "项目职责", textarea: true },
     ],
     summary: entry => [entry.start, entry.end, entry.name, entry.role].filter(Boolean).join(" · "),
-    empty: (seq = 0) => ({ id: `prj-${Date.now()}-${seq}`, start: "", end: "", name: "", company: "", role: "", description: "" }),
+    empty: (seq = 0) => ({ id: `prj-${Date.now()}-${seq}`, start: "", end: "", name: "", company: "", role: "", description: "", responsibility: "" }),
   },
 ];
 
 // 复杂字段（AI 优先）：文本类描述字段与补充内容。
 const COMPLEX_KEYS = new Set([
   "selfEvaluation", "skills", "languages", "hobbies", "availableTime", "portfolio",
-  "internshipDescription", "projectDescription", "profileSummary", "additionalInfo",
+  "workDescription", "internshipDescription", "projectDescription", "projectResponsibility", "profileSummary", "additionalInfo",
   "awards", "certificates", "campusExperience",
 ]);
 
@@ -110,14 +138,43 @@ export function parseEducationEntries(eduText) {
     const parts = block.rest.split(/\s+/).filter(Boolean);
     return normalizeEntry({
       id: `edu-${index + 1}`, start: block.start, end: block.end,
-      school: parts[0] || "", major: parts[1] || "", degree: parts[2] || "",
+      school: parts[0] || "", schoolLocation: "", college: "",
+      major: parts[1] || "", degree: parts[2] || "", studyMode: "",
     });
   });
   if (!entries.length) {
     const school = firstMatch(eduText, /(?:毕业院校|学校|院校|就读学校)\s*[:：]?\s*([\u4e00-\u9fa5A-Za-z（）()·]{2,30})/);
     const major = firstMatch(eduText, /(?:专业|所学专业|主修专业)\s*[:：]?\s*([\u4e00-\u9fa5A-Za-z·、]{2,30})/);
     const degree = firstMatch(eduText, /(博士|硕士|本科|大专|专科|高中)/);
-    if (school || major || degree) entries.push(normalizeEntry({ id: "edu-1", start: "", end: "", school, major, degree }));
+    if (school || major || degree) {
+      entries.push(normalizeEntry({
+        id: "edu-1", start: "", end: "", school, schoolLocation: "", college: "",
+        major, degree, studyMode: "",
+      }));
+    }
+  }
+  return entries;
+}
+
+// —— 工作经历条目 ——
+export function parseWorkHistoryEntries(workText) {
+  const entries = parseSectionBlocks(workText).map((block, index) => {
+    const parts = block.rest.split(/\s+/).filter(Boolean);
+    return normalizeEntry({
+      id: `work-${index + 1}`,
+      start: block.start,
+      end: block.end,
+      company: parts[0] || "",
+      title: parts.slice(1).join(" ") || "",
+      industry: "",
+      location: "",
+      description: block.lines.slice(0, 5).join("；").slice(0, 500),
+    });
+  });
+  if (!entries.length) {
+    const company = firstMatch(workText, /(?:当前公司|现公司|目前公司|就职公司|工作单位)\s*[:：]?\s*([\u4e00-\u9fa5A-Za-z（）()·]{2,30})/);
+    const title = firstMatch(workText, /(?:当前职位|现职位|目前职位|现任岗位)\s*[:：]?\s*([^\n]{2,30})/);
+    if (company || title) entries.push(normalizeEntry({ id: "work-1", start: "", end: "", company, title, description: "" }));
   }
   return entries;
 }
@@ -128,7 +185,7 @@ export function parseInternshipEntries(internText) {
     const parts = block.rest.split(/\s+/).filter(Boolean);
     return normalizeEntry({
       id: `int-${index + 1}`, start: block.start, end: block.end,
-      company: parts[0] || "", title: parts.slice(1).join(" ") || "",
+      company: parts[0] || "", industry: "", location: "", title: parts.slice(1).join(" ") || "",
       description: block.lines.slice(0, 5).join("；").slice(0, 500),
     });
   });
@@ -137,7 +194,7 @@ export function parseInternshipEntries(internText) {
     const title = firstMatch(internText, /(?:实习岗位|实习职位)\s*[:：]?\s*([^\n]{2,30})/);
     if (company || title) {
       const descLines = internText.split(/\r?\n/).map(cleanLine).filter(line => line && !/^\d{4}[-/年.]\d{1,2}/.test(line) && !/^(实习公司|实习岗位)\s*[:：]/.test(line));
-      entries.push(normalizeEntry({ id: "int-1", start: "", end: "", company, title, description: descLines.slice(0, 3).join("；").slice(0, 300) }));
+      entries.push(normalizeEntry({ id: "int-1", start: "", end: "", company, industry: "", location: "", title, description: descLines.slice(0, 3).join("；").slice(0, 300) }));
     }
   }
   return entries;
@@ -153,7 +210,7 @@ export function parseProjectEntries(projectText) {
     // 公司：优先标签；否则若首词未用作项目名（如来自「项目名称：」标签），首词视为项目公司。
     const company = firstMatch(blockText, /(?:项目公司|所属公司|项目单位)\s*[:：]?\s*([^\n]{2,40})/) || (name !== parts[0] ? parts[0] : "") || "";
     const description = block.lines.filter(line => !/^项目(名称|角色|时间|公司)\s*[:：]/.test(line)).slice(0, 5).join("；").slice(0, 500);
-    return normalizeEntry({ id: `prj-${index + 1}`, start: block.start, end: block.end, name, company, role, description });
+    return normalizeEntry({ id: `prj-${index + 1}`, start: block.start, end: block.end, name, company, role, description, responsibility: "" });
   });
   if (!entries.length) {
     const name = firstMatch(projectText, /(?:项目名称|项目名)\s*[:：]?\s*([^\n]{2,40})/);
@@ -161,7 +218,7 @@ export function parseProjectEntries(projectText) {
     const company = firstMatch(projectText, /(?:项目公司|所属公司|项目单位)\s*[:：]?\s*([^\n]{2,40})/);
     if (name || role || company) {
       const descLines = projectText.split(/\r?\n/).map(cleanLine).filter(line => line && !/^\d{4}[-/年.]\d{1,2}/.test(line) && !/^项目(名称|角色|时间|公司)\s*[:：]/.test(line));
-      entries.push(normalizeEntry({ id: "prj-1", start: "", end: "", name, company, role, description: descLines.slice(0, 3).join("；").slice(0, 300) }));
+      entries.push(normalizeEntry({ id: "prj-1", start: "", end: "", name, company, role, description: descLines.slice(0, 3).join("；").slice(0, 300), responsibility: "" }));
     }
   }
   return entries;
@@ -174,13 +231,29 @@ export function aggregateResumeFields(fields) {
   const edu = latest(out.education);
   if (edu) {
     out.school = edu.school || "";
+    out.schoolLocation = edu.schoolLocation || "";
+    out.college = edu.college || "";
     out.degree = edu.degree || "";
     out.major = edu.major || "";
+    out.studyMode = edu.studyMode || "";
+    out.educationStart = edu.start || "";
     out.graduationYear = edu.end ? edu.end.slice(0, 4) : "";
+  }
+  const work = latest(out.workHistory);
+  if (work) {
+    out.currentCompany = work.company || "";
+    out.workIndustry = work.industry || "";
+    out.workLocation = work.location || "";
+    out.currentTitle = work.title || "";
+    out.workStart = work.start || "";
+    out.workEnd = work.end || "";
+    out.workDescription = work.description || "";
   }
   const intern = latest(out.internships);
   if (intern) {
     out.internshipCompany = intern.company || "";
+    out.internshipIndustry = intern.industry || "";
+    out.internshipLocation = intern.location || "";
     out.internshipTitle = intern.title || "";
     out.internshipStart = intern.start || "";
     out.internshipEnd = intern.end || "";
@@ -196,6 +269,7 @@ export function aggregateResumeFields(fields) {
     out.projectEnd = project.end || "";
     out.projectPeriod = [project.start, project.end || "至今"].filter(Boolean).join(" 至 ");
     out.projectDescription = project.description || "";
+    out.projectResponsibility = project.responsibility || "";
   }
   return out;
 }
@@ -206,6 +280,7 @@ export function extractResumeFieldsLocal(text) {
   const fields = { ...EMPTY_RESUME_FIELDS };
   fields.phone = firstMatch(source, /(1[3-9]\d{9})/);
   fields.email = firstMatch(source, /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/);
+  fields.qq = firstMatch(source, /(?:QQ号?|腾讯QQ)\s*[:：]?\s*(\d{5,12})/i);
 
   const lines = source.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   const firstLine = lines[0] || "";
@@ -220,7 +295,7 @@ export function extractResumeFieldsLocal(text) {
   const birth = birthLabeled || birthMeta;
   if (birth) fields.birthDate = `${birth[1]}-${String(birth[2]).padStart(2, "0")}`;
 
-  fields.currentCity = firstMatch(source, /(?:现居城市|现居住地|所在城市|常住城市|城市)\s*[:：]?\s*([\u4e00-\u9fa5·]{2,6})/);
+  fields.currentCity = firstMatch(source, /(?:现居城市|现居住地|所在地|所在城市|常住城市|城市)\s*[:：]?\s*([\u4e00-\u9fa5·]{2,6})/);
   if (!fields.currentCity) {
     const meta = lines.find(line => /[男|女]/.test(line) && line.includes("|")) || "";
     const segments = meta.split(/[|｜]/).map(s => s.trim()).filter(Boolean);
@@ -241,6 +316,7 @@ export function extractResumeFieldsLocal(text) {
   // 工作经历概要：公司 + 职位（供「现公司/现职位」标量使用）。
   const workSection = source.match(/工作经历[\s\S]*?(?=实习经历|项目经历|教育经历|自我评价|个人简介|$)/);
   const workText = workSection ? workSection[0] : source;
+  fields.workHistory = parseWorkHistoryEntries(workSection ? workSection[0] : "");
   const workLine = workText.match(TIME_RANGE_LINE);
   if (workLine) {
     const parts = workLine[5].split(/\s+/).filter(Boolean);
@@ -278,6 +354,18 @@ export function extractResumeFieldsLocal(text) {
   fields.politicalStatus = firstMatch(source, /(?:政治面貌)\s*[:：]?\s*([\u4e00-\u9fa5]{2,8})/);
   fields.maritalStatus = firstMatch(source, /(?:婚姻状况)\s*[:：]?\s*([\u4e00-\u9fa5]{2,4})/);
   fields.referral = firstMatch(source, /(?:推荐人|内推人)\s*[:：]?\s*([\u4e00-\u9fa5]{2,8})/);
+  fields.referralCode = firstMatch(source, /(?:推荐码|内推码|推荐代码)\s*[:：]?\s*([A-Za-z0-9_-]{3,30})/);
+  fields.nickname = firstMatch(source, /(?:花名|昵称)\s*[:：]?\s*([^\n]{1,30})/);
+  fields.lastNamePinyin = firstMatch(source, /(?:姓全拼|姓拼音|英文姓)\s*[:：]?\s*([A-Za-z -]{1,40})/i);
+  fields.firstNamePinyin = firstMatch(source, /(?:名全拼|名拼音|英文名)\s*[:：]?\s*([A-Za-z -]{1,40})/i);
+  fields.wechat = firstMatch(source, /(?:微信号?|Wechat(?:\s*ID)?)\s*[:：]?\s*([A-Za-z0-9_-]{3,40})/i);
+  fields.nationality = firstMatch(source, /(?:国籍|nationality)\s*[:：]?\s*([^\n]{2,30})/i);
+  fields.schoolLocation = firstMatch(source, /(?:学校所在地|院校所在地)\s*[:：]?\s*([^\n]{2,30})/);
+  fields.college = firstMatch(source, /(?:学院名称|所属学院)\s*[:：]?\s*([^\n]{2,40})/);
+  fields.studyMode = firstMatch(source, /(?:学习形式|培养方式)\s*[:：]?\s*([^\n]{2,20})/);
+  fields.gameName = firstMatch(source, /(?:游戏名称|常玩游戏)\s*[:：]?\s*([^\n]{1,40})/);
+  fields.gameLevel = firstMatch(source, /(?:游玩程度|游戏水平|熟悉程度)\s*[:：]?\s*([^\n]{1,40})/);
+  fields.gameDuration = firstMatch(source, /(?:游戏时长|游玩时长)\s*[:：]?\s*([^\n]{1,20})/);
   return aggregateResumeFields(fields);
 }
 
@@ -290,8 +378,9 @@ export function buildResumeExtractPrompt() {
 标量字段（key=中文名，缺失为空字符串）：${scalarList}
 数组字段（输出全部条目，按时间从早到晚，无则 []）：
 education = [{ "start": "开始时间", "end": "结束时间", "school": "学校", "degree": "学历", "major": "专业" }]
-internships = [{ "start": "开始时间", "end": "结束时间", "company": "公司", "title": "岗位", "description": "实习内容" }]
-projects = [{ "start": "开始时间", "end": "结束时间", "name": "项目名称", "company": "项目公司", "role": "项目角色", "description": "项目内容" }]
+workHistory = [{ "start": "开始时间", "end": "结束时间", "company": "公司", "industry": "所在行业", "location": "工作地点", "title": "岗位", "description": "工作内容" }]
+internships = [{ "start": "开始时间", "end": "结束时间", "company": "公司", "industry": "所在行业", "location": "工作地点", "title": "岗位", "description": "实习内容" }]
+projects = [{ "start": "开始时间", "end": "结束时间", "name": "项目名称", "company": "项目公司", "role": "项目角色", "description": "项目描述", "responsibility": "项目职责" }]
 输出 JSON 对象，例如 {"name":"张三","phone":"","education":[],"internships":[],"projects":[]}。
 只输出 JSON，不要输出其他说明。`;
   return [{ role: "user", content }];
@@ -304,7 +393,7 @@ export function mergeResumeFields(local, ai) {
   const aiFields = ai && typeof ai === "object" ? ai : {};
   const merged = {};
   for (const key of Object.keys(base)) {
-    if (key === "education" || key === "internships" || key === "projects") continue;
+    if (key === "education" || key === "workHistory" || key === "internships" || key === "projects") continue;
     const localValue = String(base[key] ?? "").trim();
     const aiValue = String(aiFields[key] ?? "").trim();
     if (COMPLEX_KEYS.has(key)) merged[key] = aiValue || localValue;
@@ -315,7 +404,26 @@ export function mergeResumeFields(local, ai) {
     return (Array.isArray(list) ? list : []).map((entry, index) => normalizeEntry({ id: `${prefix}-${index + 1}`, ...entry }));
   };
   merged.education = pickEntries("education", "edu");
+  merged.workHistory = pickEntries("workHistory", "work");
   merged.internships = pickEntries("internships", "int");
   merged.projects = pickEntries("projects", "prj");
   return aggregateResumeFields(merged);
+}
+
+// 解析 Template/UI 使用的 ValueRef。仅允许属性名与数字下标，拒绝原型链路径。
+export function resolveResumeValueRef(resumeFields, valueRef) {
+  if (!valueRef || valueRef.source !== "resume") return "";
+  const path = String(valueRef.path || "").trim();
+  if (!path || !/^[A-Za-z][A-Za-z0-9]*(?:\[\d+\]|\.[A-Za-z][A-Za-z0-9]*)*$/.test(path)) return "";
+  const tokens = [];
+  path.replace(/([A-Za-z][A-Za-z0-9]*)|\[(\d+)\]/g, (_match, key, index) => {
+    tokens.push(key !== undefined ? key : Number(index));
+    return "";
+  });
+  let current = resumeFields;
+  for (const token of tokens) {
+    if (current == null || token === "__proto__" || token === "prototype" || token === "constructor") return "";
+    current = current[token];
+  }
+  return typeof current === "string" || typeof current === "number" ? String(current).trim() : "";
 }
