@@ -161,3 +161,61 @@ test("matchRules: select 无选项信息时不校验", () => {
   const result = matchRules([{ id: "s3", type: "select", label: "期望薪资", options: [] }], FULL_RESUME);
   assert.equal(result[0].status, "match");
 });
+
+test("matchRules: 区号下拉按手机号自动推导（不依赖标签）", () => {
+  // 标签错位也无妨：选项特征即识别依据
+  const fields = [
+    { id: "cc1", type: "select", label: "姓名", options: ["+86", "+852", "+1"] },
+    { id: "cc2", type: "select", label: "手机号码", options: ["+86", "+852"] },
+  ];
+  const r1 = matchRules(fields, FULL_RESUME);
+  assert.equal(r1[0].fieldKey, "phone");
+  assert.equal(r1[0].value, "+86", "大陆手机号应推导 +86");
+  assert.equal(r1[0].status, "match");
+  assert.equal(r1[1].fieldKey, "phone");
+  assert.equal(r1[1].value, "+86");
+});
+
+test("matchRules: 区号下拉推导失败时 manual 而非填手机号值", () => {
+  const result = matchRules(
+    [{ id: "cc1", type: "select", label: "手机号码", options: ["+1", "+44"] }],
+    FULL_RESUME
+  );
+  assert.equal(result[0].status, "manual", "无 +86 选项时不应填入手机号");
+  assert.match(result[0].reason, /区号/);
+  const empty = matchRules(
+    [{ id: "cc2", type: "select", label: "手机号码", options: ["+86", "+852"] }],
+    { ...FULL_RESUME, phone: "" }
+  );
+  assert.equal(empty[0].status, "manual", "简历无手机号时区号留手动");
+});
+
+test("matchRules: 带区号前缀的海外手机号推导区号", () => {
+  const result = matchRules(
+    [{ id: "cc1", type: "select", label: "手机号码", options: ["+86", "+852", "+1"] }],
+    { ...FULL_RESUME, phone: "+852 61234567" }
+  );
+  assert.equal(result[0].value, "+852");
+  assert.equal(result[0].status, "match");
+});
+
+test("matchRules: 格式兼容校验——姓名值进不了 tel/email/date 控件", () => {
+  const r1 = matchRules([{ id: "t1", type: "tel", label: "手机号码", options: [] }], { ...FULL_RESUME, name: "张三", phone: "" });
+  // 标签命中 phone 但简历 phone 为空 → 用 name 值验证格式拦截
+  const r2 = matchRules([{ id: "t2", type: "tel", label: "姓名", options: [] }], FULL_RESUME);
+  assert.equal(r2[0].status, "manual", "姓名值不应填入 tel 控件");
+  assert.match(r2[0].reason, /格式|匹配/);
+  const r3 = matchRules([{ id: "e1", type: "email", label: "姓名", options: [] }], FULL_RESUME);
+  assert.equal(r3[0].status, "manual", "姓名值不应填入 email 控件");
+  const r4 = matchRules([{ id: "d1", type: "date", label: "姓名", options: [] }], FULL_RESUME);
+  assert.equal(r4[0].status, "manual", "姓名值不应填入 date 控件");
+});
+
+test("matchRules: 正常电话/邮箱/日期不受格式校验影响", () => {
+  const r1 = matchRules([{ id: "t1", type: "tel", label: "手机号码", options: [] }], FULL_RESUME);
+  assert.equal(r1[0].status, "match");
+  const r2 = matchRules([{ id: "e1", type: "email", label: "邮箱", options: [] }], FULL_RESUME);
+  assert.equal(r2[0].status, "match");
+  const r3 = matchRules([{ id: "d1", type: "date", label: "出生日期", options: [] }], FULL_RESUME);
+  assert.equal(r3[0].status, "match");
+});

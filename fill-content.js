@@ -232,6 +232,8 @@
       const options = finalType === "custom-select"
         ? collectCustomOptions(customContainer || el)
         : (String(el.tagName).toLowerCase() === "select" ? Array.from(el.options || []).map(option => option.text) : []);
+      // 区号下拉（+86/+852…）：显示标签修正为「手机区号」，避免与手机号输入框同标签/错位
+      if (isCountryCodeOptions(options)) labelInfo.text = "手机区号";
       fields.push({
         id: fieldId, type: finalType, label: labelInfo.text, rawLabel: labelInfo.raw, labelSource: labelInfo.source,
         path: uniquePath(customContainer || el), required: isRequired(el), options,
@@ -261,6 +263,13 @@
       page = { title: root.title || "", url, host: url ? new URL(url).hostname : "" };
     } catch (_) {}
     return { fields, page };
+  }
+
+  // 区号下拉选项判断（过滤「请选择」等占位项）。
+  function isCountryCodeOptions(options) {
+    const list = (Array.isArray(options) ? options : [])
+      .filter(option => String(option || "").trim() && !/^(请选择|请选择区号|选择|--|暂无)$/.test(String(option).trim()));
+    return list.length >= 2 && list.every(option => /^\+?\d{1,4}$/.test(String(option).trim()));
   }
 
   function collectCustomOptions(container) {

@@ -271,3 +271,43 @@ test("多控件共用容器时标签不串用（避免多个字段填同一值�
   assert.ok(fields.every(f => f.label !== "姓名"), "一个容器内多个控件时容器标签不应被复用到每个控件（避免两字段填同一值）");
   dom.window.close();
 });
+
+test("手机号复合字段：区号下拉自动选 +86、号码框填手机号", async () => {
+  const dom = new JSDOM(`<form>
+    <div class="form-group"><label for="cc">手机号码</label><select id="cc"><option value="">请选择</option><option value="+86">+86</option><option value="+852">+852</option></select></div>
+    <div class="form-group"><label for="pn">手机号码</label><input id="pn" type="tel"></div>
+  </form>`, { url: "https://x.com/cc-phone", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const { fields } = engine.scan(dom.window.document);
+  const cc = fields.find(f => f.type === "select");
+  const pn = fields.find(f => f.type === "tel");
+  assert.ok(cc && pn, "区号下拉与号码框都应识别");
+  assert.equal(cc.label, "手机区号", "区号下拉显示标签应修正，不与号码框同标签");
+  const results = matchRules(fields, FULL_RESUME);
+  assert.equal(results.find(r => r.fieldId === cc.id).value, "+86", "区号按手机号推导 +86");
+  assert.equal(results.find(r => r.fieldId === pn.id).value, "13800138000");
+  const applied = await engine.apply([
+    { id: cc.id, value: "+86", type: "select" },
+    { id: pn.id, value: "13800138000", type: "tel" },
+  ], { delayMs: 0 });
+  assert.equal(applied.filter(r => !r.ok).length, 0, JSON.stringify(applied));
+  assert.equal(dom.window.document.getElementById("cc").value, "+86");
+  assert.equal(dom.window.document.getElementById("pn").value, "13800138000");
+  dom.window.close();
+});
+
+test("手机号复合字段：无对应区号选项时区号留手动，号码框正常填", async () => {
+  const dom = new JSDOM(`<form>
+    <div class="form-group"><label for="cc">手机号码</label><select id="cc"><option value="">请选择</option><option value="+1">+1</option><option value="+44">+44</option></select></div>
+    <div class="form-group"><label for="pn">手机号码</label><input id="pn" type="tel"></div>
+  </form>`, { url: "https://x.com/cc-phone2", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(engineSource);
+  const { fields } = dom.window.__hunterFill.scan(dom.window.document);
+  const results = matchRules(fields, FULL_RESUME);
+  const cc = results.find(r => r.type === "select");
+  const pn = results.find(r => r.type === "tel");
+  assert.equal(cc.status, "manual", "无 +86 选项时区号应留手动");
+  assert.equal(pn.status, "match", "号码框不受影响");
+  dom.window.close();
+});
