@@ -103,9 +103,20 @@ body.dark .queue-delivered { background: #1a2e24; border-color: #12b76a; }
 .resume-fields-box { margin-bottom: 10px; }
 .resume-fields-box summary { cursor: pointer; font-weight: 600; }
 .resume-fields-box summary small { font-weight: 400; color: #6b7280; margin-left: 6px; }
-.resume-fields-list { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
-.resume-fields-list label { display: flex; flex-direction: column; font-size: 12px; color: #374151; }
-.resume-fields-list input { margin-top: 2px; padding: 4px 6px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 12px; width: 100%; box-sizing: border-box; }
+.resume-fields-list { display: block; margin-top: 8px; }
+.resume-fields-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.resume-fields-grid label, .resume-entry-fields label { display: flex; flex-direction: column; font-size: 12px; color: #374151; }
+.resume-fields-grid input, .resume-entry-fields input, .resume-entry-fields textarea { margin-top: 2px; padding: 4px 6px; border: 1px solid #d0d5dd; border-radius: 6px; font-size: 12px; width: 100%; box-sizing: border-box; font-family: inherit; }
+.resume-entries-group { margin-top: 10px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px; }
+.resume-entries-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.resume-entries-head b { font-size: 13px; }
+.resume-entry-count { font-size: 11px; color: #6b7280; }
+.resume-entry-card { border: 1px solid #e5e7eb; border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; background: #fff; }
+.resume-entry-card summary { cursor: pointer; font-size: 12px; color: #374151; list-style-position: inside; }
+.resume-entry-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 6px; }
+.resume-entry-fields label:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.resume-entry-actions { margin-top: 6px; text-align: right; }
+.text-button.danger { color: #dc2626; }
 .fill-actions { flex-wrap: wrap; }
 .fill-result-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .fill-row { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; padding: 8px; border: 1px solid #e5e7eb; border-radius: 8px; align-items: start; }

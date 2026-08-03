@@ -70,9 +70,10 @@ test("mergeResumeFields: AI 为空时保留本地值", () => {
   assert.equal(merged.selfEvaluation, merged.selfEvaluation);
 });
 
-test("EMPTY_RESUME_FIELDS: 所有字段为空字符串", () => {
+test("EMPTY_RESUME_FIELDS: 标量字段为空字符串，经历数组为空数组", () => {
   for (const [key, value] of Object.entries(EMPTY_RESUME_FIELDS)) {
-    assert.equal(value, "", `${key} 应为空串`);
+    if (["education", "internships", "projects"].includes(key)) assert.deepEqual(value, [], `${key} 应为空数组`);
+    else assert.equal(value, "", `${key} 应为空串`);
   }
 });
 
@@ -134,4 +135,65 @@ test("RESUME_FIELDS_SCHEMA: 新增结构化字段齐全且带分组", () => {
   }
   const groups = new Set(RESUME_FIELDS_SCHEMA.map(f => f.group));
   assert.ok(groups.has("internship") && groups.has("project") && groups.has("profile") && groups.has("other"));
+});
+
+test("extractResumeFieldsLocal: 多条实习经历全部提取，聚合取最新一条", () => {
+  const text = `张三
+实习经历
+2021-06 至 2021-09 字节跳动 产品实习生
+- 负责用户调研
+2022-01 至 2022-06 腾讯 产品策划实习生
+- 负责需求分析`;
+  const fields = extractResumeFieldsLocal(text);
+  assert.equal(fields.internships.length, 2, "应提取 2 条实习经历");
+  assert.equal(fields.internships[0].company, "字节跳动");
+  assert.equal(fields.internships[1].company, "腾讯");
+  // 聚合取结束时间最近的一条
+  assert.equal(fields.internshipCompany, "腾讯");
+  assert.equal(fields.internshipTitle, "产品策划实习生");
+  assert.equal(fields.internshipPeriod, "2022-01 至 2022-06");
+});
+
+test("extractResumeFieldsLocal: 多条教育经历全部提取", () => {
+  const text = `张三
+教育经历
+2016-09 至 2020-06 复旦大学 计算机科学与技术 本科
+2020-09 至 2023-06 清华大学 软件工程 硕士`;
+  const fields = extractResumeFieldsLocal(text);
+  assert.equal(fields.education.length, 2);
+  assert.equal(fields.education[1].school, "清华大学");
+  assert.equal(fields.school, "清华大学", "聚合取最新学历");
+  assert.equal(fields.graduationYear, "2023");
+  assert.equal(fields.degree, "硕士");
+});
+
+test("extractResumeFieldsLocal: 多条项目经历全部提取", () => {
+  const text = `张三
+项目经历
+2021-03 至 2021-08 智能问答系统 项目负责人
+- 负责算法选型
+2022-05 至 2022-10 简历解析平台 核心开发
+- 负责解析引擎`;
+  const fields = extractResumeFieldsLocal(text);
+  assert.equal(fields.projects.length, 2);
+  assert.equal(fields.projects[1].name, "简历解析平台");
+  assert.equal(fields.projectName, "简历解析平台", "聚合取最新项目");
+  assert.equal(fields.projectRole, "核心开发");
+});
+
+test("mergeResumeFields: AI 经历数组替换本地数组并重新聚合", () => {
+  const local = extractResumeFieldsLocal("张三\n实习经历\n2021-06 至 2021-09 字节跳动 产品实习生");
+  const ai = {
+    internships: [
+      { start: "2020-01", end: "2020-06", company: "AI 公司", title: "AI 实习", description: "AI 描述" },
+      { start: "2021-01", end: "2021-06", company: "最新公司", title: "最新岗位", description: "最新描述" },
+    ],
+    projects: [],
+    education: [],
+  };
+  const merged = mergeResumeFields(local, ai);
+  assert.equal(merged.internships.length, 2, "AI 数组应替换本地");
+  assert.equal(merged.internshipCompany, "最新公司", "聚合应取 AI 最新一条");
+  assert.equal(merged.internshipDescription, "最新描述");
+  assert.equal(merged.name, "张三", "常见标量仍以本地为准");
 });

@@ -6,7 +6,7 @@ import { RESUME_FIELD_LABELS, GROUP_LABELS } from "./form-fields.js";
 import { matchRules, applyAiResults, buildAiMatchPrompt } from "./matcher.js";
 import { applyTemplate, saveTemplateFromResults, capTemplates } from "./site-templates.js";
 import { appendFillLog, summarizeResults } from "./fill-log.js";
-import { RESUME_FIELDS_SCHEMA, extractResumeFieldsLocal, buildResumeExtractPrompt, mergeResumeFields } from "./resume-fields.js";
+import { RESUME_FIELDS_SCHEMA, ENTRY_GROUPS, extractResumeFieldsLocal, buildResumeExtractPrompt, mergeResumeFields, aggregateResumeFields } from "./resume-fields.js";
 import { switchProfile, saveProfiles } from "./config.js";
 import { ai, parseAiJson } from "./ai-client.js";
 
@@ -33,36 +33,89 @@ export function renderFillProfileSelect() {
   ).join("");
 }
 
+// 经历类分组用卡片编辑器管理（教育/实习/项目），其余分组为紧凑标量表单。
+const SCALAR_GROUPS = ["basic", "intention", "work", "profile", "other"];
+
+function entryCardHtml(group, entry, index) {
+  const fields = group.fields.map(field => field.textarea
+    ? `<label>${escapeHtml(field.label)}<textarea rows="3" data-entry-input="${group.resumeKey}|${entry.id}|${field.key}">${escapeHtml(entry[field.key] || "")}</textarea></label>`
+    : `<label>${escapeHtml(field.label)}<input type="text" data-entry-input="${group.resumeKey}|${entry.id}|${field.key}" value="${escapeHtml(entry[field.key] || "")}"></label>`
+  ).join("");
+  return `<details class="resume-entry-card" data-entry-id="${entry.id}" open>
+    <summary>${escapeHtml(group.summary(entry) || `（第 ${index + 1} 条，未填写）`)}</summary>
+    <div class="resume-entry-fields">${fields}</div>
+    <div class="resume-entry-actions"><button type="button" class="text-button danger" data-remove-entry="${group.resumeKey}|${entry.id}">删除本条</button></div>
+  </details>`;
+}
+
 export function renderResumeFields() {
   const list = $("resumeFieldsList");
   const profile = activeProfile();
   const resume = profile?.resumeFields || {};
   if (!list) return;
-  const groups = [];
-  for (const field of RESUME_FIELDS_SCHEMA) {
-    let group = groups.find(g => g.key === field.group);
-    if (!group) {
-      group = { key: field.group, title: GROUP_LABELS[field.group] || field.group, fields: [] };
-      groups.push(group);
-    }
-    group.fields.push(field);
-  }
-  list.innerHTML = groups.map(group => `
-    <div class="resume-fields-group"><b>${escapeHtml(group.title)}</b></div>
-    ${group.fields.map(field => `<label>${escapeHtml(field.label)}<input type="text" data-resume-key="${field.key}" value="${escapeHtml(resume[field.key] || "")}"></label>`).join("")}
-  `).join("");
-  const filled = Object.values(resume).filter(Boolean).length;
+  const scalarHtml = RESUME_FIELDS_SCHEMA
+    .filter(field => SCALAR_GROUPS.includes(field.group))
+    .map(field => `<label>${escapeHtml(field.label)}<input type="text" data-resume-key="${field.key}" value="${escapeHtml(resume[field.key] || "")}"></label>`)
+    .join("");
+  const entriesHtml = ENTRY_GROUPS.map(group => {
+    const entries = Array.isArray(resume[group.resumeKey]) ? resume[group.resumeKey] : [];
+    const cards = entries.map((entry, index) => entryCardHtml(group, entry, index)).join("");
+    return `<div class="resume-entries-group" data-entry-group="${group.resumeKey}">
+      <div class="resume-entries-head"><b>${escapeHtml(group.title)}</b><span class="resume-entry-count">${entries.length} 条</span><button type="button" class="text-button" data-add-entry="${group.resumeKey}">+ 添加</button></div>
+      ${cards || `<p class="hint">暂无${escapeHtml(group.title)}，点击「添加」手动填写。</p>`}
+    </div>`;
+  }).join("");
+  list.innerHTML = `<div class="resume-fields-grid">${scalarHtml}</div>${entriesHtml}`;
+  const filled = Object.values(resume).filter(value => (Array.isArray(value) ? value.length : value)).length;
   $("resumeFieldsStatus").textContent = `（${filled} 项已填写）`;
+}
+
+// 从 DOM 收集标量与经历条目（空条目自动剔除）。
+export function collectResumeFields() {
+  const scalars = Object.fromEntries(
+    [...document.querySelectorAll("[data-resume-key]")].map(el => [el.dataset.resumeKey, el.value.trim()])
+  );
+  const entries = {};
+  for (const group of ENTRY_GROUPS) {
+    const list = [];
+    for (const card of [...document.querySelectorAll(`[data-entry-group="${group.resumeKey}"] [data-entry-id]`)]) {
+      const entry = { id: card.dataset.entryId };
+      for (const field of group.fields) {
+        const input = card.querySelector(`[data-entry-input="${group.resumeKey}|${entry.id}|${field.key}"]`);
+        entry[field.key] = input ? input.value.trim() : "";
+      }
+      if (Object.entries(entry).some(([key, value]) => key !== "id" && value)) list.push(entry);
+    }
+    entries[group.resumeKey] = list;
+  }
+  return { ...scalars, ...entries };
 }
 
 export async function saveResumeFields() {
   const profile = activeProfile();
   if (!profile) throw new Error("未找到当前简历。");
-  profile.resumeFields = Object.fromEntries(
-    [...document.querySelectorAll("[data-resume-key]")].map(el => [el.dataset.resumeKey, el.value.trim()])
-  );
+  profile.resumeFields = aggregateResumeFields(collectResumeFields());
   await saveProfiles();
-  toast("简历字段已保存");
+  toast("简历字段已保存（经历条目已同步聚合到匹配字段）");
+  renderResumeFields();
+}
+
+let entrySeq = 0;
+export function addResumeEntry(groupKey) {
+  const profile = activeProfile();
+  if (!profile) return;
+  const group = ENTRY_GROUPS.find(g => g.resumeKey === groupKey);
+  if (!group) return;
+  const list = Array.isArray(profile.resumeFields[groupKey]) ? profile.resumeFields[groupKey] : [];
+  list.push(group.empty(entrySeq++));
+  profile.resumeFields[groupKey] = list;
+  renderResumeFields();
+}
+
+export function removeResumeEntry(groupKey, id) {
+  const profile = activeProfile();
+  if (!profile) return;
+  profile.resumeFields[groupKey] = (profile.resumeFields[groupKey] || []).filter(entry => entry.id !== id);
   renderResumeFields();
 }
 
@@ -380,6 +433,21 @@ function bindFillEvents() {
   document.addEventListener("input", (event) => {
     const valueInput = event.target.closest("input[data-fill-value-id]");
     if (valueInput) state.fillValues[valueInput.dataset.fillValueId] = valueInput.value;
+  });
+  document.addEventListener("click", (event) => {
+    const addButton = event.target.closest("[data-add-entry]");
+    if (addButton) {
+      event.preventDefault();
+      addResumeEntry(addButton.dataset.addEntry);
+      return;
+    }
+    const removeButton = event.target.closest("[data-remove-entry]");
+    if (removeButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      const [groupKey, id] = removeButton.dataset.removeEntry.split("|");
+      removeResumeEntry(groupKey, id);
+    }
   });
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === "SMART_FILL_PROGRESS") {
