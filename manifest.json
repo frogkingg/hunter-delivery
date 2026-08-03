@@ -38,6 +38,8 @@
   "permissions": [
     "storage",
     "unlimitedStorage",
+    "activeTab",
+    "tabs",
     "scripting",
     "sidePanel",
     "downloads"
