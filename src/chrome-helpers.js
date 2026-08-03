@@ -40,3 +40,15 @@ export async function messagePage(tab, message) {
     return chrome.tabs.sendMessage(tab.id, message);
   }
 }
+
+// 智能填充：向应用页直连发送消息，无监听者时按需注入 fill-content.js。
+// 与 messagePage 的区别：注入的是智能填充引擎而非 BOSS 内容脚本。
+export async function fillMessagePage(tab, message) {
+  try {
+    return await chrome.tabs.sendMessage(tab.id, message);
+  } catch (error) {
+    if (!/Receiving end does not exist/i.test(error.message || "")) throw error;
+    await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ["fill-content.js"] });
+    return chrome.tabs.sendMessage(tab.id, message);
+  }
+}

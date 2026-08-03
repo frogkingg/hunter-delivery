@@ -72,6 +72,7 @@ export async function loadProfiles() {
       candidateProfile: state.config.candidateProfile || "",
       greetingPrompt: state.config.greetingPrompt || "",
       resumeImages: state.config.resumeImages || [],
+      resumeFields: {},
     };
     setProfiles([defaultProfile]);
     setActiveProfileIndex(0);
@@ -114,7 +115,7 @@ export async function createProfile(name) {
   if (!trimmed) throw new Error("请输入简历名称。");
   if (state.profiles.length >= 5) throw new Error("最多创建 5 份简历。");
   if (state.profiles.some(p => p.name === trimmed)) throw new Error("已存在同名简历。");
-  state.profiles.push({ name: trimmed, candidateProfile: "", greetingPrompt: "", resumeImages: [] });
+  state.profiles.push({ name: trimmed, candidateProfile: "", greetingPrompt: "", resumeImages: [], resumeFields: {} });
   await saveProfiles();
 }
 

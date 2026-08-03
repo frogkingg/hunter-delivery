@@ -12,6 +12,14 @@ export const state = {
   // 多简历支持
   profiles: [],
   activeProfileIndex: 0,
+  // 智能填充
+  fillScanFields: [],
+  fillScanPage: null,
+  fillMatches: [],
+  fillSelected: new Set(),
+  fillValues: {},
+  fillAiEnabled: true,
+  fillTemplateEnabled: true,
 };
 
 // —— State Actions（集中管理状态写入） ——
@@ -24,6 +32,14 @@ export function setQueuePollTimer(timer) { state.queuePollTimer = timer; }
 export function setQueueWasRunning(running) { state.queueWasRunning = running; }
 export function setProfiles(profiles) { state.profiles = profiles; }
 export function setActiveProfileIndex(index) { state.activeProfileIndex = index; }
+
+export function setFillScanFields(fields) { state.fillScanFields = fields; }
+export function setFillScanPage(page) { state.fillScanPage = page; }
+export function setFillMatches(matches) { state.fillMatches = matches; }
+export function setFillSelected(keys) { state.fillSelected = keys; }
+export function setFillValues(values) { state.fillValues = values; }
+export function setFillAiEnabled(value) { state.fillAiEnabled = value; }
+export function setFillTemplateEnabled(value) { state.fillTemplateEnabled = value; }
 
 export function activeProfile() { return state.profiles[state.activeProfileIndex] || null; }
 export function saveCurrentProfileFields() {

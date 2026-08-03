@@ -1,7 +1,7 @@
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="panel.css"><title>猎投</title></head>
 <body><main>
   <header><img src="icons/icon48.png" alt="猎投"><div><h1>猎投</h1><p>打开岗位 → 分析 → 确认发送</p></div><button id="darkToggle" class="icon-button" title="切换深浅模式" style="margin-right:6px">☀️</button><button id="guide" class="icon-button" title="操作指南">?</button></header>
-  <nav><button class="tab active" data-tab="current">当前岗位</button><button class="tab" data-tab="queue">投递清单</button><button class="tab" data-tab="library">岗位库</button><button class="tab" data-tab="settings">设置</button></nav>
+  <nav><button class="tab active" data-tab="current">当前岗位</button><button class="tab" data-tab="queue">投递清单</button><button class="tab" data-tab="library">岗位库</button><button class="tab" data-tab="settings">设置</button><button class="tab" data-tab="smartfill">智能填充</button></nav>
   <section id="current" class="page active">
     <div id="onboarding" class="guide-card"><b>ℹ️ 首次使用</b><span>先在「设置」填写 AI Key，再上传简历图片并确认解析结果。</span></div>
     <div class="row current-actions"><button id="addQueueTop" class="secondary">加入投递清单</button><button id="analyze" class="primary">分析当前岗位并投递</button></div><p id="analyzeProgress" class="hint" aria-live="polite"></p><div class="job-card"><span id="jobBadge" class="badge">等待识别</span><h2 id="jobTitle">请打开 BOSS 的职位列表或详情页</h2><p id="jobMeta">插件会自动读取当前页面，不需要复制 JD。</p></div>
@@ -13,4 +13,35 @@
 <div id="profileList" class="profile-list"></div>
 <div class="row"><button id="createProfile" class="secondary">创建新简历</button></div><p class="hint">可上传简历图片并使用支持视觉的模型自动提取；如果使用 DeepSeek Flash 等纯文本模型，也可以直接把简历文字粘贴到下方“简历内容”中。</p><p class="hint resume-send-note">确认沟通后，已保存的简历图片会随招呼语发送到 BOSS 聊天窗口。</p><label class="resume-picker" for="resumeInput"><span>上传或替换简历图片</span><input id="resumeInput" type="file" accept="image/png,image/jpeg" multiple></label><div id="savedResumes" class="saved-resumes"></div><button id="parseResume" class="primary">重新提取简历内容</button><label>简历内容<textarea id="candidateProfile" rows="10" placeholder="提取结果会显示在这里，你可以直接修改。"></textarea></label><button id="saveProfile" class="secondary">保存简历内容</button></section>
   <div id="toast" role="status"></div>
+
+<section id="smartfill" class="page">
+  <div class="section-head"><div><h2>智能填充</h2><p>在第三方网申页面自动识别表单项，用简历内容匹配并一键填充。</p></div></div>
+  <label>使用简历<select id="fillProfileSelect"></select></label>
+  <details class="resume-fields-box"><summary>简历字段（供匹配使用）<small id="resumeFieldsStatus"></small></summary>
+    <div id="resumeFieldsList" class="resume-fields-list"></div>
+    <div class="row"><button id="extractResumeFields" class="secondary">重新提取简历字段</button><button id="saveResumeFields" class="secondary">保存字段</button></div>
+    <p class="hint">复杂字段（自我评价/技能等）提取需要已配置 AI；未配置时仅提取常见字段。</p>
+  </details>
+  <hr>
+  <h3>扫描网申页面</h3>
+  <p class="hint" id="fillCurrentSite">未检测到网申页面。请打开目标公司的网申/信息录入页后点击「扫描」。首次使用需授权该网站。</p>
+  <div class="row fill-actions">
+    <button id="scanFillPage" class="primary">扫描当前页面</button>
+    <button id="fillSelected" class="primary" disabled>填充选中项（0）</button>
+    <button id="fillAll" class="secondary" disabled>全部填充</button>
+    <button id="stopFill" class="secondary" hidden>停止</button>
+    <button id="clearFill" class="secondary">清空</button>
+  </div>
+  <p id="fillProgress" class="hint" aria-live="polite"></p>
+  <div class="row toggle-setting"><label><input id="fillAiToggle" type="checkbox" checked><span>复杂字段使用 AI 匹配<small>未识别/低置信字段批量发送给已配置的 AI 服务</small></span></label></div>
+  <div class="row toggle-setting"><label><input id="fillTemplateToggle" type="checkbox" checked><span>自动记忆站点模板<small>同站点下次自动复用本次填充与修正</small></span></label></div>
+  <div id="fillResultList" class="fill-result-list"></div>
+  <p class="hint privacy-note">⚠ 隐私提示：开启 AI 匹配时，「表单字段标签 + 简历字段」会发送到你配置的 AI 服务；简历图片与全文不会因智能填充被发送。</p>
+  <hr>
+  <div class="section-head"><div><h3>当前站点模板</h3><p id="fillTemplateInfo">未保存模板</p></div><button id="deleteFillTemplate" class="secondary" disabled>删除模板</button></div>
+  <div id="fillTemplateList" class="fill-template-list"></div>
+  <hr>
+  <div class="section-head"><div><h3>填充历史</h3></div></div>
+  <div id="fillLogList" class="fill-log-list"></div>
+</section>
 </main><script src="src/app.js" type="module"></script></body></html>

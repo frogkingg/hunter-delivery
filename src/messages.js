@@ -102,6 +102,32 @@ export const MESSAGE_TYPES = {
     response: { ok: "boolean", data: "Object?" },
   },
 
+  // 智能填充：panel → content（经 fillMessagePage 直连并按需注入 fill-content.js）
+  SMART_FILL_SCAN: {
+    direction: "panel→content",
+    payload: {},
+    response: { ok: "boolean", fields: "FieldDescriptor[]", page: "{ title, url, host }?" },
+  },
+  SMART_FILL_APPLY: {
+    direction: "panel→content",
+    payload: { fills: "[{ id, value }]" },
+    response: { ok: "boolean", results: "[{ id, ok, error? }]", error: "string?" },
+  },
+  SMART_FILL_HIGHLIGHT: {
+    direction: "panel→content",
+    payload: { ids: "string[]", on: "boolean" },
+    response: { ok: "boolean" },
+  },
+  SMART_FILL_CANCEL: {
+    direction: "panel→content",
+    payload: {},
+    response: { ok: "boolean" },
+  },
+  SMART_FILL_PROGRESS: {
+    direction: "content→panel（事件，非应答）",
+    payload: { index: "number", total: "number", id: "string", ok: "boolean", error: "string?" },
+  },
+
   // Stream（port 连接，非 sendMessage）
   AI_CALL_STREAM: {
     direction: "panel→background（port）",
