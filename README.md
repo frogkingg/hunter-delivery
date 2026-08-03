@@ -80,7 +80,7 @@ Chrome 扩展。自动读取 BOSS 直聘岗位信息，用 AI 对比简历生成
 ```bash
 npm install        # 安装依赖
 npm run check      # 语法检查
-npm test           # 运行测试（当前 213 个）
+npm test           # 运行测试（当前 228 个）
 npm run build      # 生产构建
 npm run dev        # 开发模式（watch）
 ```
