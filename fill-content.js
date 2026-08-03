@@ -203,6 +203,7 @@
       const fieldId = `input-${seq++}`;
 
       if (classified.skipped) {
+        if (el.type === "hidden" || !isVisible(el)) continue; // 隐藏/追踪字段不输出，避免污染列表
         const labelInfo = controlLabel(el);
         registry.set(fieldId, { kind: "none", el, label: labelInfo.text });
         fields.push({
@@ -224,7 +225,9 @@
       const entry = { kind: finalType === "custom-select" || finalType === "custom-date" ? "custom" : "native", el, label: labelInfo.text };
       if (customContainer) entry.container = customContainer;
       registry.set(fieldId, entry);
-      const options = finalType === "custom-select" ? collectCustomOptions(customContainer || el) : [];
+      const options = finalType === "custom-select"
+        ? collectCustomOptions(customContainer || el)
+        : (String(el.tagName).toLowerCase() === "select" ? Array.from(el.options || []).map(option => option.text) : []);
       fields.push({
         id: fieldId, type: finalType, label: labelInfo.text, rawLabel: labelInfo.raw, labelSource: labelInfo.source,
         path: uniquePath(customContainer || el), required: isRequired(el), options,
@@ -318,7 +321,7 @@
       || group.find(r => normalizeCompare(r.value).includes(expected) || normalizeCompare(optionText(r)).includes(expected));
     if (!target) throw new Error("选项未找到");
     if (!target.checked) target.click();
-    return { ok: true };
+    return target; // 返回实际点击的选项，供回读校验
   }
 
   function applyCheckbox(el, value) {
@@ -338,24 +341,51 @@
     }) || null;
   }
 
+  // 自定义下拉兜底：写入内部 input 后，仅当容器展示值反映所选值才算成功。
+  // 只校验我们写入的 input.value 是循环论证（受控组件可能未提交），必须看页面展示。
+  function applyCustomInputFallback(container, value) {
+    const input = container.querySelector("input");
+    if (!input) throw new Error("下拉选项未找到");
+    setNativeValue(input, value);
+    dispatchInput(input);
+    const displayed = normalizeCompare(cleanString(container.textContent));
+    const expected = normalizeCompare(value);
+    if (displayed && (displayed === expected || displayed.includes(expected) || expected.includes(displayed))) {
+      return { ok: true, via: "input" };
+    }
+    throw new Error("下拉控件无法确认选择结果，请手动选择");
+  }
+
   async function applyCustomSelect(entry, value) {
     const container = entry.container || entry.el;
     const doc = container.ownerDocument;
     const selector = ".ant-select-dropdown .ant-select-item-option, .ant-select-dropdown .ant-select-item, .el-select-dropdown .el-select-dropdown__item, [role='option']";
-    const options = Array.from(doc.querySelectorAll(selector)).filter(isVisible);
-    const target = matchOption(options, value);
+    const findTarget = () => matchOption(Array.from(doc.querySelectorAll(selector)).filter(isVisible), value);
+    let target = findTarget();
+    // 真实站点下拉选项通常在下拉展开后才挂载：点击展开并等待（最长 1.5s）。
+    if (!target && typeof container.click === "function") {
+      try { container.click(); } catch (_) {}
+      const deadline = Date.now() + 1500;
+      while (!target && Date.now() < deadline) {
+        await sleep(120);
+        target = findTarget();
+      }
+    }
     if (target) {
       scrollIntoView(target);
       target.click();
-      return { ok: true, via: "option" };
+      // 回读：容器展示值或内部 input 值必须包含期望值，否则视为未生效。
+      const displayed = normalizeCompare(cleanString(container.textContent));
+      const expected = normalizeCompare(value);
+      const input = container.querySelector("input");
+      const inputValue = input ? normalizeCompare(input.value) : "";
+      const reflected = (displayed && (displayed === expected || displayed.includes(expected) || expected.includes(displayed)))
+        || (inputValue && (inputValue === expected || inputValue.includes(expected) || expected.includes(inputValue)));
+      if (reflected) return { ok: true, via: "option" };
+      // 点击未生效（受控组件未提交）：尝试输入兜底，兜底也失败则如实报错。
+      return applyCustomInputFallback(container, value);
     }
-    const input = container.querySelector("input");
-    if (input) {
-      setNativeValue(input, value);
-      dispatchInput(input);
-      return { ok: true, via: "input" };
-    }
-    throw new Error("下拉选项未找到");
+    return applyCustomInputFallback(container, value);
   }
 
   function verifyValue(entry, type, value) {
@@ -366,7 +396,7 @@
     return actual && (actual === expected || actual.includes(expected) || expected.includes(actual));
   }
 
-  function fillOne(fill) {
+  async function fillOne(fill) {
     const entry = elementRegistry.get(fill.id);
     if (!entry) throw new Error("字段未找到");
     const value = String(fill.value ?? "").trim();
@@ -374,25 +404,30 @@
     const type = fill.type || entry.type || "text";
     scrollIntoView(entry.el);
     if (entry.kind === "radio") {
-      const result = applyRadio(entry.group, value);
-      if (!verifyValue(entry, "radio", value)) throw new Error("回读校验失败");
-      return result;
+      const target = applyRadio(entry.group, value);
+      if (!target.checked) throw new Error("回读校验失败");
+      return { ok: true };
     }
     if (entry.kind === "custom") {
-      const result = type === "custom-select" ? applyCustomSelect(entry, value) : (() => {
-        const input = entry.container ? entry.container.querySelector("input") : entry.el;
-        if (!input) throw new Error("自定义控件无输入框");
-        setNativeValue(input, value);
-        dispatchInput(input);
-        return { ok: true, via: "input" };
-      })();
-      return result;
+      if (type === "custom-select") return applyCustomSelect(entry, value);
+      const input = entry.container ? entry.container.querySelector("input") : entry.el;
+      if (!input) throw new Error("自定义控件无输入框");
+      setNativeValue(input, value);
+      dispatchInput(input);
+      if (!verifyValue(entry, type, value)) throw new Error("回读校验失败");
+      return { ok: true, via: "input" };
     }
     if (type === "checkbox") return applyCheckbox(entry.el, value);
     if (type === "select") {
-      setNativeValue(entry.el, value);
+      const expected = normalizeCompare(value);
+      const options = Array.from(entry.el.options || []);
+      const target = options.find(option => normalizeCompare(option.text) === expected)
+        || options.find(option => normalizeCompare(option.text).includes(expected) || expected.includes(normalizeCompare(option.text)))
+        || options.find(option => normalizeCompare(option.value) === expected);
+      if (!target) throw new Error("选项未找到");
+      setNativeValue(entry.el, target.value);
       dispatchInput(entry.el);
-      if (String(entry.el.value || "") !== String(value)) throw new Error("选项未找到");
+      if (String(entry.el.value || "") !== String(target.value)) throw new Error("选项未找到");
       return { ok: true };
     }
     const finalValue = type === "date" && /^\d{4}-\d{2}$/.test(value) ? `${value}-01` : value;
@@ -413,7 +448,7 @@
       const fill = list[index];
       const item = { id: fill.id, ok: false };
       try {
-        Object.assign(item, fillOne(fill));
+        Object.assign(item, await fillOne(fill));
         item.ok = true;
       } catch (error) {
         item.error = error.message || String(error);
@@ -437,7 +472,12 @@
         } else if (message.type === "SMART_FILL_APPLY") {
           (async () => {
             try {
-              const results = await apply(message.fills || [], { delayMs: 100 });
+              const results = await apply(message.fills || [], {
+                delayMs: 100,
+                onProgress: item => {
+                  try { chrome.runtime.sendMessage({ type: "SMART_FILL_PROGRESS", ...item }).catch(() => {}); } catch (_) {}
+                },
+              });
               sendResponse({ ok: true, results });
             } catch (error) {
               sendResponse({ ok: false, error: error.message || String(error), results: [] });

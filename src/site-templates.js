@@ -43,11 +43,16 @@ export function applyTemplate(matches, template) {
 export function saveTemplateFromResults(host, origin, matches, existingTemplate) {
   const fresh = buildTemplateFromMatches(host, origin, matches);
   const priorFields = existingTemplate && existingTemplate.host === host ? existingTemplate.fields || [] : [];
+  // 合并：本次扫描到的字段覆盖同名历史字段，历史字段（分步/分页表单未再扫描到的）保留追加。
   const merged = fresh.fields.map(freshField => {
     const prior = priorFields.find(p => p.fieldKey === freshField.fieldKey && p.siteLabel === freshField.siteLabel);
     // 保留历史 edited 标记：用户手动修正过的值优先级更高。
     return { ...freshField, edited: freshField.edited || !!(prior && prior.edited) };
   });
+  for (const prior of priorFields) {
+    const exists = merged.some(m => m.fieldKey === prior.fieldKey && m.siteLabel === prior.siteLabel);
+    if (!exists) merged.push(prior);
+  }
   return { host, origin, fields: merged, updatedAt: new Date().toISOString() };
 }
 

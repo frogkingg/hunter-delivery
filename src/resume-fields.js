@@ -30,7 +30,9 @@ export function extractResumeFieldsLocal(text) {
   if (gender) fields.gender = gender[2];
   if (/(?:性别|gender)\s*[:：]\s*(男|女)/i.test(source)) fields.gender = RegExp.$1;
 
-  const birth = source.match(/(\d{4})[-/年.](\d{1,2})月?/);
+  const birthLabeled = source.match(/(?:出生日期|出生年月|生日)\s*[:：]?\s*(\d{4})[-/年.](\d{1,2})月?/);
+  const birthMeta = source.match(/(?:男|女)\s*[|｜]\s*(\d{4})[-/年.](\d{1,2})月?/);
+  const birth = birthLabeled || birthMeta;
   if (birth) fields.birthDate = `${birth[1]}-${String(birth[2]).padStart(2, "0")}`;
 
   fields.currentCity = firstMatch(source, /(?:现居城市|现居住地|所在城市|常住城市|城市)\s*[:：]?\s*([\u4e00-\u9fa5·]{2,6})/);
@@ -71,8 +73,9 @@ export function extractResumeFieldsLocal(text) {
   }
   if (!fields.currentCompany) fields.currentCompany = firstMatch(source, /(?:当前公司|现公司|目前公司)\s*[:：]?\s*([\u4e00-\u9fa5A-Za-z（）()·]{2,30})/);
   if (!fields.currentTitle) fields.currentTitle = firstMatch(source, /(?:当前职位|现职位|目前职位)\s*[:：]?\s*([\u4e00-\u9fa5A-Za-z（）()·]{2,30})/);
-  const workYearsMatch = source.match(/(\d+(?:\.\d+)?)\s*年/);
-  if (workYearsMatch) fields.workYears = `${workYearsMatch[1]}年`;
+  // 工作年限：只接受 ≤15 年，避免「2020年毕业」等误提为工作年限。
+  const workYearsMatch = source.match(/(\d{1,2}(?:\.\d+)?)\s*年/);
+  if (workYearsMatch && Number(workYearsMatch[1]) <= 15) fields.workYears = `${workYearsMatch[1]}年`;
   if (!fields.workYears) fields.workYears = firstMatch(source, /(?:工作年限|工作经验)\s*[:：]?\s*([\d一二三四五六七八九十]+年)/);
 
   const stop = /(?=\n\s*\n|专业技能|自我评价|教育经历|工作经历|项目经历|$)/;

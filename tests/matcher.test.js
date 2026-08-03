@@ -142,3 +142,16 @@ test("matchRules: 布尔勾选框可匹配", () => {
   const results = matchRules([{ id: "c2", type: "checkbox", label: "是否接受调剂", skipped: false }], { ...FULL_RESUME, name: "" });
   assert.equal(results[0].fieldKey, "");
 });
+
+test("matchRules: select 选项不匹配时降级 manual（含子串合理匹配）", () => {
+  const noHit = matchRules([{ id: "s1", type: "select", label: "期望薪资", options: ["10-20K", "20-30K"] }], FULL_RESUME);
+  assert.equal(noHit[0].status, "manual");
+  assert.match(noHit[0].reason, /选项不匹配/);
+  const hit = matchRules([{ id: "s2", type: "select", label: "工作年限", options: ["1-3年", "3-5年"] }], FULL_RESUME);
+  assert.equal(hit[0].status, "match", "3-5年 包含 5年 视为合理匹配");
+});
+
+test("matchRules: select 无选项信息时不校验", () => {
+  const result = matchRules([{ id: "s3", type: "select", label: "期望薪资", options: [] }], FULL_RESUME);
+  assert.equal(result[0].status, "match");
+});

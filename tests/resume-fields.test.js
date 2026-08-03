@@ -75,3 +75,11 @@ test("EMPTY_RESUME_FIELDS: 所有字段为空字符串", () => {
     assert.equal(value, "", `${key} 应为空串`);
   }
 });
+
+test("extractResumeFieldsLocal: 误报回归——毕业年份不当工作年限、教育起始年不当出生日期", () => {
+  const text = "张三\n2020年毕业于复旦大学\n2016-09 至 2020-06 复旦大学 计算机 本科";
+  const fields = extractResumeFieldsLocal(text);
+  assert.equal(fields.workYears, "", "「2020年毕业」不应提取为工作年限");
+  assert.equal(fields.birthDate, "", "教育经历起始年不应提取为出生日期");
+  assert.equal(fields.school, "复旦大学");
+});

@@ -1,5 +1,5 @@
 // 智能填充：侧边栏交互逻辑（扫描/匹配/填充/模板/历史）。
-import { state, setFillScanFields, setFillScanPage, setFillMatches, setFillSelected, setFillValues, setFillAiEnabled, setFillTemplateEnabled } from "./state.js";
+import { state, setFillScanFields, setFillScanPage, setFillMatches, setFillSelected, setFillValues, setFillFailedIds, setFillAiEnabled, setFillTemplateEnabled } from "./state.js";
 import { $, toast, fillMessagePage } from "./chrome-helpers.js";
 import { escapeHtml } from "./pure-utils.js";
 import { RESUME_FIELD_LABELS } from "./form-fields.js";
@@ -89,7 +89,7 @@ export async function extractResumeFields() {
 // —— 扫描与匹配 ——
 async function ensureOriginPermission(tab) {
   const url = new URL(tab.url);
-  if (!/^https?:$/.test(url.protocol)) throw new Error("请打开 http/https 的网申页面后再扫描。");
+  if (url.protocol !== "https:") throw new Error("智能填充仅支持 https 网申页面（与扩展主机权限一致）。");
   const pattern = `${url.origin}/*`;
   const granted = await chrome.permissions.contains({ origins: [pattern] });
   if (granted) return;
@@ -192,13 +192,20 @@ export function renderFillMatches() {
 }
 
 // —— 填充执行 ——
+let fillRunning = false;
+
 export async function runFill(all = false) {
+  if (fillRunning) throw new Error("填充进行中，请等待完成或点击停止。");
+  fillRunning = true;
   const tab = await currentTab();
   if (!state.fillMatches.length) throw new Error("请先扫描页面。");
   const fills = state.fillMatches
     .filter(m => m.status === "match" && (all || state.fillSelected.has(m.fieldId)))
     .map(m => ({ id: m.fieldId, value: state.fillValues[m.fieldId] ?? m.value, type: m.type }));
   if (!fills.length) throw new Error(all ? "没有可填充的表单项。" : "请先勾选要填充的表单项。");
+  $("scanFillPage").disabled = true;
+  $("fillSelected").disabled = true;
+  $("fillAll").disabled = true;
   const start = Date.now();
   $("fillProgress").textContent = `正在填充 0/${fills.length}…`;
   $("stopFill").hidden = false;
@@ -208,6 +215,7 @@ export async function runFill(all = false) {
     const results = response.results || [];
     const summary = summarizeResults(results);
     const failedIds = results.filter(r => !r.ok).map(r => r.id);
+    setFillFailedIds(failedIds);
     if (failedIds.length) {
       fillMessagePage(tab, { type: "SMART_FILL_HIGHLIGHT", ids: failedIds, on: true }).catch(() => {});
     }
@@ -215,7 +223,10 @@ export async function runFill(all = false) {
     await afterFill(tab, results, Date.now() - start);
     return { summary, failedIds };
   } finally {
+    fillRunning = false;
     $("stopFill").hidden = true;
+    $("scanFillPage").disabled = false;
+    updateFillButtons();
   }
 }
 
@@ -229,14 +240,15 @@ export async function stopFill() {
 
 export async function clearFill() {
   const tab = await currentTab();
-  if (tab?.url && /^https?:/i.test(tab.url)) {
-    fillMessagePage(tab, { type: "SMART_FILL_HIGHLIGHT", ids: [], on: false }).catch(() => {});
+  if (tab?.url && /^https?:/i.test(tab.url) && state.fillFailedIds.length) {
+    fillMessagePage(tab, { type: "SMART_FILL_HIGHLIGHT", ids: state.fillFailedIds, on: false }).catch(() => {});
   }
   setFillScanFields([]);
   setFillScanPage(null);
   setFillMatches([]);
   setFillSelected(new Set());
   setFillValues({});
+  setFillFailedIds([]);
   $("fillResultList").innerHTML = "";
   $("fillProgress").textContent = "";
   $("fillCurrentSite").textContent = "未检测到网申页面。请打开目标公司的网申/信息录入页后点击「扫描」。首次使用需授权该网站。";
@@ -249,10 +261,10 @@ async function afterFill(tab, results, durationMs) {
   if (state.fillTemplateEnabled && host) {
     const templates = await getTemplates();
     const okIds = new Set(results.filter(r => r.ok).map(r => r.id));
+    // 仅填充成功（或成功且被用户修正）的字段入模板；失败字段标记 manual 不入模板，避免下次复用错误值。
     const templateMatches = state.fillMatches.map(m => {
-      const edited = state.fillValues[m.fieldId] !== m.value;
-      const keep = okIds.has(m.fieldId) || edited;
-      return keep ? { ...m, value: state.fillValues[m.fieldId] ?? m.value, edited } : m;
+      if (!okIds.has(m.fieldId)) return { ...m, status: "manual" };
+      return { ...m, value: state.fillValues[m.fieldId] ?? m.value, edited: state.fillValues[m.fieldId] !== m.value };
     });
     templates[host] = saveTemplateFromResults(host, state.fillScanPage?.url || tab.url, templateMatches, templates[host]);
     await chrome.storage.local.set({ smartFillTemplates: capTemplates(templates) });

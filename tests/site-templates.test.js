@@ -72,3 +72,17 @@ test("capTemplates: 超过上限时淘汰最旧（LRU 按 updatedAt）", () => {
   assert.ok(!hosts.includes("host0"), "最旧的 host0 应被淘汰");
   assert.ok(hosts.includes(`host${TEMPLATE_MAX + 4}`), "最新的应保留");
 });
+
+test("saveTemplateFromResults: 合并历史字段（分步表单跨步记忆）", () => {
+  const prior = buildTemplateFromMatches("example.com", "https://apply.example.com/x", [
+    mkMatch("f1", "name", "张三"),
+    mkMatch("f2", "phone", "旧号"),
+  ]);
+  // 第二次扫描只扫到 name 与 email（分步表单下一步）
+  const current = [mkMatch("f1", "name", "张三"), mkMatch("f5", "email", "a@b.com")];
+  const template = saveTemplateFromResults("example.com", "https://apply.example.com/x", current, prior);
+  const keys = template.fields.map(f => f.fieldKey).sort();
+  assert.deepEqual(keys, ["email", "name", "phone"], "历史字段应保留追加");
+  assert.equal(template.fields.find(f => f.fieldKey === "name").value, "张三");
+  assert.equal(template.fields.find(f => f.fieldKey === "phone").value, "旧号");
+});

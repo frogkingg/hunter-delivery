@@ -44,6 +44,16 @@ export function matchRules(fields, resumeFields) {
     if (field.type === "checkbox" && !/^(是|有|true|1|同意|愿意|会|否|无|false|0|不同意|不愿意|不会)$/i.test(value)) {
       return { ...base, fieldKey: best.key, value, confidence, status: "manual", reason: "勾选框需手动确认（简历值非明确布尔）" };
     }
+    if ((field.type === "select" || field.type === "radio") && Array.isArray(field.options) && field.options.length) {
+      const expected = value.replace(/\s+/g, "").toLowerCase();
+      const hit = field.options.some(option => {
+        const text = String(option || "").replace(/\s+/g, "").toLowerCase();
+        return text && (text === expected || text.includes(expected) || expected.includes(text));
+      });
+      if (!hit) {
+        return { ...base, fieldKey: best.key, value, confidence, status: "manual", reason: "简历值与页面选项不匹配，请手动选择" };
+      }
+    }
     return { ...base, fieldKey: best.key, value, confidence, status: "match", reason: `规则命中「${RESUME_FIELD_LABELS[best.key]}」` };
   });
 }

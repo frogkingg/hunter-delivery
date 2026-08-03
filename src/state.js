@@ -18,6 +18,7 @@ export const state = {
   fillMatches: [],
   fillSelected: new Set(),
   fillValues: {},
+  fillFailedIds: [],
   fillAiEnabled: true,
   fillTemplateEnabled: true,
 };
@@ -38,6 +39,7 @@ export function setFillScanPage(page) { state.fillScanPage = page; }
 export function setFillMatches(matches) { state.fillMatches = matches; }
 export function setFillSelected(keys) { state.fillSelected = keys; }
 export function setFillValues(values) { state.fillValues = values; }
+export function setFillFailedIds(ids) { state.fillFailedIds = ids; }
 export function setFillAiEnabled(value) { state.fillAiEnabled = value; }
 export function setFillTemplateEnabled(value) { state.fillTemplateEnabled = value; }
 
