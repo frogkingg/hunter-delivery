@@ -4,11 +4,16 @@ import { CANONICAL_FIELDS } from "./form-fields.js";
 // 空字段模板：所有规范字段均为空字符串。
 export const EMPTY_RESUME_FIELDS = Object.fromEntries(CANONICAL_FIELDS.map(f => [f.key, ""]));
 
-// UI 渲染用：字段 key/label/类型。
-export const RESUME_FIELDS_SCHEMA = CANONICAL_FIELDS.map(f => ({ key: f.key, label: f.label, type: f.type }));
+// UI 渲染用：字段 key/label/类型/分组。
+export const RESUME_FIELDS_SCHEMA = CANONICAL_FIELDS.map(f => ({ key: f.key, label: f.label, type: f.type, group: f.group }));
 
-// 复杂字段：本地正则难以可靠提取，AI 结果优先。
-const COMPLEX_KEYS = new Set(["selfEvaluation", "skills", "languages", "hobbies", "availableTime", "portfolio", "education", "workHistory"]);
+// 复杂字段：本地正则难以可靠提取，AI 结果优先（文本类描述字段与补充内容）。
+const COMPLEX_KEYS = new Set([
+  "selfEvaluation", "skills", "languages", "hobbies", "availableTime", "portfolio",
+  "education", "workHistory",
+  "internshipDescription", "projectDescription", "profileSummary", "additionalInfo",
+  "awards", "certificates", "campusExperience",
+]);
 
 const firstMatch = (text, pattern) => {
   const match = String(text || "").match(pattern);
@@ -52,6 +57,8 @@ export function extractResumeFieldsLocal(text) {
   const eduSection = source.match(/教育经历[\s\S]*?(?=工作经历|项目经历|自我评价|$)/);
   const eduText = eduSection ? eduSection[0] : source;
   if (!fields.school) fields.school = firstMatch(eduText, /(?:毕业院校|学校|院校|就读学校)\s*[:：]?\s*([\u4e00-\u9fa5A-Za-z（）()·]{2,30})/);
+  const pad2 = value => String(value || "").padStart(2, "0");
+  const timeRangePattern = /(\d{4})[-/年.](\d{1,2})月?\s*[至\-—到]?\s*(\d{4}|至今)(?:[-/年.](\d{1,2})月?)?[\d\-/\s年]*([\u4e00-\u9fa5A-Za-z（）()·]+)[\s]+([^\n]{2,30})/;
   const eduLine = eduText.match(/(\d{4})[-/年.]\d{1,2}月?\s*[至\-—到]?\s*(\d{4}|至今)[\d\-/\s年]*([\u4e00-\u9fa5A-Za-z（）()·]+)[\s]+([\u4e00-\u9fa5A-Za-z·、]+)[\s]+([\u4e00-\u9fa5A-Za-z·、]+)/);
   if (eduLine) {
     if (!fields.school) fields.school = eduLine[3];
@@ -78,8 +85,49 @@ export function extractResumeFieldsLocal(text) {
   if (workYearsMatch && Number(workYearsMatch[1]) <= 15) fields.workYears = `${workYearsMatch[1]}年`;
   if (!fields.workYears) fields.workYears = firstMatch(source, /(?:工作年限|工作经验)\s*[:：]?\s*([\d一二三四五六七八九十]+年)/);
 
-  const stop = /(?=\n\s*\n|专业技能|自我评价|教育经历|工作经历|项目经历|$)/;
-  fields.selfEvaluation = firstMatch(source, /(?:自我评价|自我介绍|个人评价|个人简介)\s*[:：]?\s*([\s\S]+?)(?=\n\s*\n|专业技能|教育经历|工作经历|项目经历|$)/);
+  // 实习经历段落：时间区间 + 公司 + 岗位，内容取后续非时间行。
+  const internSection = source.match(/实习经历[\s\S]*?(?=项目经历|工作经历|教育经历|自我评价|个人简介|获奖情况|证书|补充内容|$)/);
+  const internText = internSection ? internSection[0] : "";
+  const internLine = internText.match(timeRangePattern);
+  if (internLine) {
+    fields.internshipStart = `${internLine[1]}-${pad2(internLine[2])}`;
+    fields.internshipEnd = internLine[3] === "至今" ? "" : internLine[4] ? `${internLine[3]}-${pad2(internLine[4])}` : internLine[3];
+    fields.internshipCompany = internLine[5];
+    fields.internshipTitle = internLine[6].trim();
+    fields.internshipPeriod = `${fields.internshipStart} 至 ${fields.internshipEnd || "至今"}`;
+  }
+  if (!fields.internshipCompany) fields.internshipCompany = firstMatch(source, /(?:实习公司|实习单位|实习企业)\s*[:：]?\s*([\u4e00-\u9fa5A-Za-z（）()·]{2,30})/);
+  if (!fields.internshipTitle) fields.internshipTitle = firstMatch(source, /(?:实习岗位|实习职位)\s*[:：]?\s*([^\n]{2,30})/);
+  if (!fields.internshipDescription) {
+    const descLines = internText.split(/\r?\n/).map(line => line.trim().replace(/^[-*•]\s*/, "")).filter(line => line && !/^\d{4}[-/年.]\d{1,2}/.test(line));
+    if (descLines.length) fields.internshipDescription = descLines.slice(0, 3).join("；").slice(0, 300);
+  }
+
+  // 项目经历段落：时间区间 + 项目名/公司 + 角色，内容取后续非时间行。
+  const projectSection = source.match(/项目经历[\s\S]*?(?=实习经历|工作经历|教育经历|自我评价|个人简介|获奖情况|证书|补充内容|$)/);
+  const projectText = projectSection ? projectSection[0] : "";
+  const projectLine = projectText.match(timeRangePattern);
+  if (projectLine) {
+    fields.projectStart = `${projectLine[1]}-${pad2(projectLine[2])}`;
+    fields.projectEnd = projectLine[3] === "至今" ? "" : projectLine[4] ? `${projectLine[3]}-${pad2(projectLine[4])}` : projectLine[3];
+    fields.projectCompany = projectLine[5];
+    fields.projectRole = projectLine[6].trim();
+    fields.projectPeriod = `${fields.projectStart} 至 ${fields.projectEnd || "至今"}`;
+  }
+  fields.projectName = firstMatch(projectText, /(?:项目名称|项目名)\s*[:：]?\s*([^\n]{2,40})/);
+  if (!fields.projectName && projectLine) fields.projectName = projectLine[5] || projectLine[6];
+  if (!fields.projectRole) fields.projectRole = firstMatch(projectText, /(?:项目角色|项目职责|担任角色)\s*[:：]?\s*([^\n]{2,30})/);
+  if (!fields.projectDescription) {
+    const descLines = projectText.split(/\r?\n/).map(line => line.trim().replace(/^[-*•]\s*/, "")).filter(line => line && !/^\d{4}[-/年.]\d{1,2}/.test(line) && !/^项目(名称|角色|时间|公司)\s*[:：]/.test(line));
+    if (descLines.length) fields.projectDescription = descLines.slice(0, 3).join("；").slice(0, 300);
+  }
+  fields.awards = firstMatch(source, /(?:获奖情况|获奖经历|所获奖励|荣誉奖项)\s*[:：]?\s*([^\n]{2,80})/);
+  fields.certificates = firstMatch(source, /(?:资格证书|证书|职业证书|技能证书)\s*[:：]?\s*([^\n]{2,80})/);
+  fields.campusExperience = firstMatch(source, /(?:校园经历|学生工作|社团经历)\s*[:：]?\s*([^\n]{2,80})/);
+  fields.additionalInfo = firstMatch(source, /(?:补充内容|补充说明|其他说明|附加信息)\s*[:：]?\s*([^\n]{2,120})/);
+
+  fields.profileSummary = firstMatch(source, /(?:个人简介|个人概述|个人介绍)\s*[:：]?\s*([\s\S]+?)(?=\n\s*\n|自我评价|专业技能|教育经历|工作经历|实习经历|项目经历|获奖情况|证书|补充内容|$)/);
+  fields.selfEvaluation = firstMatch(source, /(?:自我评价|自我介绍|个人评价|自我描述)\s*[:：]?\s*([\s\S]+?)(?=\n\s*\n|个人简介|专业技能|教育经历|工作经历|实习经历|项目经历|$)/);
   fields.skills = firstMatch(source, /(?:专业技能|技能特长|个人技能)\s*[:：]?\s*([\s\S]+?)(?=\n\s*\n|自我评价|教育经历|工作经历|项目经历|$)/);
   fields.languages = firstMatch(source, /(?:语言能力|外语水平|英语水平)\s*[:：]?\s*([\u4e00-\u9fa5A-Za-z·、（）()0-9]{2,40})/);
   fields.hobbies = firstMatch(source, /(?:兴趣爱好|爱好|兴趣)\s*[:：]?\s*([^\n]{2,40})/);

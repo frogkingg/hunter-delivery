@@ -13,6 +13,12 @@ const FULL_RESUME = {
   hobbies: "阅读", availableTime: "随时到岗", referral: "王五", github: "https://github.com/zhangsan",
   linkedin: "https://linkedin.com/in/zhangsan", politicalStatus: "群众", maritalStatus: "未婚",
   portfolio: "https://zhangsan.dev",
+  internshipCompany: "字节跳动", internshipTitle: "产品实习生", internshipStart: "2021-06",
+  internshipEnd: "2021-09", internshipPeriod: "2021-06 至 2021-09", internshipDescription: "用户调研与需求文档",
+  projectName: "智能招聘平台", projectRole: "项目负责人", projectCompany: "某科技集团",
+  projectStart: "2022-03", projectEnd: "2022-06", projectPeriod: "2022-03 至 2022-06",
+  projectDescription: "简历匹配算法，召回率提升 20%", profileSummary: "3 年产品经验，专注 B 端",
+  additionalInfo: "可全职，一周内到岗", awards: "国家奖学金", certificates: "CET-6", campusExperience: "学生会主席",
 };
 
 function toFields(labels) {
@@ -25,7 +31,7 @@ test("数据集规模 ≥200 且含 ≥5 个噪音标签", () => {
 });
 
 test("matchRules: 常见字段命中率 ≥95%（姓名/电话/邮箱等）", () => {
-  const common = ["name", "phone", "email", "gender", "birthDate", "school", "degree", "major", "graduationYear", "workYears", "currentCity"];
+  const common = ["name", "phone", "email", "gender", "birthDate", "school", "degree", "major", "graduationYear", "workYears", "currentCity", "internshipCompany", "internshipTitle", "internshipPeriod", "internshipDescription", "projectName", "projectRole", "projectDescription", "profileSummary", "additionalInfo", "awards"];
   const cases = MATCHER_DATASET.filter(c => common.includes(c.key));
   assert.ok(cases.length >= 80, `常见字段样本 ${cases.length}`);
   const results = matchRules(toFields(cases.map(c => c.label)), FULL_RESUME);

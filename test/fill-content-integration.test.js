@@ -16,6 +16,9 @@ const FULL_RESUME = {
   languages: "英语 CET-6", hobbies: "阅读", availableTime: "随时到岗", referral: "王五",
   github: "https://github.com/zhangsan", linkedin: "https://linkedin.com/in/zhangsan",
   politicalStatus: "群众", maritalStatus: "未婚", portfolio: "https://zhangsan.dev",
+  internshipCompany: "字节跳动", internshipTitle: "产品实习生", internshipPeriod: "2021-06 至 2021-09",
+  internshipDescription: "用户调研与需求文档撰写", projectName: "智能招聘平台", projectRole: "项目负责人",
+  projectDescription: "简历匹配算法，召回率提升 20%",
 };
 
 function loadFixture(name) {
@@ -28,7 +31,7 @@ const FIXTURES = [
   { name: "antd-generic.html", totalControls: 13, expectFields: 12 },
   { name: "zhilian.html", totalControls: 12, expectFields: 11 },
   { name: "moka.html", totalControls: 10, expectFields: 10 },
-  { name: "beisen.html", totalControls: 10, expectFields: 10 },
+  { name: "beisen.html", totalControls: 17, expectFields: 17 },
   { name: "dayi.html", totalControls: 9, expectFields: 9 },
 ];
 
@@ -37,7 +40,7 @@ const EXPECTED_MAP = {
   "antd-generic.html": { 姓名: "name", 手机号码: "phone", 邮箱: "email", 性别: "gender", 最高学历: "degree", 毕业院校: "school", 期望薪资: "expectedSalary", 自我评价: "selfEvaluation", 到岗时间: "availableTime", 技能: null },
   "zhilian.html": { 姓名: "name", 手机号: "phone", 邮箱: "email", 性别: "gender", 学历: "degree", 专业: "major", 毕业院校: "school", 期望城市: "expectedCity", 期望职位: "expectedPosition", 到岗时间: "availableTime", 自我评价: "selfEvaluation" },
   "moka.html": { 姓名: "name", 联系电话: "phone", 邮箱: "email", 现居城市: "currentCity", 毕业院校: "school", 学历: "degree", 专业: "major", 工作年限: "workYears", 自我介绍: "selfEvaluation", 出生日期: "birthDate" },
-  "beisen.html": { 姓名: "name", 手机号: "phone", 邮箱: "email", 性别: "gender", 生日: "birthDate", 籍贯: "hometown", 政治面貌: "politicalStatus", 婚姻状况: "maritalStatus", 通讯地址: "address", 邮编: "postcode" },
+  "beisen.html": { 姓名: "name", 手机号: "phone", 邮箱: "email", 性别: "gender", 生日: "birthDate", 籍贯: "hometown", 政治面貌: "politicalStatus", 婚姻状况: "maritalStatus", 通讯地址: "address", 邮编: "postcode", 实习公司: "internshipCompany", 实习岗位: "internshipTitle", 实习时间: "internshipPeriod", 实习内容: "internshipDescription", 项目名称: "projectName", 项目角色: "projectRole", 项目内容: "projectDescription" },
   "dayi.html": { 姓名: "name", 手机号: "phone", 邮箱: "email", 毕业院校: "school", 专业: "major", 期望薪资: null, 到岗时间: "availableTime", 自我评价: "selfEvaluation", 我同意以上信息属实: null },
 };
 
@@ -130,6 +133,9 @@ test("填充执行：5 个夹具原生/下拉/单选/多选/日期全部成功",
       const marriage = doc.querySelector("[name=marriage]");
       assert.equal(marriage.value, "1", "value≠label 的 select 应按选项文本选中（未婚→1）");
       assert.equal(doc.querySelector("[name=postcode]").value, "200120");
+      assert.equal(doc.querySelector("[name=internCompany]").value, "字节跳动");
+      assert.equal(doc.querySelector("[name=internPeriod]").value, "2021-06 至 2021-09");
+      assert.ok(doc.querySelector("[name=projectDesc]").value.includes("简历匹配算法"));
     }
     dom.window.close();
   }

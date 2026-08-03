@@ -128,3 +128,4 @@ body.dark .queue-delivered { background: #1a2e24; border-color: #12b76a; }
 .fill-template-list, .fill-log-list { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
 .fill-template-item, .fill-log-item { font-size: 12px; color: #374151; padding: 6px 8px; border: 1px solid #e5e7eb; border-radius: 6px; background: #fff; }
 .fill-log-item small { display: block; color: #6b7280; }
+.resume-fields-group { grid-column: 1 / -1; font-size: 12px; color: #6b7280; border-bottom: 1px solid #e5e7eb; padding: 6px 0 2px; margin-top: 4px; }

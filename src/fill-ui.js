@@ -2,7 +2,7 @@
 import { state, activeProfile, setFillScanFields, setFillScanPage, setFillMatches, setFillSelected, setFillValues, setFillFailedIds, setFillAiEnabled, setFillTemplateEnabled } from "./state.js";
 import { $, toast, fillMessagePage } from "./chrome-helpers.js";
 import { escapeHtml } from "./pure-utils.js";
-import { RESUME_FIELD_LABELS } from "./form-fields.js";
+import { RESUME_FIELD_LABELS, GROUP_LABELS } from "./form-fields.js";
 import { matchRules, applyAiResults, buildAiMatchPrompt } from "./matcher.js";
 import { applyTemplate, saveTemplateFromResults, capTemplates } from "./site-templates.js";
 import { appendFillLog, summarizeResults } from "./fill-log.js";
@@ -36,12 +36,22 @@ export function renderFillProfileSelect() {
 export function renderResumeFields() {
   const list = $("resumeFieldsList");
   const profile = activeProfile();
-  const fields = profile?.resumeFields || {};
+  const resume = profile?.resumeFields || {};
   if (!list) return;
-  list.innerHTML = RESUME_FIELDS_SCHEMA.map(field =>
-    `<label>${escapeHtml(field.label)}<input type="text" data-resume-key="${field.key}" value="${escapeHtml(fields[field.key] || "")}"></label>`
-  ).join("");
-  const filled = Object.values(fields).filter(Boolean).length;
+  const groups = [];
+  for (const field of RESUME_FIELDS_SCHEMA) {
+    let group = groups.find(g => g.key === field.group);
+    if (!group) {
+      group = { key: field.group, title: GROUP_LABELS[field.group] || field.group, fields: [] };
+      groups.push(group);
+    }
+    group.fields.push(field);
+  }
+  list.innerHTML = groups.map(group => `
+    <div class="resume-fields-group"><b>${escapeHtml(group.title)}</b></div>
+    ${group.fields.map(field => `<label>${escapeHtml(field.label)}<input type="text" data-resume-key="${field.key}" value="${escapeHtml(resume[field.key] || "")}"></label>`).join("")}
+  `).join("");
+  const filled = Object.values(resume).filter(Boolean).length;
   $("resumeFieldsStatus").textContent = `（${filled} 项已填写）`;
 }
 
