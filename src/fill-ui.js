@@ -1,5 +1,5 @@
 // 智能填充：侧边栏交互逻辑（扫描/匹配/填充/模板/历史）。
-import { state, setFillScanFields, setFillScanPage, setFillMatches, setFillSelected, setFillValues, setFillFailedIds, setFillAiEnabled, setFillTemplateEnabled } from "./state.js";
+import { state, activeProfile, setFillScanFields, setFillScanPage, setFillMatches, setFillSelected, setFillValues, setFillFailedIds, setFillAiEnabled, setFillTemplateEnabled } from "./state.js";
 import { $, toast, fillMessagePage } from "./chrome-helpers.js";
 import { escapeHtml } from "./pure-utils.js";
 import { RESUME_FIELD_LABELS } from "./form-fields.js";
@@ -7,7 +7,7 @@ import { matchRules, applyAiResults, buildAiMatchPrompt } from "./matcher.js";
 import { applyTemplate, saveTemplateFromResults, capTemplates } from "./site-templates.js";
 import { appendFillLog, summarizeResults } from "./fill-log.js";
 import { RESUME_FIELDS_SCHEMA, extractResumeFieldsLocal, buildResumeExtractPrompt, mergeResumeFields } from "./resume-fields.js";
-import { activeProfile, switchProfile, saveProfiles } from "./config.js";
+import { switchProfile, saveProfiles } from "./config.js";
 import { ai, parseAiJson } from "./ai-client.js";
 
 // —— 存储工具 ——
