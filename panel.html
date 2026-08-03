@@ -25,12 +25,12 @@
   <hr>
   <h3>扫描网申页面</h3>
   <p class="hint" id="fillCurrentSite">未检测到网申页面。请打开目标公司的网申/信息录入页后点击「扫描」。首次使用需授权该网站。</p>
-  <div class="row fill-actions">
+  <div class="fill-actions">
     <button id="scanFillPage" class="primary">扫描当前页面</button>
+    <button id="clearFill" class="secondary">清空</button>
     <button id="fillSelected" class="primary" disabled>填充选中项（0）</button>
     <button id="fillAll" class="secondary" disabled>全部填充</button>
     <button id="stopFill" class="secondary" hidden>停止</button>
-    <button id="clearFill" class="secondary">清空</button>
   </div>
   <p id="fillProgress" class="hint" aria-live="polite"></p>
   <div class="row toggle-setting"><label><input id="fillAiToggle" type="checkbox" checked><span>复杂字段使用 AI 匹配<small>未识别/低置信字段批量发送给已配置的 AI 服务</small></span></label></div>

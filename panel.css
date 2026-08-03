@@ -128,7 +128,8 @@ body.dark .queue-delivered { background: #1a2e24; border-color: #12b76a; }
 .resume-entry-fields label:last-child:nth-child(odd) { grid-column: 1 / -1; }
 .resume-entry-actions { margin-top: 6px; text-align: right; }
 .text-button.danger { color: #dc2626; }
-.fill-actions { flex-wrap: wrap; }
+.fill-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 4px; }
+.fill-actions button { width: 100%; white-space: nowrap; }
 .fill-result-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .fill-row { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; padding: 8px; border: 1px solid #e5e7eb; border-radius: 8px; align-items: start; }
 .fill-row-main { min-width: 0; }
