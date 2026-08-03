@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>大易云校招申请表</title></head>
+<body>
+<form id="form">
+  <input type="text" name="name" placeholder="请输入姓名">
+  <input type="tel" name="phone" placeholder="请输入手机号">
+  <input type="email" name="email" placeholder="请输入邮箱">
+  <input type="text" name="school" placeholder="请输入毕业院校">
+  <input type="text" name="major" placeholder="请输入专业">
+  <div class="dayi-select"><label>期望薪资</label><select name="salary"><option value="">请选择</option><option value="10-20K">10-20K</option><option value="20-30K">20-30K</option></select></div>
+  <div class="dayi-select"><label>到岗时间</label><select name="arrival"><option value="">请选择</option><option value="随时到岗">随时到岗</option><option value="一个月内">一个月内</option></select></div>
+  <label><input type="checkbox" name="agree" value="同意">我同意以上信息属实</label>
+  <textarea name="intro" placeholder="请输入自我评价"></textarea>
+<input type="hidden" name="csrf_token" value="abc">
+<input type="hidden" name="tracking_id" value="t1">
+</form>
+</body>
+</html>

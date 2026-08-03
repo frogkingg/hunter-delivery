@@ -102,6 +102,37 @@ export const MESSAGE_TYPES = {
     response: { ok: "boolean", data: "Object?" },
   },
 
+  // 智能填充：panel → content（经 fillMessagePage 直连并按需注入 fill-content.js）
+  SMART_FILL_SCAN: {
+    direction: "panel→content",
+    payload: {},
+    response: { ok: "boolean", engineVersion: "number", fields: "FieldDescriptor[]", repeaters: "RepeaterDescriptor[]", page: "{ title, url, host }?", scanId: "string", documentFingerprint: "string", formFingerprint: "string" },
+  },
+  SMART_FILL_PREPARE: {
+    direction: "panel→content",
+    payload: { scanId: "string", documentFingerprint: "string", formFingerprint: "string", plans: "[{ id, fingerprint, targetCount }]" },
+    response: { ok: "boolean", fields: "FieldDescriptor[]", repeaters: "RepeaterDescriptor[]", results: "[{ id, arrayKey, ok, added, currentCount?, error? }]", scanId: "string", documentFingerprint: "string", formFingerprint: "string", error: "string?" },
+  },
+  SMART_FILL_APPLY: {
+    direction: "panel→content",
+    payload: { scanId: "string", documentFingerprint: "string", formFingerprint: "string", fills: "[{ id, value, type, fingerprint }]" },
+    response: { ok: "boolean", results: "[{ id, ok, resolvedFingerprint?, verification?, error?, errorCode? }]", error: "string?", errorCode: "string?" },
+  },
+  SMART_FILL_HIGHLIGHT: {
+    direction: "panel→content",
+    payload: { ids: "string[]", on: "boolean" },
+    response: { ok: "boolean" },
+  },
+  SMART_FILL_CANCEL: {
+    direction: "panel→content",
+    payload: {},
+    response: { ok: "boolean" },
+  },
+  SMART_FILL_PROGRESS: {
+    direction: "content→panel（事件，非应答）",
+    payload: { index: "number", total: "number", id: "string", ok: "boolean", error: "string?" },
+  },
+
   // Stream（port 连接，非 sendMessage）
   AI_CALL_STREAM: {
     direction: "panel→background（port）",

@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>米哈游校园招聘简历</title></head>
+<body>
+<form id="resumeForm">
+  <section class="resume-section">
+    <h2>基本信息</h2>
+    <div class="ant-form-item">
+      <label for="resumeInfo_name">姓名</label>
+      <input id="resumeInfo_name" type="text">
+    </div>
+    <div class="ant-form-item">
+      <label for="resumeInfo_nicknameList">花名/昵称</label>
+      <input id="resumeInfo_nicknameList" type="text">
+    </div>
+    <div class="ant-form-item">
+      <label for="resumeInfo_lastName">姓全拼（拼音/英文）</label>
+      <input id="resumeInfo_lastName" type="text">
+    </div>
+    <div class="ant-form-item">
+      <label for="resumeInfo_firstName">名全拼（拼音/英文）</label>
+      <input id="resumeInfo_firstName" type="text">
+    </div>
+    <div class="ant-form-item phone-item">
+      <label>手机号</label>
+      <div class="ant-input-group">
+        <div class="ant-select phone-prefix">
+          <div class="ant-select-selector">
+            <input id="rc_select_1" class="ant-select-selection-search-input" type="search" autocomplete="off" aria-controls="rc_select_1_list">
+          </div>
+        </div>
+        <input id="resumeInfo_phoneList" type="text" inputmode="numeric">
+      </div>
+    </div>
+    <div class="ant-form-item">
+      <label for="resumeInfo_emailList">邮箱</label>
+      <input id="resumeInfo_emailList" type="email">
+    </div>
+    <div class="ant-form-item">
+      <label>IM（微信/QQ）</label>
+      <div class="ant-space-compact">
+        <div class="ant-select im-prefix">
+          <div class="ant-select-selector">
+            <input id="rc_select_3" class="ant-select-selection-search-input" type="search" autocomplete="off" aria-controls="rc_select_3_list">
+          </div>
+        </div>
+        <input id="resumeInfo_imList" type="text" placeholder="请填写">
+      </div>
+    </div>
+  </section>
+
+  <section class="resume-section">
+    <h2>游戏经历</h2>
+    <div class="ant-form-item">
+      <label for="resumeInfo_gameExperienceList_0_gameName">游戏名称</label>
+      <input id="resumeInfo_gameExperienceList_0_gameName" type="text">
+    </div>
+    <div class="ant-form-item">
+      <label for="resumeInfo_gameExperienceList_0_playContent">游玩程度</label>
+      <input id="resumeInfo_gameExperienceList_0_playContent" type="text">
+    </div>
+  </section>
+
+  <section class="resume-section education-section">
+    <h2>教育背景</h2>
+    <div class="education-card" data-entry-index="0">
+      <div class="ant-form-item">
+        <label>起止时间</label>
+        <div class="ant-picker ant-picker-range">
+          <input id="educations_0_startDate" placeholder="就读时间">
+          <input placeholder="毕业时间">
+        </div>
+      </div>
+      <div class="ant-form-item">
+        <label for="educations_0_schoolName">学校名称</label>
+        <input id="educations_0_schoolName" type="text">
+      </div>
+      <div class="ant-form-item">
+        <label for="educations_0_schoolAddress">学校所在地</label>
+        <input id="educations_0_schoolAddress" type="text">
+      </div>
+      <div class="ant-form-item">
+        <label for="educations_0_college">学院名称</label>
+        <input id="educations_0_college" type="text">
+      </div>
+      <div class="ant-form-item">
+        <label for="educations_0_major">专业名称</label>
+        <input id="educations_0_major" type="text">
+      </div>
+    </div>
+    <button type="button" class="add-entry" data-add-kind="education">+ 教育背景</button>
+  </section>
+
+  <section class="resume-section internship-section">
+    <h2>实习经历</h2>
+    <div class="internship-list"></div>
+    <button type="button" class="add-entry" data-add-kind="internship">+ 实习经历</button>
+  </section>
+
+  <section class="resume-section work-section">
+    <h2>工作经历</h2>
+    <div class="work-list"></div>
+    <button type="button" class="add-entry" data-add-kind="work">+ 工作经历</button>
+  </section>
+
+  <section class="resume-section project-section">
+    <h2>项目经历</h2>
+    <div class="project-list"></div>
+    <button type="button" class="add-entry" data-add-kind="project">+ 项目经历</button>
+  </section>
+</form>
+</body>
+</html>
