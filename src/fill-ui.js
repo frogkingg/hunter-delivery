@@ -48,15 +48,25 @@ function entryCardHtml(group, entry, index) {
   </details>`;
 }
 
+// 单点基础字段：单行紧凑布局（标签左、输入右），空值默认折叠只占一行提示。
+function scalarFieldHtml(field, value) {
+  const empty = !String(value || "").trim();
+  const textarea = field.type === "textarea";
+  const input = textarea
+    ? `<textarea rows="2" data-resume-key="${field.key}">${escapeHtml(value)}</textarea>`
+    : `<input type="text" data-resume-key="${field.key}" value="${escapeHtml(value)}">`;
+  return `<label class="resume-field${empty ? " is-empty" : ""}${textarea ? " is-textarea" : ""}"><span>${escapeHtml(field.label)}</span>${input}</label>`;
+}
+
 export function renderResumeFields() {
   const list = $("resumeFieldsList");
   const profile = activeProfile();
   const resume = profile?.resumeFields || {};
   if (!list) return;
-  const scalarHtml = RESUME_FIELDS_SCHEMA
-    .filter(field => SCALAR_GROUPS.includes(field.group))
-    .map(field => `<label>${escapeHtml(field.label)}<input type="text" data-resume-key="${field.key}" value="${escapeHtml(resume[field.key] || "")}"></label>`)
-    .join("");
+  const scalarFields = RESUME_FIELDS_SCHEMA.filter(field => SCALAR_GROUPS.includes(field.group));
+  const emptyCount = scalarFields.filter(field => !String(resume[field.key] || "").trim()).length;
+  const filledCount = scalarFields.filter(field => String(resume[field.key] || "").trim()).length;
+  const scalarHtml = scalarFields.map(field => scalarFieldHtml(field, resume[field.key] || "")).join("");
   const entriesHtml = ENTRY_GROUPS.map(group => {
     const entries = Array.isArray(resume[group.resumeKey]) ? resume[group.resumeKey] : [];
     const cards = entries.map((entry, index) => entryCardHtml(group, entry, index)).join("");
@@ -65,9 +75,28 @@ export function renderResumeFields() {
       ${cards || `<p class="hint">暂无${escapeHtml(group.title)}，点击「添加」手动填写。</p>`}
     </div>`;
   }).join("");
-  list.innerHTML = `<div class="resume-fields-grid">${scalarHtml}</div>${entriesHtml}`;
-  const filled = Object.values(resume).filter(value => (Array.isArray(value) ? value.length : value)).length;
-  $("resumeFieldsStatus").textContent = `（${filled} 项已填写）`;
+  const toggle = emptyCount
+    ? `<button type="button" class="text-button resume-empty-toggle" data-empty-toggle data-empty-count="${emptyCount}">展开空字段（${emptyCount}）</button>`
+    : "";
+  list.innerHTML = `<div class="resume-fields-head">
+      <span class="resume-fields-count">已填 ${filledCount} / 共 ${scalarFields.length} 项</span>${toggle}
+    </div>
+    <div class="resume-fields-grid" data-hide-empty="on">${scalarHtml}</div>${entriesHtml}`;
+  $("resumeFieldsStatus").textContent = `（已填 ${filledCount + entriesFilled(resume)} / 共 ${scalarFields.length + ENTRY_GROUPS.length}）`;
+}
+
+function entriesFilled(resume) {
+  return ENTRY_GROUPS.filter(group => (Array.isArray(resume[group.resumeKey]) ? resume[group.resumeKey] : []).length).length;
+}
+
+// 展开/隐藏空字段（纯 CSS 属性切换，无需重渲染）。
+export function toggleResumeEmptyFields() {
+  const grid = document.querySelector(".resume-fields-grid[data-hide-empty]");
+  const button = document.querySelector("[data-empty-toggle]");
+  if (!grid) return;
+  const hidden = grid.dataset.hideEmpty === "on";
+  grid.dataset.hideEmpty = hidden ? "off" : "on";
+  if (button) button.textContent = hidden ? "隐藏空字段" : `展开空字段（${button.dataset.emptyCount || ""}）`;
 }
 
 // 从 DOM 收集标量与经历条目（空条目自动剔除）。
@@ -448,6 +477,7 @@ function bindFillEvents() {
       const [groupKey, id] = removeButton.dataset.removeEntry.split("|");
       removeResumeEntry(groupKey, id);
     }
+    if (event.target.closest("[data-empty-toggle]")) toggleResumeEmptyFields();
   });
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === "SMART_FILL_PROGRESS") {

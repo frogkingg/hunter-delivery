@@ -125,3 +125,69 @@ test("简历字段条目编辑器：多条目卡片渲染、添加/删除、保�
     dom.window.close();
   }
 });
+
+test("基础字段紧凑布局：单行标签、空值折叠、多行字段整行", async () => {
+  const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  globalThis.chrome = {
+    storage: { local: { get: async () => ({}), set: async () => {} } },
+    runtime: { sendMessage: (_m, cb) => cb && cb({ ok: true }), onMessage: { addListener() {} }, connect: () => ({ onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }), getURL: p => p },
+    tabs: { query: async () => [] },
+  };
+  const { state, setProfiles, setActiveProfileIndex } = await import("../src/state.js");
+  const { renderResumeFields, toggleResumeEmptyFields } = await import("../src/fill-ui.js");
+  try {
+    // 模拟真实简历：部分字段有值（含长文本），部分为空
+    setProfiles([{ name: "测试简历", resumeFields: {
+      name: "张三", phone: "13800138000", email: "zhangsan@example.com", gender: "男",
+      birthDate: "1998-06", idCard: "", hometown: "北京", currentCity: "上海",
+      address: "", postcode: "", politicalStatus: "", maritalStatus: "",
+      expectedCity: "上海", expectedSalary: "20-30K", expectedPosition: "数据分析师", availableTime: "随时到岗",
+      workYears: "3年", currentCompany: "", currentTitle: "",
+      profileSummary: "", selfEvaluation: "",
+      skills: "熟练掌握 Python (Pandas, Scikit-learn, Matplotlib, Seaborn), SQL, Stata, VBA, Microsoft Office",
+      languages: "雅思 7 分，GRE 322 分，四级 630，六级 580，适应英语工作环境",
+      hobbies: "", github: "", linkedin: "", portfolio: "", referral: "",
+      awards: "2024 年三好学生、2024及2023年乙等奖学金、第四届大学生金融科技建模大赛一等奖",
+      certificates: "", campusExperience: "", additionalInfo: "",
+      education: [], internships: [], projects: [],
+    } }]);
+    setActiveProfileIndex(0);
+    renderResumeFields();
+
+    const grid = window.document.querySelector(".resume-fields-grid");
+    assert.ok(grid, "标量网格应渲染");
+    assert.equal(grid.dataset.hideEmpty, "on", "默认隐藏空字段");
+    const emptyFields = window.document.querySelectorAll(".resume-field.is-empty");
+    const filledFields = window.document.querySelectorAll(".resume-field:not(.is-empty)");
+    assert.equal(emptyFields.length, 17, `空字段应为 17 个，实际 ${emptyFields.length}`);
+    assert.equal(filledFields.length, 15, `有值字段应为 15 个，实际 ${filledFields.length}`);
+    // 折叠提示按钮
+    const toggle = window.document.querySelector("[data-empty-toggle]");
+    assert.ok(toggle && toggle.textContent.includes("展开空字段（17）"), "折叠按钮文案应含空字段数");
+    // 多行字段整行且为 textarea
+    const skills = window.document.querySelector('[data-resume-key="skills"]');
+    assert.ok(skills && skills.tagName === "TEXTAREA", "专业技能应为 textarea");
+    assert.ok(skills.closest(".resume-field").classList.contains("is-textarea"), "专业技能应整行展示");
+    // 单行字段标签与输入同行（flex row）
+    const nameField = window.document.querySelector('[data-resume-key="name"]').closest(".resume-field");
+    assert.ok(nameField.querySelector("span").textContent.includes("姓名"), "标签在输入左侧");
+    // 状态计数
+    assert.ok(window.document.getElementById("resumeFieldsStatus").textContent.includes("已填 15 / 共 35"));
+
+    // 切换展开空字段
+    toggleResumeEmptyFields();
+    assert.equal(grid.dataset.hideEmpty, "off", "切换后显示空字段");
+    assert.ok(toggle.textContent.includes("隐藏空字段"));
+    toggleResumeEmptyFields();
+    assert.equal(grid.dataset.hideEmpty, "on");
+  } finally {
+    delete globalThis.window;
+    delete globalThis.document;
+    delete globalThis.chrome;
+    dom.window.close();
+  }
+});
