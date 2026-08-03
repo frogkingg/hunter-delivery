@@ -231,3 +231,43 @@ test("apply：填充中途可取消", async () => {
   assert.equal(applied.length, 2, "第二个字段完成后应停止");
   dom.window.close();
 });
+
+test("页面重渲染后填充定位正确（按 path 重新解析，不写旧节点）", async () => {
+  const dom = loadFixture("moka.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields } = engine.scan(doc);
+  const nameField = fields.find(f => f.label === "姓名");
+  const phoneField = fields.find(f => f.label === "联系电话");
+  // 模拟 React 重渲染：用同 id 的新节点替换旧节点（旧节点脱离文档）
+  const oldName = doc.getElementById("m-name");
+  const newName = doc.createElement("input");
+  newName.id = "m-name"; newName.type = "text";
+  oldName.replaceWith(newName);
+  const oldPhone = doc.getElementById("m-phone");
+  const newPhone = doc.createElement("input");
+  newPhone.id = "m-phone"; newPhone.type = "tel";
+  oldPhone.replaceWith(newPhone);
+  const applied = await engine.apply([
+    { id: nameField.id, value: "李四", type: "text" },
+    { id: phoneField.id, value: "13900000000", type: "tel" },
+  ], { delayMs: 0 });
+  assert.equal(applied.filter(r => !r.ok).length, 0, JSON.stringify(applied.map(r => ({ id: r.id, ok: r.ok, error: r.error }))));
+  assert.equal(newName.value, "李四", "值应写入重渲染后的新节点");
+  assert.equal(newPhone.value, "13900000000");
+  assert.equal(oldName.value, "", "旧节点不应被写入");
+  dom.window.close();
+});
+
+test("多控件共用容器时标签不串用（避免多个字段填同一值）", () => {
+  // 容器标签在顶部、两个控件并列（常见于 antd .form-item 结构）：容器标签不得被复用到每个控件
+  const dom = new JSDOM(
+    `<form><div class="form-item"><div class="ant-form-item-label"><label>姓名</label></div><div class="ant-form-item-control"><input id="a" type="text"><input id="b" type="text"></div></div></form>`,
+    { url: "https://x.com/two-controls", runScripts: "outside-only", pretendToBeVisual: true }
+  );
+  dom.window.eval(engineSource);
+  const { fields } = dom.window.__hunterFill.scan(dom.window.document);
+  assert.equal(fields.length, 2);
+  assert.ok(fields.every(f => f.label !== "姓名"), "一个容器内多个控件时容器标签不应被复用到每个控件（避免两字段填同一值）");
+  dom.window.close();
+});

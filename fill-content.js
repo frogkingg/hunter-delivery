@@ -99,14 +99,18 @@
       const t = cleanText(prev);
       if (t && t.length < 30) return { text: t, raw: (prev.textContent || "").trim(), source: "neighbor" };
     }
-    // 7. 组件库/表单容器：form-item 容器优先（自定义控件容器内往往没有标签文本）
+    // 7. 组件库/表单容器：form-item 容器优先（自定义控件容器内往往没有标签文本）。
+    //    仅当容器内控件唯一时采用容器标签，避免一个容器里多个控件共用同一标签导致错配。
     const formItem = el.closest(".ant-form-item, .el-form-item, .form-item, .form-group, .field");
     const widget = el.closest(".el-select, .ant-select, .el-date-editor, .ant-picker");
     const container = formItem || widget;
     if (container) {
       const labelEl = container.querySelector(".ant-form-item-label, .el-form-item__label, .control-label, .form-label, label");
       const t = labelEl ? cleanString(labelTextOf(labelEl, el)) : "";
-      if (t) return { text: t, raw: (labelEl.textContent || "").trim(), source: "container" };
+      const directControls = container.querySelectorAll("input:not([type='hidden']):not([type='radio']), select, textarea").length;
+      const radioNames = new Set([...container.querySelectorAll("input[type='radio']")].map(radio => radio.name || ""));
+      const controlUnits = directControls + radioNames.size;
+      if (t && controlUnits <= 1) return { text: t, raw: (labelEl.textContent || "").trim(), source: "container" };
     }
     return { text: "", raw: "", source: "none" };
   }
@@ -190,7 +194,7 @@
         const first = visible[0];
         const labelInfo = controlLabel(first, true);
         const fieldId = `radio-${key.replace(/\W+/g, "_") || `g${seq}`}`;
-        registry.set(fieldId, { kind: "radio", el: first, group: visible, label: labelInfo.text });
+        registry.set(fieldId, { kind: "radio", el: first, group: visible, label: labelInfo.text, path: uniquePath(first) });
         fields.push({
           id: fieldId, type: "radio", label: labelInfo.text, rawLabel: labelInfo.raw, labelSource: labelInfo.source,
           path: uniquePath(first), required: visible.some(isRequired), options: visible.map(optionText),
@@ -205,7 +209,7 @@
       if (classified.skipped) {
         if (el.type === "hidden" || !isVisible(el)) continue; // 隐藏/追踪字段不输出，避免污染列表
         const labelInfo = controlLabel(el);
-        registry.set(fieldId, { kind: "none", el, label: labelInfo.text });
+        registry.set(fieldId, { kind: "none", el, label: labelInfo.text, path: uniquePath(el) });
         fields.push({
           id: fieldId, type: "text", label: labelInfo.text, rawLabel: labelInfo.raw, labelSource: labelInfo.source,
           path: uniquePath(el), required: isRequired(el), options: [], value: el.value || "", skipped: true,
@@ -222,7 +226,7 @@
       if (!customContainer && !isVisible(el)) continue; // 隐藏原生控件不输出
 
       const labelInfo = controlLabel(el);
-      const entry = { kind: finalType === "custom-select" || finalType === "custom-date" ? "custom" : "native", el, label: labelInfo.text };
+      const entry = { kind: finalType === "custom-select" || finalType === "custom-date" ? "custom" : "native", el, label: labelInfo.text, path: uniquePath(customContainer || el) };
       if (customContainer) entry.container = customContainer;
       registry.set(fieldId, entry);
       const options = finalType === "custom-select"
@@ -242,7 +246,7 @@
       const labelInfo = controlLabel(container);
       const fieldId = `custom-${seq++}`;
       const isSelect = /ant-select|el-select/.test(container.className);
-      registry.set(fieldId, { kind: "custom", el: container, container, label: labelInfo.text });
+      registry.set(fieldId, { kind: "custom", el: container, container, label: labelInfo.text, path: uniquePath(container) });
       fields.push({
         id: fieldId, type: isSelect ? "custom-select" : "custom-date", label: labelInfo.text, rawLabel: labelInfo.raw,
         labelSource: labelInfo.source, path: uniquePath(container), required: isRequired(container),
@@ -281,8 +285,10 @@
     for (const id of Array.isArray(ids) ? ids : []) {
       const entry = elementRegistry.get(id);
       if (!entry) continue;
-      if (on) entry.el.classList.add(HIGHLIGHT_CLASS);
-      else entry.el.classList.remove(HIGHLIGHT_CLASS);
+      const el = resolveByPath(entry.path, entry.el);
+      if (!el) continue;
+      if (on) el.classList.add(HIGHLIGHT_CLASS);
+      else el.classList.remove(HIGHLIGHT_CLASS);
     }
   }
 
@@ -388,52 +394,79 @@
     return applyCustomInputFallback(container, value);
   }
 
-  function verifyValue(entry, type, value) {
-    if (type === "radio") return entry.el.checked;
-    if (type === "checkbox") return entry.el.checked;
-    const actual = normalizeCompare(entry.el.value);
+  function verifyValue(el, type, value) {
+    if (type === "radio" || type === "checkbox") return el.checked;
+    const actual = normalizeCompare(el.value);
     const expected = normalizeCompare(value);
     return actual && (actual === expected || actual.includes(expected) || expected.includes(actual));
   }
 
+  // 填充前按 path 重新解析元素：页面重渲染后缓存引用会失效/错位，必须重新定位。
+  function resolveByPath(path, fallback) {
+    if (path && fallback) {
+      try {
+        const fresh = fallback.ownerDocument.querySelector(path);
+        if (fresh && fresh.isConnected) return fresh;
+      } catch (_) {}
+    }
+    return fallback && fallback.isConnected ? fallback : null;
+  }
+
+  // radio 组按 name 重新解析（页面重渲染后组元素可能已替换）。
+  function resolveRadioGroup(el, cachedGroup) {
+    const name = el.getAttribute && el.getAttribute("name");
+    if (name) {
+      try {
+        const fresh = Array.from(el.ownerDocument.querySelectorAll(`input[type="radio"][name="${escapeCss(name)}"]`)).filter(isVisible);
+        if (fresh.length) return fresh;
+      } catch (_) {}
+    }
+    return (Array.isArray(cachedGroup) && cachedGroup.length ? cachedGroup : [el]).filter(item => item.isConnected);
+  }
+
   async function fillOne(fill) {
     const entry = elementRegistry.get(fill.id);
-    if (!entry) throw new Error("字段未找到");
+    if (!entry) throw new Error("字段未找到，请重新扫描");
     const value = String(fill.value ?? "").trim();
     if (!value) throw new Error("填充值为空");
     const type = fill.type || entry.type || "text";
-    scrollIntoView(entry.el);
+    const el = resolveByPath(entry.path, entry.el);
+    if (!el) throw new Error("字段已不在页面中，请重新扫描");
+    scrollIntoView(el);
     if (entry.kind === "radio") {
-      const target = applyRadio(entry.group, value);
+      const group = resolveRadioGroup(el, entry.group);
+      const target = applyRadio(group, value);
       if (!target.checked) throw new Error("回读校验失败");
       return { ok: true };
     }
     if (entry.kind === "custom") {
-      if (type === "custom-select") return applyCustomSelect(entry, value);
-      const input = entry.container ? entry.container.querySelector("input") : entry.el;
+      const container = resolveByPath(entry.path, entry.container || entry.el) || el;
+      const activeEntry = { ...entry, el, container };
+      if (type === "custom-select") return applyCustomSelect(activeEntry, value);
+      const input = container.querySelector("input");
       if (!input) throw new Error("自定义控件无输入框");
       setNativeValue(input, value);
       dispatchInput(input);
-      if (!verifyValue(entry, type, value)) throw new Error("回读校验失败");
+      if (!verifyValue(input, type, value)) throw new Error("回读校验失败");
       return { ok: true, via: "input" };
     }
-    if (type === "checkbox") return applyCheckbox(entry.el, value);
+    if (type === "checkbox") return applyCheckbox(el, value);
     if (type === "select") {
       const expected = normalizeCompare(value);
-      const options = Array.from(entry.el.options || []);
+      const options = Array.from(el.options || []);
       const target = options.find(option => normalizeCompare(option.text) === expected)
         || options.find(option => normalizeCompare(option.text).includes(expected) || expected.includes(normalizeCompare(option.text)))
         || options.find(option => normalizeCompare(option.value) === expected);
       if (!target) throw new Error("选项未找到");
-      setNativeValue(entry.el, target.value);
-      dispatchInput(entry.el);
-      if (String(entry.el.value || "") !== String(target.value)) throw new Error("选项未找到");
+      setNativeValue(el, target.value);
+      dispatchInput(el);
+      if (String(el.value || "") !== String(target.value)) throw new Error("选项未找到");
       return { ok: true };
     }
     const finalValue = type === "date" && /^\d{4}-\d{2}$/.test(value) ? `${value}-01` : value;
-    setNativeValue(entry.el, finalValue);
-    dispatchInput(entry.el);
-    if (!verifyValue(entry, type, finalValue)) throw new Error("回读校验失败");
+    setNativeValue(el, finalValue);
+    dispatchInput(el);
+    if (!verifyValue(el, type, finalValue)) throw new Error("回读校验失败");
     return { ok: true };
   }
 
