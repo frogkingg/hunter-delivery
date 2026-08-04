@@ -48,6 +48,7 @@ const EDITOR_OPTIONS = {
   maritalStatus: ["未婚", "已婚", "其他"],
   acceptAdjustment: ["是", "否"],
 };
+let fillResultMode = "list"; // "list" = 预览/全量平铺；"summary" = 一键填充后的折叠视图
 let resumeFieldFilter = "all";
 let resumeFieldSearch = "";
 let expandedEntryId = "";
@@ -337,6 +338,7 @@ export async function scanFillPage() {
     if (response.engineVersion !== 3) throw new Error("页面仍在运行旧版填充引擎，请刷新网申页面后重新扫描。");
     const fields = response.fields || [];
     if (!fields.length) throw new Error("未检测到可填写的表单项。");
+    fillResultMode = "list";
     setFillScanFields(fields);
     setFillRepeaters(response.repeaters || []);
     setFillScanPage(response.page || { title: tab.title || "", url: tab.url, host: pageUrl.hostname });
@@ -542,6 +544,32 @@ function resumeBindingChoices() {
   return choices;
 }
 
+function matchRowHtml(match) {
+  const selected = state.fillSelected.has(match.fieldId);
+  const value = state.fillValues[match.fieldId] ?? match.value ?? "";
+  const editable = !match.skipped && (match.status === "match" || !!match.fieldKey);
+  const keyEditable = !match.skipped;
+  const bindingChoice = match.valueRef?.source === "resume" && match.valueRef.path !== match.fieldKey
+    ? `${match.fieldKey}@@${match.valueRef.path}`
+    : match.fieldKey || "";
+  const badges = [
+    `<span class="fill-badge type">${escapeHtml(match.type)}</span>`,
+    match.confidence ? `<span class="fill-badge conf-${match.confidence}">置信${CONF_LABEL[match.confidence]}</span>` : "",
+    `<span class="fill-badge src-${match.source}">${SRC_LABEL[match.source] || match.source}</span>`,
+    match.status === "manual" ? `<span class="fill-badge status-manual">需手动</span>` : "",
+  ].filter(Boolean).join("");
+  const evidence = (match.evidence || []).slice(0, 2).map(item => `${item.source}:${item.text}`).join(" · ");
+  return `<div class="fill-row${match.status === "manual" ? " manual" : ""}">
+    <input type="checkbox" data-fill-id="${match.fieldId}" ${selected ? "checked" : ""} ${editable ? "" : "disabled"}>
+    <div class="fill-row-main">
+      <div class="fill-row-label">${escapeHtml(match.label || "（未识别标签）")}${match.required ? `<span class="req">*</span>` : ""}${badges}</div>
+      <input type="text" list="fillFieldKeyOptions" data-fill-key-id="${match.fieldId}" value="${escapeHtml(bindingChoice)}" ${keyEditable ? "" : "disabled"} placeholder="搜索并选择简历字段">
+      <input type="text" data-fill-value-id="${match.fieldId}" value="${escapeHtml(value)}" ${editable ? "" : "disabled"} placeholder="${editable ? (match.status === "match" ? "可手动修改" : "可手动填写，完成后确认") : "选择正确的简历字段后启用"}">
+      <div class="fill-meta">${escapeHtml(match.reason || "")}${evidence ? ` · ${escapeHtml(evidence)}` : ""}</div>
+    </div>
+  </div>`;
+}
+
 export function renderFillMatches() {
   const target = $("fillResultList");
   const matches = state.fillMatches;
@@ -554,32 +582,17 @@ export function renderFillMatches() {
   const fieldKeyOptions = resumeBindingChoices()
     .map(choice => `<option value="${escapeHtml(choice.value)}">${escapeHtml(choice.label)}</option>`)
     .join("");
-  const rows = matches.map(match => {
-    const selected = state.fillSelected.has(match.fieldId);
-    const value = state.fillValues[match.fieldId] ?? match.value ?? "";
-    const editable = !match.skipped && (match.status === "match" || !!match.fieldKey);
-    const keyEditable = !match.skipped;
-    const bindingChoice = match.valueRef?.source === "resume" && match.valueRef.path !== match.fieldKey
-      ? `${match.fieldKey}@@${match.valueRef.path}`
-      : match.fieldKey || "";
-    const badges = [
-      `<span class="fill-badge type">${escapeHtml(match.type)}</span>`,
-      match.confidence ? `<span class="fill-badge conf-${match.confidence}">置信${CONF_LABEL[match.confidence]}</span>` : "",
-      `<span class="fill-badge src-${match.source}">${SRC_LABEL[match.source] || match.source}</span>`,
-      match.status === "manual" ? `<span class="fill-badge status-manual">需手动</span>` : "",
-    ].filter(Boolean).join("");
-    const evidence = (match.evidence || []).slice(0, 2).map(item => `${item.source}:${item.text}`).join(" · ");
-    return `<div class="fill-row${match.status === "manual" ? " manual" : ""}">
-      <input type="checkbox" data-fill-id="${match.fieldId}" ${selected ? "checked" : ""} ${editable ? "" : "disabled"}>
-      <div class="fill-row-main">
-        <div class="fill-row-label">${escapeHtml(match.label || "（未识别标签）")}${match.required ? `<span class="req">*</span>` : ""}${badges}</div>
-        <input type="text" list="fillFieldKeyOptions" data-fill-key-id="${match.fieldId}" value="${escapeHtml(bindingChoice)}" ${keyEditable ? "" : "disabled"} placeholder="搜索并选择简历字段">
-        <input type="text" data-fill-value-id="${match.fieldId}" value="${escapeHtml(value)}" ${editable ? "" : "disabled"} placeholder="${editable ? (match.status === "match" ? "可手动修改" : "可手动填写，完成后确认") : "选择正确的简历字段后启用"}">
-        <div class="fill-meta">${escapeHtml(match.reason || "")}${evidence ? ` · ${escapeHtml(evidence)}` : ""}</div>
-      </div>
-    </div>`;
-  }).join("");
-  target.innerHTML = `<datalist id="fillFieldKeyOptions">${fieldKeyOptions}</datalist>${rows}`;
+  const datalist = `<datalist id="fillFieldKeyOptions">${fieldKeyOptions}</datalist>`;
+  if (fillResultMode === "summary") {
+    const manual = matches.filter(m => m.status === "manual" || state.fillFailedIds.includes(m.fieldId));
+    const filled = matches.filter(m => m.status === "match" && !state.fillFailedIds.includes(m.fieldId));
+    target.innerHTML = datalist + (manual.length
+      ? `<details class="fill-summary-manual" open><summary>需人工处理（${manual.length}）</summary>${manual.map(matchRowHtml).join("")}</details>`
+      : `<p class="hint fill-done-tip">🎉 全部 ${filled.length} 项已填充</p>`)
+      + `<details class="fill-summary-done"><summary>已自动填充（${filled.length}）</summary>${filled.map(matchRowHtml).join("")}</details>`;
+  } else {
+    target.innerHTML = datalist + matches.map(matchRowHtml).join("");
+  }
   updateFillButtons();
 }
 
@@ -638,6 +651,10 @@ export async function runFill(all = false) {
     }
     $("fillProgress").textContent = `填充完成：成功 ${summary.ok} / ${summary.total}${failedIds.length ? `，${failedIds.length} 项需手动处理（已在页面高亮）` : ""}`;
     await afterFill(tab, results, Date.now() - start);
+    if (state.fillAutoMode) {
+      fillResultMode = "summary";
+      renderFillMatches();
+    }
     if (summary.ok > 0) startIncrementalWatch();
     return { summary, failedIds };
   } finally {
@@ -666,6 +683,7 @@ export async function clearFill() {
   if (tab?.id && tab?.url && /^https?:/i.test(tab.url) && state.fillFailedIds.length) {
     fillMessagePage(tab, { type: "SMART_FILL_HIGHLIGHT", ids: state.fillFailedIds, on: false }).catch(() => {});
   }
+  fillResultMode = "list";
   setFillScanFields([]);
   setFillScanPage(null);
   setFillScanSession(null);
@@ -676,7 +694,8 @@ export async function clearFill() {
   setFillFailedIds([]);
   $("fillResultList").innerHTML = "";
   $("fillProgress").textContent = "";
-  $("fillCurrentSite").textContent = "未检测到网申页面。请打开目标公司的网申/信息录入页后点击「扫描」。首次使用需授权该网站。";
+  $("fillCurrentSite").textContent = "未检测到网申页面。请打开目标公司的网申/信息录入页后点击「一键智能填充」。首次使用需授权该网站。";
+  $("fillCurrentSiteText").textContent = "";
   renderFillTemplate();
   updateFillButtons();
 }

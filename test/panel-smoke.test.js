@@ -392,6 +392,45 @@ test("一键智能填充：展开经历失败时降级继续填充", async () =>
   } finally { close(); }
 });
 
+test("一键智能填充：成功后列表折叠为需人工处理+已自动填充", async () => {
+  const { close } = setupOneClickDom();
+  const { setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { runSmartFillOnce } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(true);
+    await runSmartFillOnce();
+    const manual = window.document.querySelector(".fill-summary-manual");
+    const done = window.document.querySelector(".fill-summary-done");
+    assert.ok(manual, "应有「需人工处理」折叠组");
+    assert.ok(done, "应有「已自动填充」折叠组");
+    assert.equal(manual.querySelectorAll(".fill-row").length, 1, "内推码应为需人工处理项");
+    assert.equal(done.querySelectorAll(".fill-row").length, 2, "姓名/手机号应为已自动填充项");
+    assert.match(done.textContent, /已自动填充（2）/);
+    assert.equal(window.document.getElementById("fillSelected").hidden, true, "自动填充完成后工具条按钮应隐藏");
+  } finally { close(); }
+});
+
+test("智能填充：预览模式下工具条按钮显示且清空链接按需出现", async () => {
+  const { close } = setupOneClickDom();
+  const { setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { runSmartFillOnce, clearFill } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(false);
+    await runSmartFillOnce();
+    const footer = window.document.getElementById("fillSelected");
+    assert.equal(footer.hidden, false, "预览模式应显示填充勾选项按钮");
+    assert.match(footer.textContent, /填充勾选项（2）/);
+    assert.equal(window.document.getElementById("clearFill").hidden, false, "扫描后清空链接应显示");
+    await clearFill();
+    await new Promise(resolve => setTimeout(resolve, 0)); // 让 clearFill 内未 await 的 renderFillTemplate 完成，避免 close 后访问已销毁的 document
+    assert.equal(window.document.getElementById("clearFill").hidden, true, "清空后清空链接应隐藏");
+  } finally { close(); }
+});
+
 // —— 点击字段填充（P1 任务5） ——
 test("点击字段填充：填入页面按钮发送拾取请求并提示", async () => {
   const { sentTypes, close } = setupOneClickDom();
