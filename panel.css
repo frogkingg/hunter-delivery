@@ -128,8 +128,17 @@ body.dark .queue-delivered { background: #1a2e24; border-color: #12b76a; }
 .resume-entry-fields label:last-child:nth-child(odd) { grid-column: 1 / -1; }
 .resume-entry-actions { margin-top: 6px; text-align: right; }
 .text-button.danger { color: #dc2626; }
-.fill-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 4px; }
+.fill-actions { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; }
 .fill-actions button { width: 100%; white-space: nowrap; }
+.fill-actions #smartFillOnce { padding: 10px; font-size: 14px; }
+.fill-site-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fill-site-row .hint { margin: 0; flex: 1; }
+.clear-fill-link { background: none; border: none; color: #6b7280; font-size: 12px; cursor: pointer; padding: 2px 4px; text-decoration: underline; }
+.fill-footer-btn { width: 100%; margin-top: 8px; }
+.fill-summary-manual, .fill-summary-done { margin-top: 8px; border: 1px solid #e5e7eb; border-radius: 8px; padding: 6px 8px; background: #fff; }
+.fill-summary-manual summary, .fill-summary-done summary { cursor: pointer; font-size: 13px; color: #374151; font-weight: 600; }
+.fill-summary-done summary { color: #166534; }
+.fill-done-tip { color: #166534; font-weight: 600; }
 .fill-result-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
 .fill-row { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; padding: 8px; border: 1px solid #e5e7eb; border-radius: 8px; align-items: start; }
 .fill-row-main { min-width: 0; }

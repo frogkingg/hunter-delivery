@@ -325,8 +325,6 @@ async function ensureOriginPermission(tab) {
 }
 
 export async function scanFillPage() {
-  const button = $("scanFillPage");
-  button.disabled = true;
   stopIncrementalWatch();
   try {
     const tab = await currentTab();
@@ -350,7 +348,6 @@ export async function scanFillPage() {
       url: response.page?.url || tab.url,
     });
     $("fillCurrentSite").textContent = `当前站点：${pageUrl.hostname}（识别到 ${fields.length} 个表单项）`;
-    renderPrepareFillAction();
     await buildMatches();
     await renderFillTemplate();
     setFillContinueRounds(0);
@@ -359,8 +356,6 @@ export async function scanFillPage() {
     return true;
   } catch (error) {
     toast(error.message);
-  } finally {
-    button.disabled = false;
   }
 }
 
@@ -404,13 +399,9 @@ export function buildRepeaterPlans(repeaters, resumeFields) {
   });
 }
 
-function renderPrepareFillAction() {
-  const button = $("prepareFillSections");
-  if (!button) return;
+function computeRepeaterAdditions() {
   const plans = buildRepeaterPlans(state.fillRepeaters, activeProfile()?.resumeFields || {});
-  const additions = plans.reduce((sum, plan) => sum + plan.targetCount - plan.currentCount, 0);
-  button.disabled = !additions;
-  button.textContent = additions ? `展开简历经历（+${additions}）` : "无需展开经历";
+  return plans.reduce((sum, plan) => sum + plan.targetCount - plan.currentCount, 0);
 }
 
 function applyScanResponse(response, tab) {
@@ -430,11 +421,8 @@ export async function prepareFillSections() {
   const session = state.fillScanSession;
   if (!session?.scanId || !session?.tabId) throw new Error("请先扫描当前网申页面。");
   const plans = buildRepeaterPlans(state.fillRepeaters, activeProfile()?.resumeFields || {});
-  if (!plans.length) throw new Error("当前简历没有需要展开的经历条目。");
-  const button = $("prepareFillSections");
+  if (!plans.length) return null;
   const progress = $("fillProgress");
-  button.disabled = true;
-  button.textContent = "正在展开并校验…";
   progress.textContent = `正在展开 ${plans.length} 类经历区块，请勿切换页面…`;
   try {
     const tab = await currentTab();
@@ -459,13 +447,10 @@ export async function prepareFillSections() {
     }
     const added = (response.results || []).reduce((sum, result) => sum + Number(result.added || 0), 0);
     progress.textContent = `已展开 ${added} 个经历区块并重新扫描。`;
-    toast(`已展开 ${added} 个经历区块并重新扫描`);
     return response;
   } catch (error) {
     progress.textContent = `展开失败：${error.message}`;
     throw error;
-  } finally {
-    renderPrepareFillAction();
   }
 }
 
@@ -499,7 +484,6 @@ async function buildMatches() {
   setFillSelected(new Set(matches.filter(m => m.status === "match" && m.value).map(m => m.fieldId)));
   setFillValues(Object.fromEntries(matches.map(m => [m.fieldId, m.value])));
   renderFillMatches();
-  renderPrepareFillAction();
 }
 
 // —— 匹配列表渲染 ——
@@ -507,10 +491,15 @@ const CONF_LABEL = { high: "高", medium: "中", low: "低" };
 const SRC_LABEL = { template: "模板", rule: "规则", ai: "AI", manual: "手动" };
 
 function updateFillButtons() {
-  const count = state.fillMatches.filter(m => m.status === "match" && state.fillSelected.has(m.fieldId)).length;
-  $("fillSelected").disabled = !count;
-  $("fillAll").disabled = !state.fillMatches.some(m => m.status === "match");
-  $("fillSelected").textContent = `填充选中项（${count}）`;
+  const matches = state.fillMatches;
+  const count = matches.filter(m => m.status === "match" && state.fillSelected.has(m.fieldId)).length;
+  const matched = matches.filter(m => m.status === "match").length;
+  const btn = $("fillSelected");
+  const showFooter = count > 0 && (!state.fillAutoMode || count < matched);
+  btn.disabled = !count;
+  btn.hidden = !showFooter;
+  btn.textContent = `填充勾选项（${count}）`;
+  $("clearFill").hidden = !state.fillScanFields.length;
 }
 
 function resumeBindingChoices() {
@@ -617,10 +606,9 @@ export async function runFill(all = false) {
   });
   if (!fills.length) throw new Error(all ? "没有可填充的表单项。" : "请先勾选要填充的表单项。");
   fillRunning = true;
-  $("scanFillPage").disabled = true;
-  $("prepareFillSections").disabled = true;
+  $("smartFillOnce").disabled = true;
+  $("clearFill").disabled = true;
   $("fillSelected").disabled = true;
-  $("fillAll").disabled = true;
   const start = Date.now();
   $("fillProgress").textContent = `正在填充 0/${fills.length}…`;
   $("stopFill").hidden = false;
@@ -651,8 +639,8 @@ export async function runFill(all = false) {
   } finally {
     fillRunning = false;
     $("stopFill").hidden = true;
-    $("scanFillPage").disabled = false;
-    renderPrepareFillAction();
+    $("smartFillOnce").disabled = false;
+    $("clearFill").disabled = false;
     updateFillButtons();
   }
 }
@@ -938,10 +926,7 @@ export function handleFillRuntimeMessage(message) {
 
 function bindFillEvents() {
   $("smartFillOnce").onclick = () => runSmartFillOnce().catch(error => toast(error.message));
-  $("scanFillPage").onclick = () => scanFillPage().catch(error => toast(error.message));
-  $("prepareFillSections").onclick = () => prepareFillSections().catch(error => toast(error.message));
   $("fillSelected").onclick = () => runFill(false).catch(error => toast(error.message));
-  $("fillAll").onclick = () => runFill(true).catch(error => toast(error.message));
   $("stopFill").onclick = () => stopFill().catch(error => toast(error.message));
   $("clearFill").onclick = () => clearFill().catch(error => toast(error.message));
   $("continueFill").onclick = () => continueFill().catch(error => toast(error.message));

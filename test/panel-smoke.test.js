@@ -41,11 +41,11 @@ test("面板初始化：所有关键按钮绑定事件且无未捕获异常", as
     // 等待异步初始化完成（initConfig → loadProfiles → initFillUi）
     const deadline = Date.now() + 3000;
     while (Date.now() < deadline) {
-      const scan = window.document.getElementById("scanFillPage");
+      const scan = window.document.getElementById("smartFillOnce");
       if (scan && typeof scan.onclick === "function") break;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "scanFillPage", "prepareFillSections", "fillSelected", "fillAll", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "smartFillOnce", "deleteFillTemplate", "darkToggle"];
+    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "smartFillOnce", "fillSelected", "deleteFillTemplate", "darkToggle"];
     for (const id of ids) {
       const el = window.document.getElementById(id);
       assert.ok(el, `元素 #${id} 应存在`);
