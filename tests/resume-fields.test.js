@@ -91,6 +91,11 @@ test("extractResumeFieldsLocal: 误报回归——毕业年份不当工作年限
   assert.equal(fields.school, "复旦大学");
 });
 
+test("extractResumeFieldsLocal: 出生日期有日时保留完整精度", () => {
+  const fields = extractResumeFieldsLocal("张三\n出生日期：1998-06-15");
+  assert.equal(fields.birthDate, "1998-06-15");
+});
+
 test("extractResumeFieldsLocal: 提取实习经历（时间/公司/岗位/内容）", () => {
   const text = `张三
 实习经历

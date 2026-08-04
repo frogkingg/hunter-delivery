@@ -1,5 +1,9 @@
 // 智能填充：侧边栏交互逻辑（扫描/匹配/填充/模板/历史）。
-import { state, activeProfile, setFillScanFields, setFillScanPage, setFillScanSession, setFillRepeaters, setFillMatches, setFillSelected, setFillValues, setFillFailedIds, setFillAiEnabled, setFillTemplateEnabled } from "./state.js";
+import {
+  state, activeProfile, setFillScanFields, setFillScanPage, setFillScanSession,
+  setFillRepeaters, setFillMatches, setFillSelected, setFillValues, setFillFailedIds,
+  setFillAiEnabled, setFillTemplateEnabled, setResumeFieldsDraft, setResumeFieldsDirty,
+} from "./state.js";
 import { $, toast, fillMessagePage } from "./chrome-helpers.js";
 import { escapeHtml } from "./pure-utils.js";
 import { RESUME_FIELD_LABELS, GROUP_LABELS } from "./form-fields.js";
@@ -33,81 +37,137 @@ export function renderFillProfileSelect() {
   ).join("");
 }
 
-// 经历类分组用卡片编辑器管理（教育/实习/项目），其余分组为紧凑标量表单。
+// 经历类字段只通过条目编辑器维护；聚合标量是匹配兼容层，不再提供第二个编辑入口。
 const SCALAR_GROUPS = ["basic", "intention", "work", "profile", "other"];
+const DERIVED_EXPERIENCE_KEYS = new Set([
+  "currentCompany", "workIndustry", "workLocation", "currentTitle", "workStart", "workEnd", "workDescription",
+]);
+const EDITOR_OPTIONS = {
+  gender: ["男", "女"],
+  politicalStatus: ["中共党员", "中共预备党员", "共青团员", "群众", "其他"],
+  maritalStatus: ["未婚", "已婚", "其他"],
+  acceptAdjustment: ["是", "否"],
+};
+let resumeFieldFilter = "all";
+let resumeFieldSearch = "";
+let expandedEntryId = "";
 
 function entryCardHtml(group, entry, index) {
   const fields = group.fields.map(field => field.textarea
     ? `<label>${escapeHtml(field.label)}<textarea rows="3" data-entry-input="${group.resumeKey}|${entry.id}|${field.key}">${escapeHtml(entry[field.key] || "")}</textarea></label>`
-    : `<label>${escapeHtml(field.label)}<input type="text" data-entry-input="${group.resumeKey}|${entry.id}|${field.key}" value="${escapeHtml(entry[field.key] || "")}"></label>`
+    : `<label>${escapeHtml(field.label)}<input type="text" data-entry-input="${group.resumeKey}|${entry.id}|${field.key}" value="${escapeHtml(entry[field.key] || "")}"${["start", "end"].includes(field.key) ? ` inputmode="numeric" placeholder="YYYY-MM${field.key === "end" ? " / 至今" : ""}"` : ""}></label>`
   ).join("");
-  return `<details class="resume-entry-card" data-entry-id="${entry.id}" open>
+  return `<details class="resume-entry-card" data-entry-id="${entry.id}" ${entry.id === expandedEntryId ? "open" : ""}>
     <summary>${escapeHtml(group.summary(entry) || `（第 ${index + 1} 条，未填写）`)}</summary>
     <div class="resume-entry-fields">${fields}</div>
     <div class="resume-entry-actions"><button type="button" class="text-button danger" data-remove-entry="${group.resumeKey}|${entry.id}">删除本条</button></div>
   </details>`;
 }
 
-// 单点基础字段：单行紧凑布局（标签左、输入右），空值默认折叠只占一行提示。
+function cloneResumeFields(fields) {
+  return JSON.parse(JSON.stringify(fields || {}));
+}
+
+function ensureResumeDraft(force = false) {
+  const profile = activeProfile();
+  if (!profile) return {};
+  if (force || state.resumeFieldsDraftProfile !== profile || !state.resumeFieldsDraft) {
+    setResumeFieldsDraft(cloneResumeFields(profile.resumeFields), profile);
+    setResumeFieldsDirty(false);
+  }
+  return state.resumeFieldsDraft;
+}
+
+function editableScalarFields() {
+  return RESUME_FIELDS_SCHEMA.filter(field =>
+    SCALAR_GROUPS.includes(field.group) && !DERIVED_EXPERIENCE_KEYS.has(field.key)
+  );
+}
+
+function fieldVisible(field, value) {
+  if (resumeFieldFilter === "missing" && String(value || "").trim()) return false;
+  if (!["all", "missing"].includes(resumeFieldFilter) && field.group !== resumeFieldFilter) return false;
+  if (!resumeFieldSearch) return true;
+  const source = `${field.label} ${field.key} ${value || ""}`.toLowerCase();
+  return source.includes(resumeFieldSearch);
+}
+
 function scalarFieldHtml(field, value) {
   const empty = !String(value || "").trim();
   const textarea = field.type === "textarea";
+  const options = EDITOR_OPTIONS[field.key] || [];
   const input = textarea
     ? `<textarea rows="2" data-resume-key="${field.key}">${escapeHtml(value)}</textarea>`
-    : `<input type="text" data-resume-key="${field.key}" value="${escapeHtml(value)}">`;
-  return `<label class="resume-field${empty ? " is-empty" : ""}${textarea ? " is-textarea" : ""}"><span>${escapeHtml(field.label)}</span>${input}</label>`;
+    : options.length
+      ? `<select data-resume-key="${field.key}"><option value="">请选择</option>${options.map(option => `<option value="${escapeHtml(option)}" ${option === value ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}${value && !options.includes(value) ? `<option value="${escapeHtml(value)}" selected>${escapeHtml(value)}</option>` : ""}</select>`
+      : `<input type="text" data-resume-key="${field.key}" value="${escapeHtml(value)}"${field.type === "date" ? ` inputmode="numeric" placeholder="YYYY-MM 或 YYYY-MM-DD"` : ""}>`;
+  const hidden = fieldVisible(field, value) ? "" : " hidden";
+  return `<label class="resume-field${empty ? " is-empty" : ""}${textarea ? " is-textarea" : ""}"${hidden}><span>${escapeHtml(field.label)}</span>${input}</label>`;
+}
+
+function entryGroupVisible(group, entries) {
+  const filterKey = {
+    workHistory: "work",
+    internships: "internship",
+    projects: "project",
+  }[group.key] || group.key;
+  if (!["all", "missing"].includes(resumeFieldFilter) && resumeFieldFilter !== filterKey) return false;
+  if (!resumeFieldSearch) return true;
+  const source = `${group.title} ${entries.flatMap(entry => Object.values(entry)).join(" ")}`.toLowerCase();
+  return source.includes(resumeFieldSearch);
 }
 
 export function renderResumeFields() {
   const list = $("resumeFieldsList");
-  const profile = activeProfile();
-  const resume = profile?.resumeFields || {};
+  const resume = ensureResumeDraft();
   if (!list) return;
-  const scalarFields = RESUME_FIELDS_SCHEMA.filter(field => SCALAR_GROUPS.includes(field.group));
+  const scalarFields = editableScalarFields();
   const emptyCount = scalarFields.filter(field => !String(resume[field.key] || "").trim()).length;
   const filledCount = scalarFields.filter(field => String(resume[field.key] || "").trim()).length;
-  const scalarHtml = scalarFields.map(field => scalarFieldHtml(field, resume[field.key] || "")).join("");
+  const scalarHtml = SCALAR_GROUPS.map(groupKey => {
+    const fields = scalarFields.filter(field => field.group === groupKey);
+    const visible = fields.some(field => fieldVisible(field, resume[field.key] || ""));
+    if (!visible) return "";
+    const groupFilled = fields.filter(field => String(resume[field.key] || "").trim()).length;
+    const open = groupKey === "basic" || resumeFieldFilter === groupKey || !!resumeFieldSearch;
+    return `<details class="resume-scalar-group" data-resume-group="${groupKey}" ${open ? "open" : ""}>
+      <summary><b>${escapeHtml(GROUP_LABELS[groupKey] || groupKey)}</b><span>${groupFilled}/${fields.length}</span></summary>
+      <div class="resume-fields-grid">${fields.map(field => scalarFieldHtml(field, resume[field.key] || "")).join("")}</div>
+    </details>`;
+  }).join("");
   const entriesHtml = ENTRY_GROUPS.map(group => {
     const entries = Array.isArray(resume[group.resumeKey]) ? resume[group.resumeKey] : [];
+    if (!entryGroupVisible(group, entries)) return "";
     const cards = entries.map((entry, index) => entryCardHtml(group, entry, index)).join("");
-    return `<div class="resume-entries-group" data-entry-group="${group.resumeKey}">
-      <div class="resume-entries-head"><b>${escapeHtml(group.title)}</b><span class="resume-entry-count">${entries.length} 条</span><button type="button" class="text-button" data-add-entry="${group.resumeKey}">+ 添加</button></div>
+    const filterKey = {
+      workHistory: "work",
+      internships: "internship",
+      projects: "project",
+    }[group.key] || group.key;
+    const open = resumeFieldFilter === filterKey || !!resumeFieldSearch || entries.some(entry => entry.id === expandedEntryId);
+    return `<details class="resume-entries-group" data-entry-group="${group.resumeKey}" ${open ? "open" : ""}>
+      <summary class="resume-entries-head"><b>${escapeHtml(group.title)}</b><span class="resume-entry-count">${entries.length} 条</span><button type="button" class="text-button" data-add-entry="${group.resumeKey}">+ 添加</button></summary>
       ${cards || `<p class="hint">暂无${escapeHtml(group.title)}，点击「添加」手动填写。</p>`}
-    </div>`;
+    </details>`;
   }).join("");
-  const toggle = emptyCount
-    ? `<button type="button" class="text-button resume-empty-toggle" data-empty-toggle data-empty-count="${emptyCount}">展开空字段（${emptyCount}）</button>`
-    : "";
-  list.innerHTML = `<div class="resume-fields-head">
-      <span class="resume-fields-count">已填 ${filledCount} / 共 ${scalarFields.length} 项</span>${toggle}
-    </div>
-    <div class="resume-fields-grid" data-hide-empty="on">${scalarHtml}</div>${entriesHtml}`;
-  $("resumeFieldsStatus").textContent = `（已填 ${filledCount + entriesFilled(resume)} / 共 ${scalarFields.length + ENTRY_GROUPS.length}）`;
+  list.innerHTML = `${scalarHtml}${entriesHtml}`;
+  const entryCount = ENTRY_GROUPS.reduce((total, group) => total + (Array.isArray(resume[group.resumeKey]) ? resume[group.resumeKey].length : 0), 0);
+  const dirty = state.resumeFieldsDirty ? " · 有未保存修改" : "";
+  if ($("resumeFieldsStatus")) $("resumeFieldsStatus").textContent = `${filledCount}/${scalarFields.length} 项 · ${entryCount} 条经历${dirty}`;
+  if ($("resumeFieldsSummary")) $("resumeFieldsSummary").textContent = `缺失 ${emptyCount} 项，已维护 ${entryCount} 条教育/工作/实习/项目经历。`;
+  if ($("manageResumeFields")) $("manageResumeFields").textContent = state.resumeFieldsDirty ? "继续编辑" : "管理资料";
 }
 
-function entriesFilled(resume) {
-  return ENTRY_GROUPS.filter(group => (Array.isArray(resume[group.resumeKey]) ? resume[group.resumeKey] : []).length).length;
-}
-
-// 展开/隐藏空字段（纯 CSS 属性切换，无需重渲染）。
-export function toggleResumeEmptyFields() {
-  const grid = document.querySelector(".resume-fields-grid[data-hide-empty]");
-  const button = document.querySelector("[data-empty-toggle]");
-  if (!grid) return;
-  const hidden = grid.dataset.hideEmpty === "on";
-  grid.dataset.hideEmpty = hidden ? "off" : "on";
-  if (button) button.textContent = hidden ? "隐藏空字段" : `展开空字段（${button.dataset.emptyCount || ""}）`;
-}
-
-// 从 DOM 收集标量与经历条目（空条目自动剔除）。
 export function collectResumeFields() {
   const scalars = Object.fromEntries(
     [...document.querySelectorAll("[data-resume-key]")].map(el => [el.dataset.resumeKey, el.value.trim()])
   );
   const entries = {};
   for (const group of ENTRY_GROUPS) {
+    const groupContainer = document.querySelector(`[data-entry-group="${group.resumeKey}"]`);
+    if (!groupContainer) continue;
     const list = [];
-    for (const card of [...document.querySelectorAll(`[data-entry-group="${group.resumeKey}"] [data-entry-id]`)]) {
+    for (const card of [...groupContainer.querySelectorAll("[data-entry-id]")]) {
       const entry = { id: card.dataset.entryId };
       for (const field of group.fields) {
         const input = card.querySelector(`[data-entry-input="${group.resumeKey}|${entry.id}|${field.key}"]`);
@@ -120,33 +180,106 @@ export function collectResumeFields() {
   return { ...scalars, ...entries };
 }
 
-export async function saveResumeFields() {
+function syncResumeDraftFromDom() {
+  if (!document.querySelector("[data-resume-key], [data-entry-input]")) return ensureResumeDraft();
+  const collected = collectResumeFields();
+  setResumeFieldsDraft({ ...ensureResumeDraft(), ...collected }, activeProfile());
+  return state.resumeFieldsDraft;
+}
+
+function markResumeFieldsDirty() {
+  setResumeFieldsDirty(true);
+  renderResumeFieldsStatus();
+}
+
+function renderResumeFieldsStatus() {
+  const resume = ensureResumeDraft();
+  const scalarFields = editableScalarFields();
+  const filled = scalarFields.filter(field => String(resume[field.key] || "").trim()).length;
+  const entryCount = ENTRY_GROUPS.reduce((total, group) => total + (Array.isArray(resume[group.resumeKey]) ? resume[group.resumeKey].length : 0), 0);
+  const dirty = state.resumeFieldsDirty ? " · 有未保存修改" : "";
+  if ($("resumeFieldsStatus")) $("resumeFieldsStatus").textContent = `${filled}/${scalarFields.length} 项 · ${entryCount} 条经历${dirty}`;
+  if ($("manageResumeFields")) $("manageResumeFields").textContent = state.resumeFieldsDirty ? "继续编辑" : "管理资料";
+}
+
+export async function saveResumeFields(options = {}) {
   const profile = activeProfile();
   if (!profile) throw new Error("未找到当前简历。");
-  profile.resumeFields = aggregateResumeFields(collectResumeFields());
+  profile.resumeFields = aggregateResumeFields(cloneResumeFields(syncResumeDraftFromDom()));
   await saveProfiles();
-  toast("简历字段已保存（经历条目已同步聚合到匹配字段）");
+  setResumeFieldsDraft(cloneResumeFields(profile.resumeFields), profile);
+  setResumeFieldsDirty(false);
+  if (!options.silent) toast("简历资料已保存");
   renderResumeFields();
-  if (state.fillScanFields.length) await buildMatches();
+  if (options.rebuild !== false && state.fillScanFields.length) await buildMatches();
 }
 
 let entrySeq = 0;
 export function addResumeEntry(groupKey) {
-  const profile = activeProfile();
-  if (!profile) return;
+  if (!activeProfile()) return;
   const group = ENTRY_GROUPS.find(g => g.resumeKey === groupKey);
   if (!group) return;
-  const list = Array.isArray(profile.resumeFields[groupKey]) ? profile.resumeFields[groupKey] : [];
-  list.push(group.empty(entrySeq++));
-  profile.resumeFields[groupKey] = list;
+  const draft = syncResumeDraftFromDom();
+  const list = Array.isArray(draft[groupKey]) ? [...draft[groupKey]] : [];
+  const entry = group.empty(entrySeq++);
+  list.push(entry);
+  draft[groupKey] = list;
+  expandedEntryId = entry.id;
+  setResumeFieldsDirty(true);
   renderResumeFields();
 }
 
 export function removeResumeEntry(groupKey, id) {
-  const profile = activeProfile();
-  if (!profile) return;
-  profile.resumeFields[groupKey] = (profile.resumeFields[groupKey] || []).filter(entry => entry.id !== id);
+  if (!activeProfile()) return;
+  const draft = syncResumeDraftFromDom();
+  draft[groupKey] = (draft[groupKey] || []).filter(entry => entry.id !== id);
+  if (expandedEntryId === id) expandedEntryId = "";
+  setResumeFieldsDirty(true);
   renderResumeFields();
+}
+
+export function discardResumeFields() {
+  ensureResumeDraft(true);
+  expandedEntryId = "";
+  renderResumeFields();
+}
+
+export function openResumeFieldsEditor() {
+  $("smartFillMain").hidden = true;
+  $("resumeFieldsEditor").hidden = false;
+  renderResumeFields();
+}
+
+export function closeResumeFieldsEditor() {
+  $("resumeFieldsEditor").hidden = true;
+  $("smartFillMain").hidden = false;
+  renderResumeFieldsStatus();
+}
+
+export function setResumeFieldFilter(filter) {
+  syncResumeDraftFromDom();
+  resumeFieldFilter = filter || "all";
+  document.querySelectorAll("[data-resume-filter]").forEach(button => {
+    button.classList.toggle("active", button.dataset.resumeFilter === resumeFieldFilter);
+  });
+  renderResumeFields();
+}
+
+function updateResumeDraftFromControl(target) {
+  const draft = ensureResumeDraft();
+  const scalar = target.closest("[data-resume-key]");
+  if (scalar) {
+    draft[scalar.dataset.resumeKey] = scalar.value.trim();
+    markResumeFieldsDirty();
+    return true;
+  }
+  const entryInput = target.closest("[data-entry-input]");
+  if (!entryInput) return false;
+  const [groupKey, id, fieldKey] = entryInput.dataset.entryInput.split("|");
+  const entry = (draft[groupKey] || []).find(item => item.id === id);
+  if (entry) entry[fieldKey] = entryInput.value.trim();
+  markResumeFieldsDirty();
+  return true;
 }
 
 export async function extractResumeFields() {
@@ -169,11 +302,10 @@ export async function extractResumeFields() {
         toast("AI 提取失败，已保留本地提取结果");
       }
     }
-    profile.resumeFields = merged;
-    await saveProfiles();
+    setResumeFieldsDraft(cloneResumeFields(merged), profile);
+    setResumeFieldsDirty(true);
     renderResumeFields();
-    if (state.fillScanFields.length) await buildMatches();
-    toast("简历字段提取完成，请检查后保存");
+    toast("简历资料已提取到草稿，请检查并保存");
   } finally {
     button.disabled = false;
     button.textContent = "重新提取简历字段";
@@ -687,6 +819,16 @@ export function confirmManualFillValue(fieldId, value) {
   renderFillMatches();
 }
 
+export async function changeFillProfile(index) {
+  const savedDraft = state.resumeFieldsDirty;
+  if (savedDraft) await saveResumeFields({ silent: true, rebuild: false });
+  await switchProfile(index);
+  renderFillProfileSelect();
+  renderResumeFields();
+  if (state.fillScanFields.length) await buildMatches();
+  return savedDraft;
+}
+
 function bindFillEvents() {
   $("scanFillPage").onclick = () => scanFillPage().catch(error => toast(error.message));
   $("prepareFillSections").onclick = () => prepareFillSections().catch(error => toast(error.message));
@@ -696,15 +838,20 @@ function bindFillEvents() {
   $("clearFill").onclick = () => clearFill().catch(error => toast(error.message));
   $("extractResumeFields").onclick = () => extractResumeFields().catch(error => toast(error.message));
   $("saveResumeFields").onclick = () => saveResumeFields().catch(error => toast(error.message));
+  $("manageResumeFields").onclick = () => openResumeFieldsEditor();
+  $("closeResumeFieldsEditor").onclick = () => closeResumeFieldsEditor();
+  $("discardResumeFields").onclick = () => {
+    if (!state.resumeFieldsDirty || confirm("放弃当前未保存的简历资料修改？")) discardResumeFields();
+  };
   $("deleteFillTemplate").onclick = () => deleteFillTemplate().catch(error => toast(error.message));
   $("fillProfileSelect").onchange = async (event) => {
     try {
-      await switchProfile(parseInt(event.target.value, 10));
+      const savedDraft = await changeFillProfile(parseInt(event.target.value, 10));
+      toast(`${savedDraft ? "已自动保存修改并" : "已"}切换到"${activeProfile()?.name || "未命名"}"`);
+    } catch (error) {
       renderFillProfileSelect();
-      renderResumeFields();
-      if (state.fillScanFields.length) await buildMatches();
-      toast(`已切换到"${activeProfile()?.name || "未命名"}"`);
-    } catch (error) { toast(error.message); }
+      toast(error.message);
+    }
   };
   $("fillAiToggle").onchange = (event) => {
     setFillAiEnabled(event.target.checked);
@@ -716,6 +863,7 @@ function bindFillEvents() {
     chrome.storage.local.set({ smartFillSettings: { aiEnabled: state.fillAiEnabled, templateEnabled: state.fillTemplateEnabled } }).catch(() => {});
   };
   document.addEventListener("change", (event) => {
+    if (updateResumeDraftFromControl(event.target)) return;
     const keyInput = event.target.closest("input[data-fill-key-id]");
     if (keyInput) {
       rebindFillField(keyInput.dataset.fillKeyId, keyInput.value);
@@ -735,6 +883,13 @@ function bindFillEvents() {
     updateFillButtons();
   });
   document.addEventListener("input", (event) => {
+    if (event.target.id === "resumeFieldSearch") {
+      syncResumeDraftFromDom();
+      resumeFieldSearch = event.target.value.trim().toLowerCase();
+      renderResumeFields();
+      return;
+    }
+    if (updateResumeDraftFromControl(event.target)) return;
     const valueInput = event.target.closest("input[data-fill-value-id]");
     if (valueInput) {
       const fieldId = valueInput.dataset.fillValueId;
@@ -744,6 +899,11 @@ function bindFillEvents() {
     }
   });
   document.addEventListener("click", (event) => {
+    const filterButton = event.target.closest("[data-resume-filter]");
+    if (filterButton) {
+      setResumeFieldFilter(filterButton.dataset.resumeFilter);
+      return;
+    }
     const addButton = event.target.closest("[data-add-entry]");
     if (addButton) {
       event.preventDefault();
@@ -756,8 +916,8 @@ function bindFillEvents() {
       event.stopPropagation();
       const [groupKey, id] = removeButton.dataset.removeEntry.split("|");
       removeResumeEntry(groupKey, id);
+      return;
     }
-    if (event.target.closest("[data-empty-toggle]")) toggleResumeEmptyFields();
   });
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === "SMART_FILL_PROGRESS") {
@@ -783,6 +943,7 @@ export async function initFillUi() {
 // 简历变更后刷新智能填充页（设置页切换/增删简历时调用）。
 export function refreshFillUi() {
   renderFillProfileSelect();
+  ensureResumeDraft();
   renderResumeFields();
   if (state.fillScanFields.length) buildMatches().catch(() => {});
 }

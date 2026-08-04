@@ -235,6 +235,37 @@ test("matchRules: 正常电话/邮箱/日期不受格式校验影响", () => {
   assert.equal(r3[0].status, "match");
 });
 
+test("日期目标精度：month 接受年月，date 缺少日时降级人工", () => {
+  const month = matchRules([{
+    id: "month",
+    type: "date",
+    label: "出生年月",
+    dateMeta: { framework: "native", nativeType: "month", mode: "month" },
+    options: [],
+  }], FULL_RESUME);
+  assert.equal(month[0].status, "match");
+  assert.equal(month[0].value, "1998-06");
+
+  const date = matchRules([{
+    id: "date",
+    type: "date",
+    label: "出生日期",
+    dateMeta: { framework: "native", nativeType: "date", mode: "date" },
+    options: [],
+  }], FULL_RESUME);
+  assert.equal(date[0].status, "manual");
+  assert.match(date[0].reason, /格式/);
+
+  const exactDate = matchRules([{
+    id: "exact-date",
+    type: "date",
+    label: "出生日期",
+    dateMeta: { framework: "native", nativeType: "date", mode: "date" },
+    options: [],
+  }], { ...FULL_RESUME, birthDate: "1998-06-15" });
+  assert.equal(exactDate[0].status, "match");
+});
+
 test("matchRules: 紧急联系人上下文不得自动映射候选人本人信息", () => {
   const results = matchRules(toFields(["紧急联系人姓名", "紧急联系人电话", "Emergency Contact Name", "Parent Phone"]), FULL_RESUME);
   assert.ok(results.every(result => result.status === "manual"), JSON.stringify(results));

@@ -45,7 +45,7 @@ test("面板初始化：所有关键按钮绑定事件且无未捕获异常", as
       if (scan && typeof scan.onclick === "function") break;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "scanFillPage", "prepareFillSections", "fillSelected", "fillAll", "clearFill", "extractResumeFields", "saveResumeFields", "deleteFillTemplate", "darkToggle"];
+    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "scanFillPage", "prepareFillSections", "fillSelected", "fillAll", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "deleteFillTemplate", "darkToggle"];
     for (const id of ids) {
       const el = window.document.getElementById(id);
       assert.ok(el, `元素 #${id} 应存在`);
@@ -73,14 +73,17 @@ test("简历字段条目编辑器：多条目卡片渲染、添加/删除、保�
     tabs: { query: async () => [] },
   };
     const { state, setProfiles, setActiveProfileIndex, setFillScanFields, setFillMatches, setFillSelected, setFillValues } = await import("../src/state.js");
-    const { renderResumeFields, addResumeEntry, removeResumeEntry, saveResumeFields, collectResumeFields, rebindFillField, confirmManualFillValue, buildRepeaterPlans } = await import("../src/fill-ui.js");
+    const { renderResumeFields, addResumeEntry, removeResumeEntry, saveResumeFields, collectResumeFields, rebindFillField, confirmManualFillValue, buildRepeaterPlans, changeFillProfile } = await import("../src/fill-ui.js");
   try {
-    setProfiles([{ name: "测试简历", resumeFields: {
-      name: "张三",
-      education: [{ id: "edu-1", start: "2016-09", end: "2020-06", school: "复旦大学", degree: "本科", major: "计算机" }],
-      internships: [{ id: "int-1", start: "2021-06", end: "2021-09", company: "字节跳动", title: "产品实习生", description: "用户调研" }],
-      projects: [],
-    } }]);
+    setProfiles([
+      { name: "测试简历", resumeFields: {
+        name: "张三",
+        education: [{ id: "edu-1", start: "2016-09", end: "2020-06", school: "复旦大学", degree: "本科", major: "计算机" }],
+        internships: [{ id: "int-1", start: "2021-06", end: "2021-09", company: "字节跳动", title: "产品实习生", description: "用户调研" }],
+        projects: [],
+      } },
+      { name: "第二份简历", resumeFields: { name: "王五", education: [], workHistory: [], internships: [], projects: [] } },
+    ]);
     setActiveProfileIndex(0);
     renderResumeFields();
 
@@ -92,10 +95,12 @@ test("简历字段条目编辑器：多条目卡片渲染、添加/删除、保�
     assert.ok(internCard.textContent.includes("产品实习生"));
     assert.equal(window.document.querySelector('[data-entry-group="education"] .resume-entry-card').textContent.includes("复旦大学"), true);
 
-    // 添加条目
+    // 未保存标量修改在添加条目触发重渲染后仍保留
+    window.document.querySelector('[data-resume-key="name"]').value = "李四";
     addResumeEntry("internships");
     const cards = window.document.querySelectorAll('[data-entry-group="internships"] .resume-entry-card');
     assert.equal(cards.length, 2, "添加后应为 2 条实习卡片");
+    assert.equal(window.document.querySelector('[data-resume-key="name"]').value, "李四");
 
     // 修改新条目并保存 → 聚合取最新
     const newCard = cards[cards.length - 1];
@@ -110,6 +115,7 @@ test("简历字段条目编辑器：多条目卡片渲染、添加/删除、保�
     setVal("description", "需求分析");
     await saveResumeFields();
     const saved = state.profiles[0].resumeFields;
+    assert.equal(saved.name, "李四", "添加条目前的未保存修改不得丢失");
     assert.equal(saved.internships.length, 2);
     assert.equal(saved.internshipCompany, "腾讯", "保存后应聚合最新实习公司");
     assert.equal(saved.internshipPeriod, "2022-01 至 2022-06");
@@ -118,6 +124,8 @@ test("简历字段条目编辑器：多条目卡片渲染、添加/删除、保�
     // 删除条目 → 聚合回退到剩余一条
     removeResumeEntry("internships", saved.internships[1].id);
     assert.equal(collectResumeFields().internships.length, 1);
+    await saveResumeFields();
+    const afterRemove = state.profiles[0].resumeFields;
 
     // manual 字段可通过搜索 fieldKey 修正语义，并从当前 profile 解析值。
     setFillScanFields([{ id: "manual-name", type: "text", label: "申请人", skipped: false, options: [], fingerprint: "fp-name" }]);
@@ -126,7 +134,7 @@ test("简历字段条目编辑器：多条目卡片渲染、添加/删除、保�
     setFillValues({});
     rebindFillField("manual-name", "name");
     assert.equal(state.fillMatches[0].fieldKey, "name");
-    assert.equal(state.fillMatches[0].value, "张三");
+    assert.equal(state.fillMatches[0].value, "李四");
     assert.equal(state.fillMatches[0].status, "match");
     assert.equal(state.fillMatches[0].source, "manual");
     assert.equal(state.fillSelected.has("manual-name"), true);
@@ -143,9 +151,17 @@ test("简历字段条目编辑器：多条目卡片渲染、添加/删除、保�
     const plans = buildRepeaterPlans([
       { id: "edu", arrayKey: "education", title: "教育经历", currentCount: 0, fingerprint: "fp-edu" },
       { id: "intern", arrayKey: "internships", title: "实习经历", currentCount: 1, fingerprint: "fp-intern" },
-    ], saved);
+    ], afterRemove);
     assert.equal(plans.find(plan => plan.arrayKey === "education").targetCount, 1);
     assert.equal(plans.some(plan => plan.arrayKey === "internships"), false, "已有足够实习区块时不应继续新增");
+
+    // 切换简历前自动保存当前草稿
+    window.document.querySelector('[data-resume-key="name"]').value = "切换前修改";
+    addResumeEntry("projects");
+    const autoSaved = await changeFillProfile(1);
+    assert.equal(autoSaved, true);
+    assert.equal(state.profiles[0].resumeFields.name, "切换前修改");
+    assert.equal(window.document.querySelector('[data-resume-key="name"]').value, "王五");
   } finally {
     delete globalThis.window;
     delete globalThis.document;
@@ -154,7 +170,7 @@ test("简历字段条目编辑器：多条目卡片渲染、添加/删除、保�
   }
 });
 
-test("基础字段紧凑布局：单行标签、空值折叠、多行字段整行", async () => {
+test("简历资料独立编辑视图：分组折叠、筛选和经历单一入口", async () => {
   const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
   window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
@@ -165,8 +181,8 @@ test("基础字段紧凑布局：单行标签、空值折叠、多行字段整�
     runtime: { sendMessage: (_m, cb) => cb && cb({ ok: true }), onMessage: { addListener() {} }, connect: () => ({ onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }), getURL: p => p },
     tabs: { query: async () => [] },
   };
-  const { state, setProfiles, setActiveProfileIndex } = await import("../src/state.js");
-  const { renderResumeFields, toggleResumeEmptyFields } = await import("../src/fill-ui.js");
+  const { setProfiles, setActiveProfileIndex } = await import("../src/state.js");
+  const { renderResumeFields, openResumeFieldsEditor, closeResumeFieldsEditor, setResumeFieldFilter } = await import("../src/fill-ui.js");
   try {
     // 模拟真实简历：部分字段有值（含长文本），部分为空
     setProfiles([{ name: "测试简历", resumeFields: {
@@ -181,37 +197,41 @@ test("基础字段紧凑布局：单行标签、空值折叠、多行字段整�
       hobbies: "", github: "", linkedin: "", portfolio: "", referral: "",
       awards: "2024 年三好学生、2024及2023年乙等奖学金、第四届大学生金融科技建模大赛一等奖",
       certificates: "", campusExperience: "", additionalInfo: "",
-      education: [], internships: [], projects: [],
+      education: [{ id: "edu-filter", school: "复旦大学", start: "2019-09", end: "2023-06" }],
+      internships: [], projects: [],
     } }]);
     setActiveProfileIndex(0);
     renderResumeFields();
 
-    const grid = window.document.querySelector(".resume-fields-grid");
-    assert.ok(grid, "标量网格应渲染");
-    assert.equal(grid.dataset.hideEmpty, "on", "默认隐藏空字段");
+    const groups = window.document.querySelectorAll(".resume-scalar-group");
+    assert.equal(groups.length, 5, "标量字段应按五个类别分组");
+    assert.equal(groups[0].open, true, "基本信息默认展开");
+    assert.equal([...groups].slice(1).every(group => !group.open), true, "其他类别默认折叠");
     const emptyFields = window.document.querySelectorAll(".resume-field.is-empty");
     const filledFields = window.document.querySelectorAll(".resume-field:not(.is-empty)");
-    assert.equal(emptyFields.length, 40, `空字段应为 40 个，实际 ${emptyFields.length}`);
+    assert.equal(emptyFields.length, 33, `空字段应为 33 个，实际 ${emptyFields.length}`);
     assert.equal(filledFields.length, 15, `有值字段应为 15 个，实际 ${filledFields.length}`);
-    // 折叠提示按钮
-    const toggle = window.document.querySelector("[data-empty-toggle]");
-    assert.ok(toggle && toggle.textContent.includes("展开空字段（40）"), "折叠按钮文案应含空字段数");
     // 多行字段整行且为 textarea
     const skills = window.document.querySelector('[data-resume-key="skills"]');
     assert.ok(skills && skills.tagName === "TEXTAREA", "专业技能应为 textarea");
     assert.ok(skills.closest(".resume-field").classList.contains("is-textarea"), "专业技能应整行展示");
-    // 单行字段标签与输入同行（flex row）
     const nameField = window.document.querySelector('[data-resume-key="name"]').closest(".resume-field");
-    assert.ok(nameField.querySelector("span").textContent.includes("姓名"), "标签在输入左侧");
-    // 状态计数
-    assert.ok(window.document.getElementById("resumeFieldsStatus").textContent.includes("已填 15 / 共 59"));
+    assert.ok(nameField.querySelector("span").textContent.includes("姓名"));
+    assert.equal(window.document.querySelector('[data-resume-key="currentCompany"]'), null, "工作经历聚合标量不得重复编辑");
+    assert.equal([...window.document.querySelectorAll(".resume-entries-group")].every(group => !group.open), true, "经历分组默认折叠");
+    assert.ok(window.document.getElementById("resumeFieldsStatus").textContent.includes("15/48 项"));
 
-    // 切换展开空字段
-    toggleResumeEmptyFields();
-    assert.equal(grid.dataset.hideEmpty, "off", "切换后显示空字段");
-    assert.ok(toggle.textContent.includes("隐藏空字段"));
-    toggleResumeEmptyFields();
-    assert.equal(grid.dataset.hideEmpty, "on");
+    openResumeFieldsEditor();
+    assert.equal(window.document.getElementById("smartFillMain").hidden, true);
+    assert.equal(window.document.getElementById("resumeFieldsEditor").hidden, false);
+    setResumeFieldFilter("missing");
+    assert.equal(window.document.querySelector('[data-resume-key="name"]').closest(".resume-field").hidden, true, "待补充筛选应隐藏已填写字段");
+    assert.equal(window.document.querySelector('[data-resume-key="idCard"]').closest(".resume-field").hidden, false);
+    setResumeFieldFilter("basic");
+    setResumeFieldFilter("education");
+    assert.match(window.document.querySelector('[data-entry-group="education"]').textContent, /复旦大学/, "筛选切换不得清空未渲染经历");
+    closeResumeFieldsEditor();
+    assert.equal(window.document.getElementById("smartFillMain").hidden, false);
   } finally {
     delete globalThis.window;
     delete globalThis.document;

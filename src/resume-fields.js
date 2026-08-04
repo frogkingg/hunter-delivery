@@ -290,10 +290,12 @@ export function extractResumeFieldsLocal(text) {
   if (gender) fields.gender = gender[2];
   if (/(?:性别|gender)\s*[:：]\s*(男|女)/i.test(source)) fields.gender = RegExp.$1;
 
-  const birthLabeled = source.match(/(?:出生日期|出生年月|生日)\s*[:：]?\s*(\d{4})[-/年.](\d{1,2})月?/);
-  const birthMeta = source.match(/(?:男|女)\s*[|｜]\s*(\d{4})[-/年.](\d{1,2})月?/);
+  const birthLabeled = source.match(/(?:出生日期|出生年月|生日)\s*[:：]?\s*(\d{4})[-/年.](\d{1,2})(?:[-/月.](\d{1,2})日?)?/);
+  const birthMeta = source.match(/(?:男|女)\s*[|｜]\s*(\d{4})[-/年.](\d{1,2})(?:[-/月.](\d{1,2})日?)?/);
   const birth = birthLabeled || birthMeta;
-  if (birth) fields.birthDate = `${birth[1]}-${String(birth[2]).padStart(2, "0")}`;
+  if (birth) {
+    fields.birthDate = `${birth[1]}-${String(birth[2]).padStart(2, "0")}${birth[3] ? `-${String(birth[3]).padStart(2, "0")}` : ""}`;
+  }
 
   fields.currentCity = firstMatch(source, /(?:现居城市|现居住地|所在地|所在城市|常住城市|城市)\s*[:：]?\s*([\u4e00-\u9fa5·]{2,6})/);
   if (!fields.currentCity) {

@@ -363,7 +363,7 @@ test("字段身份不变量：DOM 同级插入后仍写入原字段，不按旧�
   dom.window.close();
 });
 
-test("复合控件不变量：日期范围两个 slot 分别写入各自 input", async () => {
+test("受控日期组件无可确认面板时不得直接写内部 input", async () => {
   const dom = new JSDOM(`<form>
     <div class="ant-form-item">
       <div class="ant-form-item-label"><label>项目时间</label></div>
@@ -383,8 +383,152 @@ test("复合控件不变量：日期范围两个 slot 分别写入各自 input",
     { id: scanned.fields[0].id, value: "2024-01", type: "custom-date", fingerprint: scanned.fields[0].fingerprint },
     { id: scanned.fields[1].id, value: "2024-12", type: "custom-date", fingerprint: scanned.fields[1].fingerprint },
   ], { delayMs: 0, scanId: scanned.scanId, documentFingerprint: scanned.documentFingerprint, formFingerprint: scanned.formFingerprint });
+  assert.equal(applied.every(result => !result.ok), true, JSON.stringify(applied));
+  assert.deepEqual([...dom.window.document.querySelectorAll(".ant-picker input")].map(input => input.value), ["", ""]);
+  assert.ok(applied.every(result => /未确认选择结果/.test(result.error)));
+  dom.window.close();
+});
+
+test("原生日期控件按目标精度写值，不再为 month 补 -01", async () => {
+  const dom = new JSDOM(`<form>
+    <label>入学月份<input id="month" type="month"></label>
+    <label>出生日期<input id="date" type="date"></label>
+  </form>`, { url: "https://x.com/native-date-types", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const scanned = engine.scan(dom.window.document);
+  const month = scanned.fields.find(field => field.attributes.id === "month");
+  const date = scanned.fields.find(field => field.attributes.id === "date");
+  assert.equal(month.dateMeta.nativeType, "month");
+  assert.equal(date.dateMeta.nativeType, "date");
+
+  const applied = await engine.apply([
+    { id: month.id, value: "2024-01", type: month.type, fingerprint: month.fingerprint },
+    { id: date.id, value: "1998-06-15", type: date.type, fingerprint: date.fingerprint },
+  ], { delayMs: 0, scanId: scanned.scanId, documentFingerprint: scanned.documentFingerprint, formFingerprint: scanned.formFingerprint });
   assert.equal(applied.every(result => result.ok), true, JSON.stringify(applied));
-  assert.deepEqual([...dom.window.document.querySelectorAll(".ant-picker input")].map(input => input.value), ["2024-01", "2024-12"]);
+  assert.equal(dom.window.document.getElementById("month").value, "2024-01");
+  assert.equal(dom.window.document.getElementById("date").value, "1998-06-15");
+  dom.window.close();
+});
+
+test("原生 date 缺少日精度时明确失败且不编造日期", async () => {
+  const dom = new JSDOM(`<form><label>出生日期<input id="date" type="date"></label></form>`, {
+    url: "https://x.com/native-date-precision",
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const scanned = engine.scan(dom.window.document);
+  const field = scanned.fields[0];
+  const applied = await engine.apply([
+    { id: field.id, value: "1998-06", type: field.type, fingerprint: field.fingerprint },
+  ], { delayMs: 0, scanId: scanned.scanId, documentFingerprint: scanned.documentFingerprint, formFingerprint: scanned.formFingerprint });
+  assert.equal(applied[0].ok, false);
+  assert.match(applied[0].error, /日期精度/);
+  assert.equal(dom.window.document.getElementById("date").value, "");
+  dom.window.close();
+});
+
+test("Ant 月份选择需经确认按钮提交并稳定回读", async () => {
+  const dom = new JSDOM(`<form>
+    <div class="ant-picker ant-picker-month need-confirm"><input id="month" placeholder="选择月份"></div>
+  </form>`, { url: "https://x.com/month-confirm", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const input = doc.getElementById("month");
+  let pending = "";
+  input.addEventListener("click", () => {
+    if (doc.querySelector(".ant-picker-dropdown")) return;
+    const dropdown = doc.createElement("div");
+    dropdown.className = "ant-picker-dropdown";
+    dropdown.innerHTML = `<table><tbody><tr><td title="2026-08"><div class="ant-picker-cell-inner">8月</div></td></tr></tbody></table>
+      <div class="ant-picker-ok"><button type="button">确定</button></div>`;
+    doc.body.appendChild(dropdown);
+    dropdown.querySelector("td").addEventListener("click", () => { pending = "2026-08"; });
+    dropdown.querySelector("button").addEventListener("click", () => {
+      input.value = pending;
+      dropdown.remove();
+    });
+  });
+  const scanned = engine.scan(doc);
+  const field = scanned.fields[0];
+  const applied = await engine.apply([
+    { id: field.id, value: "2026-08", type: field.type, fingerprint: field.fingerprint },
+  ], { delayMs: 0, scanId: scanned.scanId, documentFingerprint: scanned.documentFingerprint, formFingerprint: scanned.formFingerprint });
+  assert.equal(applied[0].ok, true, JSON.stringify(applied[0]));
+  assert.equal(input.value, "2026-08");
+  dom.window.close();
+});
+
+test("Ant 日期面板支持同一年跨月导航", async () => {
+  const dom = new JSDOM(`<form><div class="ant-picker"><input id="date" placeholder="选择日期"></div></form>`, {
+    url: "https://x.com/date-navigation",
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const input = doc.getElementById("date");
+  input.addEventListener("click", () => {
+    if (doc.querySelector(".ant-picker-dropdown")) return;
+    const dropdown = doc.createElement("div");
+    dropdown.className = "ant-picker-dropdown";
+    dropdown.innerHTML = `<button class="ant-picker-header-next-btn">下月</button>
+      <table><tbody><tr><td title="2026-06-15"><div class="ant-picker-cell-inner">15</div></td></tr></tbody></table>`;
+    doc.body.appendChild(dropdown);
+    dropdown.querySelector("button").addEventListener("click", () => {
+      dropdown.querySelector("tbody").innerHTML = `<tr><td title="2026-08-20"><div class="ant-picker-cell-inner">20</div></td></tr>`;
+      dropdown.querySelector("td").addEventListener("click", () => {
+        input.value = "2026-08-20";
+        dropdown.remove();
+      });
+    });
+  });
+  const scanned = engine.scan(doc);
+  const field = scanned.fields[0];
+  const applied = await engine.apply([
+    { id: field.id, value: "2026-08-20", type: field.type, fingerprint: field.fingerprint },
+  ], { delayMs: 0, scanId: scanned.scanId, documentFingerprint: scanned.documentFingerprint, formFingerprint: scanned.formFingerprint });
+  assert.equal(applied[0].ok, true, JSON.stringify(applied[0]));
+  assert.equal(input.value, "2026-08-20");
+  dom.window.close();
+});
+
+test("Element 月份面板可按表头年份与月份文本提交", async () => {
+  const dom = new JSDOM(`<form><div class="el-date-editor el-date-editor--month"><input id="month" placeholder="选择月份"></div></form>`, {
+    url: "https://x.com/element-month",
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const input = doc.getElementById("month");
+  input.addEventListener("click", () => {
+    if (doc.querySelector(".el-picker-panel")) return;
+    const panel = doc.createElement("div");
+    panel.className = "el-picker-panel";
+    panel.innerHTML = `<div class="el-date-picker__header">2026年</div>
+      <table class="el-month-table"><tbody><tr><td><span class="cell">8月</span></td></tr></tbody></table>`;
+    doc.body.appendChild(panel);
+    panel.querySelector("td").addEventListener("click", () => {
+      input.value = "2026-08";
+      panel.remove();
+    });
+  });
+  const scanned = engine.scan(doc);
+  const field = scanned.fields[0];
+  assert.equal(field.dateMeta.framework, "element");
+  assert.equal(field.dateMeta.mode, "month");
+  const applied = await engine.apply([
+    { id: field.id, value: "2026-08", type: field.type, fingerprint: field.fingerprint },
+  ], { delayMs: 0, scanId: scanned.scanId, documentFingerprint: scanned.documentFingerprint, formFingerprint: scanned.formFingerprint });
+  assert.equal(applied[0].ok, true, JSON.stringify(applied[0]));
+  assert.equal(input.value, "2026-08");
   dom.window.close();
 });
 

@@ -507,6 +507,43 @@
     return { type: "text", skipped: true };
   }
 
+  function dateMetaForNative(el) {
+    const nativeType = String(el?.type || "date").toLowerCase();
+    return {
+      framework: "native",
+      nativeType,
+      mode: nativeType === "datetime-local" ? "datetime" : nativeType,
+      requiresConfirm: false,
+    };
+  }
+
+  function dateMetaForCustom(container, target) {
+    const className = `${container?.className || ""} ${target?.className || ""}`.toLowerCase();
+    const semantic = [
+      className,
+      target?.getAttribute?.("placeholder"),
+      target?.getAttribute?.("aria-label"),
+      container?.getAttribute?.("data-type"),
+      container?.getAttribute?.("data-picker"),
+    ].filter(Boolean).join(" ").toLowerCase();
+    const framework = /ant-picker/.test(className)
+      ? "antd"
+      : /el-date-editor/.test(className) ? "element" : "generic";
+    const mode = /datetime|日期时间/.test(semantic)
+      ? "datetime"
+      : /(?:^|[-_\s])time(?:$|[-_\s])|时间选择/.test(semantic)
+        ? "time"
+        : /month|月份|年月/.test(semantic)
+          ? "month"
+          : /year|年份|年度/.test(semantic) ? "year" : "date";
+    return {
+      framework,
+      nativeType: "",
+      mode,
+      requiresConfirm: /need-confirm|show-time|confirm/.test(semantic),
+    };
+  }
+
   function optionText(el) {
     if (!el) return "";
     const wrap = el.closest("label");
@@ -532,6 +569,7 @@
       fieldId, type, target, labelInfo, options = [], value = "", skipped = false,
       kind = "native", group = null, container = null, adapter = "native", slot = "single",
       required = isRequired(target), semanticHint = "", optionsComplete = false, contextOverride = null,
+      dateMeta = null,
     }) => {
       const context = { ...fieldContext(target), ...(contextOverride || {}) };
       const evidence = collectEvidence(target, labelInfo, context, semanticHint);
@@ -557,6 +595,7 @@
         attributes,
         adapter,
         slot,
+        dateMeta,
         semanticHint,
         locators,
       };
@@ -571,6 +610,7 @@
         type,
         adapter,
         slot,
+        dateMeta,
         fingerprint,
       });
       fields.push(descriptor);
@@ -655,6 +695,7 @@
           container,
           adapter: targets.length > 1 ? "date-range" : "custom-date",
           slot,
+          dateMeta: dateMetaForCustom(container, target),
           semanticHint,
           contextOverride: sharedRepeat ? { repeat: fieldContext(target).repeat || sharedRepeat } : null,
         });
@@ -744,6 +785,7 @@
           : isCompoundMain ? "compound-value"
           : String(el.tagName).toLowerCase() === "select" ? "native-select" : "native-input",
         slot: isPhoneMain || isCompoundMain ? "main" : "single",
+        dateMeta: classified.type === "date" ? dateMetaForNative(el) : null,
         semanticHint: isCompoundMain ? `${compoundGroup.labelInfo.text}账号` : "",
       });
     }
@@ -922,6 +964,12 @@
 
   function normalizeDateCompare(value) {
     const text = String(value || "").trim();
+    if (/^\d{4}$/.test(text)) return text;
+    const dateTime = text.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (dateTime) {
+      return `${dateTime[1]}-${dateTime[2]}-${dateTime[3]}T${dateTime[4]}:${dateTime[5]}${dateTime[6] ? `:${dateTime[6]}` : ""}`;
+    }
+    if (/^\d{2}:\d{2}(?::\d{2})?$/.test(text)) return text;
     let match = text.match(/^(\d{4})[-/.年](\d{1,2})(?:[-/.月](\d{1,2})日?)?$/);
     if (match) {
       const normalized = `${match[1]}-${String(match[2]).padStart(2, "0")}`;
@@ -930,6 +978,37 @@
     match = text.match(/^(\d{1,2})[-/.](\d{4})$/);
     if (match) return `${match[2]}-${String(match[1]).padStart(2, "0")}`;
     return normalizeCompare(text);
+  }
+
+  function dateParts(value) {
+    const normalized = normalizeDateCompare(value);
+    let match = normalized.match(/^(\d{4})$/);
+    if (match) return { normalized, precision: "year", year: Number(match[1]) };
+    match = normalized.match(/^(\d{4})-(\d{2})$/);
+    if (match) return { normalized, precision: "month", year: Number(match[1]), month: Number(match[2]) };
+    match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (match) return {
+      normalized,
+      precision: "day",
+      year: Number(match[1]),
+      month: Number(match[2]),
+      day: Number(match[3]),
+    };
+    match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (match) return { normalized, precision: "datetime", year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
+    if (/^\d{2}:\d{2}(?::\d{2})?$/.test(normalized)) return { normalized, precision: "time" };
+    return null;
+  }
+
+  function valueForNativeDate(input, value) {
+    const nativeType = String(input?.type || "date").toLowerCase();
+    const parts = dateParts(value);
+    if (!parts) return "";
+    if (nativeType === "month") return ["month", "day", "datetime"].includes(parts.precision) ? parts.normalized.slice(0, 7) : "";
+    if (nativeType === "date") return ["day", "datetime"].includes(parts.precision) ? parts.normalized.slice(0, 10) : "";
+    if (nativeType === "datetime-local") return parts.precision === "datetime" ? parts.normalized : "";
+    if (nativeType === "time") return parts.precision === "time" ? parts.normalized : "";
+    return "";
   }
 
   // 自定义下拉兜底：写入内部 input 后，仅当容器展示值反映所选值才算成功。
@@ -1013,51 +1092,175 @@
     return applyCustomInputFallback(container, value);
   }
 
-  function visiblePickerDropdown(doc) {
+  function visiblePickerDropdown(doc, entry) {
+    const linkedIds = new Set();
+    for (const node of [entry?.el, entry?.container, ...Array.from(entry?.container?.querySelectorAll?.("[aria-controls], [aria-owns]") || [])]) {
+      const ids = `${node?.getAttribute?.("aria-controls") || ""} ${node?.getAttribute?.("aria-owns") || ""}`.trim();
+      ids.split(/\s+/).filter(Boolean).forEach(id => linkedIds.add(id));
+    }
+    const linked = [...linkedIds].map(id => doc.getElementById(id)).filter(Boolean)
+      .map(node => node.closest?.(".ant-picker-dropdown, .el-picker-panel") || node)
+      .filter(node => isVisible(node) && !node.classList?.contains("ant-picker-dropdown-hidden"));
+    if (linked.length === 1) return linked[0];
     const visible = Array.from(doc.querySelectorAll(".ant-picker-dropdown, .el-picker-panel"))
       .filter(dropdown => !dropdown.classList.contains("ant-picker-dropdown-hidden") && isVisible(dropdown));
-    return visible[visible.length - 1] || null;
+    return visible.length === 1 ? visible[0] : null;
+  }
+
+  function pickerMode(entry, dropdown) {
+    const configured = entry?.dateMeta?.mode || "date";
+    if (configured !== "date") return configured;
+    if (dropdown?.querySelector(".ant-picker-year-panel, .el-year-table")) return "year";
+    if (dropdown?.querySelector(".ant-picker-month-panel, .el-month-table")) return "month";
+    const precisions = Array.from(dropdown?.querySelectorAll("td[title], [data-value], [data-date]") || [])
+      .flatMap(cell => pickerDateTokens(pickerCellValue(cell)))
+      .map(value => dateParts(value)?.precision)
+      .filter(Boolean);
+    if (precisions.length && precisions.every(precision => precision === "year")) return "year";
+    if (precisions.length && precisions.every(precision => precision === "month")) return "month";
+    return "date";
+  }
+
+  function pickerCellValue(cell) {
+    return [
+      cell.getAttribute?.("title"),
+      cell.getAttribute?.("data-value"),
+      cell.getAttribute?.("data-date"),
+      cell.getAttribute?.("aria-label"),
+    ].filter(Boolean).join(" ");
+  }
+
+  function pickerDateTokens(value) {
+    const text = String(value || "");
+    const tokens = text.match(/\d{4}(?:[-/.]\d{1,2}(?:[-/.]\d{1,2})?)?|\d{1,2}[-/.]\d{4}/g) || [];
+    return tokens.length ? tokens : [text];
+  }
+
+  function findPickerCell(dropdown, expected, mode) {
+    const candidates = Array.from(dropdown.querySelectorAll(
+      "td[title], [data-value], [data-date], td[aria-label], .el-month-table td, .el-year-table td, .el-date-table td"
+    )).filter(isVisible);
+    const exact = candidates.find(cell => {
+      return pickerDateTokens(pickerCellValue(cell)).some(value => {
+        const normalized = normalizeDateCompare(value);
+        if (mode === "year") return normalized.slice(0, 4) === expected;
+        if (mode === "month") return normalized.slice(0, 7) === expected;
+        return normalized === expected;
+      });
+    });
+    if (exact) return exact;
+    const header = cleanText(dropdown.querySelector(".ant-picker-header-view, .el-date-picker__header, .el-picker-panel__content"));
+    const parts = dateParts(expected);
+    if (!parts || !header.includes(String(parts.year))) return null;
+    return candidates.find(cell => {
+      if (cell.classList.contains("prev-month") || cell.classList.contains("next-month")) return false;
+      const text = cleanText(cell.querySelector(".cell, .el-date-table-cell__text, .ant-picker-cell-inner") || cell);
+      if (mode === "year") return Number(text.replace(/\D/g, "")) === parts.year;
+      if (mode === "month") return Number(text.replace(/\D/g, "")) === parts.month;
+      return Number(text.replace(/\D/g, "")) === parts.day;
+    }) || null;
+  }
+
+  function pickerNavigation(dropdown, expected, mode) {
+    const target = dateParts(expected);
+    if (!target) return null;
+    const values = Array.from(dropdown.querySelectorAll("td[title], [data-value], [data-date]"))
+      .flatMap(cell => pickerDateTokens(pickerCellValue(cell)))
+      .map(value => dateParts(value))
+      .filter(Boolean);
+    if (!values.length) return null;
+    const key = parts => mode === "year"
+      ? parts.year
+      : mode === "month" ? parts.year * 12 + (parts.month || 1) : parts.year * 372 + (parts.month || 1) * 31 + (parts.day || 1);
+    const targetKey = key(target);
+    const keys = values.map(key);
+    const backwards = targetKey < Math.min(...keys);
+    const forwards = targetKey > Math.max(...keys);
+    if (!backwards && !forwards) return null;
+    const selector = mode === "date"
+      ? (backwards
+        ? ".ant-picker-header-prev-btn, .el-picker-panel__icon-btn.arrow-left"
+        : ".ant-picker-header-next-btn, .el-picker-panel__icon-btn.arrow-right")
+      : (backwards
+        ? ".ant-picker-header-super-prev-btn, .el-picker-panel__icon-btn.d-arrow-left, .el-icon-d-arrow-left"
+        : ".ant-picker-header-super-next-btn, .el-picker-panel__icon-btn.d-arrow-right, .el-icon-d-arrow-right");
+    return dropdown.querySelector(selector);
+  }
+
+  function clickPickerConfirm(dropdown) {
+    const buttons = Array.from(dropdown.querySelectorAll(".ant-picker-ok button, .el-picker-panel__footer button, button"));
+    const confirm = buttons.find(button =>
+      !button.disabled
+      && isVisible(button)
+      && /^(确定|确认|ok)$/i.test(cleanText(button))
+    );
+    if (confirm) triggerAction(confirm);
+  }
+
+  function dateValueMatches(actual, expected, mode) {
+    const left = normalizeDateCompare(actual);
+    const right = normalizeDateCompare(expected);
+    if (!left || !right) return false;
+    if (mode === "year") return left.slice(0, 4) === right.slice(0, 4);
+    if (mode === "month") return left.slice(0, 7) === right.slice(0, 7);
+    return left === right;
+  }
+
+  async function waitForStableDateValue(input, expected, mode, timeoutMs = 700) {
+    const deadline = Date.now() + timeoutMs;
+    let consecutive = 0;
+    while (Date.now() < deadline) {
+      await sleep(50);
+      if (dateValueMatches(input.value, expected, mode)) {
+        consecutive += 1;
+        if (consecutive >= 3) return true;
+      } else {
+        consecutive = 0;
+      }
+    }
+    return false;
   }
 
   async function applyPickerValue(entry, value) {
     const input = entry.el;
     const doc = input.ownerDocument;
+    const parts = dateParts(value);
+    if (!parts) throw new Error("日期格式无效，请手动选择");
     // 即使已有其他日期弹层，也必须先聚焦当前 slot，避免把结束月写到开始端。
     triggerAction(input);
     await sleep(80);
-    let dropdown = visiblePickerDropdown(doc);
+    let dropdown = visiblePickerDropdown(doc, entry);
     const deadline = Date.now() + 1000;
     while (!dropdown && Date.now() < deadline) {
       await sleep(80);
-      dropdown = visiblePickerDropdown(doc);
+      dropdown = visiblePickerDropdown(doc, entry);
     }
     if (!dropdown) return null;
-    const expected = normalizeDateCompare(value);
-    const targetYear = Number(expected.slice(0, 4));
-    for (let attempt = 0; attempt < 30; attempt++) {
-      dropdown = visiblePickerDropdown(doc);
+    const mode = pickerMode(entry, dropdown);
+    if (mode === "date" && !["day", "datetime"].includes(parts.precision)) {
+      throw new Error("页面要求具体日期，但简历仅包含年月，请手动选择");
+    }
+    if (mode === "datetime" && parts.precision !== "datetime") {
+      throw new Error("页面要求日期和时间，简历信息精度不足，请手动选择");
+    }
+    if (mode === "time" && parts.precision !== "time") {
+      throw new Error("页面要求具体时间，简历信息精度不足，请手动选择");
+    }
+    const expected = mode === "year"
+      ? parts.normalized.slice(0, 4)
+      : mode === "month" ? parts.normalized.slice(0, 7) : parts.normalized;
+    for (let attempt = 0; attempt < 48; attempt++) {
+      dropdown = visiblePickerDropdown(doc, entry);
       if (!dropdown) break;
-      const cell = Array.from(dropdown.querySelectorAll("td[title]"))
-        .find(item => normalizeDateCompare(item.getAttribute("title")) === expected);
+      const cell = findPickerCell(dropdown, expected, mode);
       if (cell) {
         triggerAction(cell.querySelector(".ant-picker-cell-inner") || cell);
-        await sleep(120);
-        if (normalizeDateCompare(input.value) === expected) return { ok: true, via: "picker" };
+        await sleep(80);
+        clickPickerConfirm(dropdown);
+        if (await waitForStableDateValue(input, expected, mode)) return { ok: true, via: "picker" };
         return null;
       }
-      const years = Array.from(dropdown.querySelectorAll("td[title]"))
-        .map(item => Number(String(item.getAttribute("title") || "").slice(0, 4)))
-        .filter(Number.isFinite);
-      if (!years.length || !Number.isFinite(targetYear)) break;
-      const minYear = Math.min(...years);
-      const maxYear = Math.max(...years);
-      const selector = targetYear < minYear
-        ? ".ant-picker-header-super-prev-btn, .el-icon-d-arrow-left"
-        : targetYear > maxYear
-          ? ".ant-picker-header-super-next-btn, .el-icon-d-arrow-right"
-          : "";
-      if (!selector) break;
-      const navigation = dropdown.querySelector(selector);
+      const navigation = pickerNavigation(dropdown, expected, mode);
       if (!navigation) break;
       triggerAction(navigation);
       await sleep(100);
@@ -1208,12 +1411,7 @@
       if (type === "custom-select") return applyCustomSelect(activeEntry, value);
       const pickerResult = await applyPickerValue(activeEntry, value);
       if (pickerResult) return pickerResult;
-      const input = /^(input|textarea)$/i.test(el.tagName) ? el : container.querySelector("input");
-      if (!input) throw new Error("自定义控件无输入框");
-      setNativeValue(input, value);
-      dispatchInput(input);
-      if (!verifyValue(input, type, value)) throw new Error("回读校验失败");
-      return { ok: true, via: "input" };
+      throw new Error("日期组件未确认选择结果，请手动选择");
     }
     if (type === "checkbox") return applyCheckbox(el, value);
     if (type === "select") {
@@ -1228,7 +1426,10 @@
       if (String(el.value || "") !== String(target.value)) throw new Error("选项未找到");
       return { ok: true };
     }
-    const finalValue = type === "date" && /^\d{4}-\d{2}$/.test(value) ? `${value}-01` : value;
+    const finalValue = type === "date" ? valueForNativeDate(el, value) : value;
+    if (type === "date" && !finalValue) {
+      throw new Error("日期精度与页面控件不匹配，请手动选择");
+    }
     setNativeValue(el, finalValue);
     dispatchInput(el);
     if (!verifyValue(el, type, finalValue)) throw new Error("回读校验失败");
