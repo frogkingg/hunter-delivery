@@ -106,3 +106,13 @@
 - `npm run check && npm test && npm run build` 全绿
 - 真站测试手册追加：一键填充 / 点击字段填充 / 增量续填 用例（1 个原生表单 + 1 个 antd 表单）
 - 使用 finishing-a-development-branch 技能向用户呈现收尾选项
+
+---
+
+## 实现偏差记录（已评审确认）
+
+- 任务 5「点击字段填充」：`SMART_FILL_FILL_FIELD`（按 fieldId 单字段填充）+ `SMART_FILL_PICK_START`（页面拾取态）两条路径都已实现；「填入页面」按钮放在**简历资料编辑器**（`resumeFieldsEditor`）标量字段行，按字段当前值发起拾取。
+- 任务 5 测试：静态 DOM 夹具无法构造「两个不同 fieldId 解析到同一目标」的 DUPLICATE_TARGET 场景（引擎预检要求不同 id + 同一解析目标，当前 registry 各字段元素互异），故该测试改为可达的**「同目标同批次只填一次（去重）」**不变式；DUPLICATE_TARGET 代码路径本身未改动。
+- 任务 6「增量续填」：新字段计数采用**全量 dryRun 扫描**（`scan(doc, { onlyUnprocessed, dryRun })`，dryRun 不重建 elementRegistry/scanSession，避免破坏面板会话）而非"仅扫描变化子树"；MutationObserver 120ms debounce 观察 form roots，行为与验收一致。
+- 任务 6 面板侧：运行时消息监听抽为可导出的 `handleFillRuntimeMessage(message)`，便于面板消息处理单测（避免 app.js 模块缓存导致 DOMContentLoaded 无法在新 jsdom 窗口重放）。
+- 任务 6「继续填写」按钮置于 `panel.html` 的 `.fill-actions` 中（隐藏，收到 `SMART_FILL_NEW_FIELDS` 且轮次 <3 时显示）。
