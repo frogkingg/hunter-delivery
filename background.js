@@ -1,14 +1,9 @@
 import { sanitizeGreeting, trimLog } from "./src/pure-utils.js";
-
-const DEFAULTS = {
-  endpoint: "https://api.openai.com/v1",
-  model: "gpt-4.1-mini",
-  apiKey: "",
-  disableThinking: true,
-  candidateProfile: "",
-  greetingPrompt: "",
-  resumeImages: []
-};
+import {
+  DEFAULTS, endpointUrl, hostOf, assertSafeEndpoint,
+  jsonFrom, jobIdentityKeys, sameJob, dedupeJobLibrary,
+  sanitizeJobForLibrary, escapeCsv,
+} from "./lib/shared.js";
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -22,19 +17,6 @@ function mutex() {
   let tail = Promise.resolve();
   return { run(task) { const next = tail.then(() => task()); tail = next.catch(() => {}); return next; } };
 }
-
-// 清洗投递清单中的临时字段，避免它们被 spread 进岗位库长期留存或导出。
-function sanitizeJobForLibrary(job) {
-  const { progress, error, rawAiResponse, queuedAt, ...rest } = job || {};
-  return rest;
-}
-
-function endpointUrl(endpoint) {
-  const base = String(endpoint || "").trim().replace(/\/$/, "");
-  return base.endsWith("/chat/completions") ? base : `${base}/chat/completions`;
-}
-
-function hostOf(url) { try { return new URL(url).host; } catch (_) { return "AI 服务"; } }
 
 // 统一错误处理：记录完整堆栈到控制台，返回简短消息给调用方。
 function logError(context, error) {
@@ -69,16 +51,6 @@ async function clearDeliveryLog() {
   return logMutex.run(async () => {
     await chrome.storage.local.set({ deliveryLog: [] });
   });
-}
-
-function assertSafeEndpoint(endpoint) {
-  const base = String(endpoint || "").trim();
-  if (!base) throw new Error("未配置 AI API 地址。");
-  let url;
-  try { url = new URL(base); } catch (_) { throw new Error("AI API 地址格式不正确。"); }
-  if (url.protocol !== "https:") throw new Error("AI 服务地址必须为 https://，明文 http 会泄露简历内容。");
-  const host = url.hostname.toLowerCase();
-  if (host === "localhost" || host === "127.0.0.1" || host === "::1" || /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(host)) throw new Error("不允许使用本地或内网地址作为 AI 服务。");
 }
 
 const MAX_RETRY_TOKENS = 12000;
@@ -327,70 +299,6 @@ async function callAIStream({ config, messages, maxTokens = 1800, jsonMode = fal
   return { text: fullText, usage };
 }
 
-function jsonFrom(text) {
-  // DeepSeek Flash 等文本模型可能在 JSON 前后返回说明或思考内容；只提取首个完整 JSON 对象。
-  const raw = String(text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
-  const candidates = [...raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map(match => match[1].trim());
-  candidates.push(raw);
-  for (const candidate of candidates) {
-    try { return JSON.parse(candidate); } catch (_) {}
-    const start = candidate.indexOf("{");
-    if (start < 0) continue;
-    let depth = 0; let quoted = false; let escaped = false;
-    for (let index = start; index < candidate.length; index++) {
-      const char = candidate[index];
-      if (quoted) {
-        if (escaped) escaped = false;
-        else if (char === "\\") escaped = true;
-        else if (char === '"') quoted = false;
-        continue;
-      }
-      if (char === '"') { quoted = true; continue; }
-      if (char === "{") depth++;
-      if (char === "}" && --depth === 0) {
-        try { return JSON.parse(candidate.slice(start, index + 1)); } catch (_) { break; }
-      }
-    }
-  }
-  throw new Error("AI 返回的内容不是可读取的 JSON。请确认模型支持文本对话，并重试。");
-}
-
-function jobIdentityKeys(job) {
-  const keys = new Set();
-  const add = (value) => {
-    const text = String(value || "").trim();
-    if (!text) return;
-    keys.add(text);
-    try {
-      const url = new URL(text);
-      keys.add(`${url.origin}${url.pathname}`);
-      const match = url.pathname.match(/\/job_detail\/([^./?]+)(?:\.html)?/);
-      if (match) keys.add(`jobId:${match[1]}`);
-    } catch (_) {}
-  };
-  if (job?.jobId) add(`jobId:${job.jobId}`);
-  add(job?.key);
-  add(job?.detailUrl);
-  // 职位列表页的 url 对所有岗位都相同，只有缺少具体 jobId/detailUrl 时才作为兜底。
-  if (!job?.jobId && !job?.detailUrl && !job?.key) add(job?.url);
-  const fallback = [job?.company, job?.title, job?.location].map(value => String(value || "").trim()).join("|");
-  if (fallback !== "||") keys.add(`fallback:${fallback}`);
-  return [...keys];
-}
-
-function sameJob(first, second) {
-  const secondKeys = new Set(jobIdentityKeys(second));
-  return jobIdentityKeys(first).some(key => secondKeys.has(key));
-}
-
-function dedupeJobLibrary(jobLibrary) {
-  const unique = [];
-  for (const job of Array.isArray(jobLibrary) ? jobLibrary : []) {
-    if (!unique.some(existing => sameJob(existing, job))) unique.push(job);
-  }
-  return unique;
-}
-
 async function getJobLibrary() {
   const { jobLibrary = [] } = await chrome.storage.local.get("jobLibrary");
   return dedupeJobLibrary(jobLibrary);
@@ -413,10 +321,6 @@ async function saveJob(job) {
   });
 }
 
-function escapeCsv(value) {
-  return `"${String(value ?? "").replace(/"/g, '""')}"`;
-}
-
 async function exportJobs() {
   const jobLibrary = await getJobLibrary();
   const columns = [
@@ -425,7 +329,9 @@ async function exportJobs() {
     ["投递状态", "status"], ["岗位链接", "url"]
   ];
   const csv = "\uFEFF" + [columns.map(([label]) => escapeCsv(label)).join(","), ...jobLibrary.map(job => columns.map(([, key]) => escapeCsv(key === "url" ? (job.detailUrl || job.url) : job[key])).join(","))].join("\r\n");
-  const url = `data:text/csv;charset=utf-8,${encodeURIComponent(csv)}`;
+  // 岗位库可能很大，data URL 会超出 downloads 限制，改用 blob URL。
+  // MV3 service worker 终止时会自动释放 blob URL，无需手动 revoke。
+  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
   await chrome.downloads.download({ url, filename: `猎投-岗位库-${new Date().toISOString().slice(0, 10)}.csv`, saveAs: true });
 }
 
@@ -435,6 +341,25 @@ let queueBatch = { current: 0, total: 0 };
 let workerTabId = null;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const queueMutex = mutex();
+
+// 批量投递中断恢复：SW 重启/面板关闭后，遗留的"投递中/发送中"项无法确认真实
+// 发送结果，标记为"已中断"并要求人工确认，绝不静默回退成待投递（避免重复发送）。
+const INTERRUPTED_MESSAGE = "投递过程被系统中断（面板关闭或浏览器休眠），发送结果未知；请人工确认后点击保存修改再重试。";
+async function recoverInterruptedQueue() {
+  return queueMutex.run(async () => {
+    const queue = await getQueue();
+    let changed = false;
+    const next = queue.map(item => {
+      if (item.status === "投递中" || item.status === "发送中") {
+        changed = true;
+        return { ...item, status: "已中断", progress: "", error: item.error || INTERRUPTED_MESSAGE };
+      }
+      return item;
+    });
+    if (changed) await setQueue(next);
+    return changed;
+  });
+}
 
 async function getQueue() {
   const { deliveryQueue = [] } = await chrome.storage.local.get("deliveryQueue");
@@ -446,12 +371,61 @@ async function setQueue(queue) {
   await chrome.storage.local.set({ deliveryQueue: queue });
 }
 
+// —— 已投递成功卡片：投递成功后先保留展示“确认态”，面板 5 秒后延迟消失 ——
+// 与 deliveryQueue 分离：不占 20 条待处理名额，也不参与批量投递/生成逻辑。
+const RECENT_DELIVERY_TTL_MS = 60 * 1000; // 面板关闭时的兜底清理时长
+
+async function getRecentDeliveries() {
+  const { recentDeliveries = [] } = await chrome.storage.local.get("recentDeliveries");
+  const list = Array.isArray(recentDeliveries) ? recentDeliveries : [];
+  const now = Date.now();
+  return list.filter(item => now - (item.deliveredAt || 0) < RECENT_DELIVERY_TTL_MS);
+}
+
+async function addRecentDelivery(item) {
+  return queueMutex.run(async () => {
+    const recent = await getRecentDeliveries();
+    recent.unshift({
+      ...item,
+      status: "已成功",
+      progress: "",
+      error: "",
+      deliveredAt: Date.now(),
+      updatedAt: new Date().toISOString(),
+    });
+    await chrome.storage.local.set({ recentDeliveries: recent });
+    return recent[0];
+  });
+}
+
+async function removeRecentDeliveries(keys) {
+  return queueMutex.run(async () => {
+    const recent = await getRecentDeliveries();
+    const keySet = new Set((Array.isArray(keys) ? keys : []).filter(Boolean));
+    const next = recent.filter(item => !keySet.has(item.key));
+    if (next.length !== recent.length) await chrome.storage.local.set({ recentDeliveries: next });
+    return recent.length - next.length;
+  });
+}
+
+// 清理超过 TTL 的已投递记录，防止面板未打开时堆积。
+async function pruneRecentDeliveries() {
+  return queueMutex.run(async () => {
+    const raw = (await chrome.storage.local.get("recentDeliveries")).recentDeliveries || [];
+    const list = Array.isArray(raw) ? raw : [];
+    const now = Date.now();
+    const next = list.filter(item => now - (item.deliveredAt || 0) < RECENT_DELIVERY_TTL_MS);
+    if (next.length !== list.length) await chrome.storage.local.set({ recentDeliveries: next });
+  });
+}
+
 async function queueJob(job) {
   return queueMutex.run(async () => {
     const queue = await getQueue();
     const key = job.jobId || job.detailUrl;
     if (!key) throw new Error("未读取到岗位唯一标识，请在岗位页重新分析后再加入清单。");
-    if (queue.some(item => item.key === key)) throw new Error("该岗位已在投递清单中。");
+    // 与岗位库一致：按 jobId/detailUrl/标题公司兜底做语义去重，而不是只比 key 字符串。
+    if (queue.some(item => sameJob(item, job))) throw new Error("该岗位已在投递清单中。");
     if (queue.filter(item => item.status !== "已成功").length >= 20) throw new Error("投递清单最多保留 20 条待处理岗位。");
     const item = { ...job, key, greeting: job.greeting || "", status: job.greeting ? "待投递" : "待生成", queuedAt: new Date().toLocaleString("zh-CN"), error: "" };
     queue.unshift(item); await setQueue(queue); return item;
@@ -539,12 +513,15 @@ async function ensureWorker(url) {
   return workerTabId;
 }
 
-async function runQueue() {
+async function runQueue(keySet = null) {
   queueStopRequested = false;
   const MAX_CONSECUTIVE_FAILURES = 3;
   let consecutiveFailures = 0;
   try {
-    const items = (await getQueue()).filter(item => ["待投递", "待确认"].includes(item.status)).slice(0, 20);
+    const items = (await getQueue())
+      .filter(item => ["待投递", "待确认"].includes(item.status))
+      .filter(item => !keySet || keySet.has(item.key))
+      .slice(0, 20);
     if (!items.length) throw new Error("没有待投递岗位。");
     queueBatch = { current: 0, total: items.length };
     for (let index = 0; index < items.length; index++) {
@@ -577,9 +554,14 @@ async function runQueue() {
         await updateQueueItem(item.key, { progress: "正在处理沟通弹层并等待聊天输入框" });
         await waitForCommunicationReady(tabId);
         await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "打开沟通页", status: "ok" });
-        await updateQueueItem(item.key, { progress: "正在发送招呼语和简历图片" });
+        // 先落盘"发送中"再真正发送：SW 若在发送瞬间被回收，恢复逻辑能把该项标记为需人工确认，避免重复投递。
+        await updateQueueItem(item.key, { status: "发送中", progress: "正在发送招呼语和简历图片" });
         const sent = await sendToTab(tabId, { type: "SEND_MESSAGE", greeting, images: profile.resumeImages || [] });
-        if (!sent?.ok) throw new Error(sent?.error || "发送失败");
+        if (!sent?.ok) {
+          const sendError = new Error(sent?.error || "发送失败");
+          if (sent?.uncertain) sendError.uncertain = true;
+          throw sendError;
+        }
         messageSent = true;
         const resumeStatus = sent.resume?.sent ? "简历图片已确认送达" : (sent.resume?.reason || "未发送");
         // 从此处起消息已经不可撤销。先持久化不可重试状态，归档失败也不能回到普通失败状态。
@@ -587,8 +569,10 @@ async function runQueue() {
         await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "发送招呼语", status: "ok", message: sent.resume?.sent ? "简历图片已确认送达" : (sent.resume?.reason || "未发送简历") }).catch(error => logError("记录发送日志", error));
         await saveJob({ ...item, greeting, status: "已沟通", sentAt: new Date().toLocaleString("zh-CN"), resumeStatus });
         await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "投递完成", status: "ok" }).catch(error => logError("记录投递完成日志", error));
-        // 岗位库已保存成功记录，待投递清单实时移除，避免和历史记录重复出现。
+        // 岗位库已保存成功记录，移出待投递清单；卡片保留在“已投递成功”临时区，
+        // 供面板展示打勾确认态并在延迟后消失（清理失败不影响投递结果）。
         if (!await removeQueueItem(item.key)) throw new Error("投递记录已保存，但未能从投递清单移除");
+        await addRecentDelivery({ ...item, greeting, status: "已成功" }).catch(error => logError(`记录已投递成功卡片「${item.title}」`, error));
         consecutiveFailures = 0;
       } catch (error) {
         if (messageSent) {
@@ -600,7 +584,9 @@ async function runQueue() {
         }
         consecutiveFailures++;
         const message = logError(`投递岗位「${item.title}」`, error);
-        await updateQueueItem(item.key, { status: "失败", progress: "", error: message });
+        // 发送结果不确定（BOSS 未确认送达）与确定失败区分开：前者禁止无确认重发。
+        const failureStatus = error?.uncertain ? "发送结果未知" : "失败";
+        await updateQueueItem(item.key, { status: failureStatus, progress: "", error: message });
         await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "投递失败", status: "fail", message });
         if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
           // 连续多次失败通常意味着 BOSS 风控或登录失效，继续发送只会加剧封号风险，自动熔断。
@@ -641,26 +627,40 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === "QUEUE_ADD") {
       sendResponse({ ok: true, item: await queueJob(message.job) });
     } else if (message.type === "QUEUE_GET") {
-      sendResponse({ ok: true, queue: await getQueue(), running: queueRunning, batch: queueBatch });
+      if (!queueRunning) await recoverInterruptedQueue();
+      sendResponse({ ok: true, queue: await getQueue(), recentDeliveries: await getRecentDeliveries(), running: queueRunning, batch: queueBatch });
     } else if (message.type === "QUEUE_UPDATE") {
       const current = (await getQueue()).find(item => item.key === message.key);
       if (current?.status === "已发送待归档") {
         throw new Error("该岗位消息已送达，仅本地归档未完成；为避免重复发送，不能重新加入待投递队列。");
       }
-      sendResponse({ ok: true, item: await updateQueueItem(message.key, message.patch || {}) });
+      const { confirmResend, ...patch } = message.patch || {};
+      if (["已中断", "发送结果未知"].includes(current?.status) && patch.status === "待投递" && !confirmResend) {
+        throw new Error("该岗位发送结果未知，请先人工确认后再重试。");
+      }
+      sendResponse({ ok: true, item: await updateQueueItem(message.key, patch) });
     } else if (message.type === "QUEUE_REMOVE") {
+      if (queueRunning) throw new Error("投递进行中，不能移除岗位。");
       sendResponse({ ok: await removeQueueItem(message.key) });
     } else if (message.type === "QUEUE_REMOVE_MANY") {
+      if (queueRunning) throw new Error("投递进行中，不能移除岗位。");
       const result = await removeQueueItems(message.keys);
       sendResponse({ ok: result.removedCount === result.requestedCount, ...result });
+    } else if (message.type === "QUEUE_REMOVE_RECENT") {
+      sendResponse({ ok: true, removedCount: await removeRecentDeliveries(message.keys) });
     } else if (message.type === "QUEUE_START") {
       if (queueRunning) { sendResponse({ ok: true, alreadyRunning: true }); return; }
-      const count = (await getQueue()).filter(item => ["待投递", "待确认"].includes(item.status)).slice(0, 20).length;
+      await recoverInterruptedQueue();
+      await pruneRecentDeliveries();
+      const allReady = (await getQueue()).filter(item => ["待投递", "待确认"].includes(item.status));
+      const keySet = Array.isArray(message.keys) && message.keys.length ? new Set(message.keys) : null;
+      const ready = keySet ? allReady.filter(item => keySet.has(item.key)) : allReady;
+      const count = ready.slice(0, 20).length;
       if (!count) throw new Error("没有已生成招呼语的岗位。");
       // getQueue() 让出了事件循环；再次检查后再同步置锁，确保并发启动只有一个获胜者。
       if (queueRunning) { sendResponse({ ok: true, alreadyRunning: true }); return; }
       queueRunning = true; // 在 await 让出前同步置锁，避免并发 QUEUE_START 双启动。
-      runQueue().catch(error => console.error("[猎投] runQueue 失败：", error));
+      runQueue(keySet).catch(error => console.error("[猎投] runQueue 失败：", error));
       sendResponse({ ok: true, count });
     } else if (message.type === "QUEUE_STOP") {
       if (!queueRunning) { sendResponse({ ok: false, error: "当前没有正在进行的投递。" }); return; }

@@ -49,6 +49,28 @@ test("assertSafeEndpoint 拒绝私有/内网地址", () => {
   assert.throws(() => assertSafeEndpoint("https://169.254.169.254/v1"));
 });
 
+test("assertSafeEndpoint 拒绝 0.0.0.0 与 127/8 网段", () => {
+  assert.throws(() => assertSafeEndpoint("https://0.0.0.0/v1"), /本地或内网/);
+  assert.throws(() => assertSafeEndpoint("https://127.8.8.8/v1"), /本地或内网/);
+  assert.throws(() => assertSafeEndpoint("https://127.0.0.1:8080/v1"), /本地或内网/);
+});
+
+test("assertSafeEndpoint 拒绝十进制/十六进制整数形式的内网 IP", () => {
+  assert.throws(() => assertSafeEndpoint("https://2130706433/v1"), /本地或内网/);   // 127.0.0.1
+  assert.throws(() => assertSafeEndpoint("https://0x7f000001/v1"), /本地或内网/);   // 127.0.0.1
+  assert.throws(() => assertSafeEndpoint("https://167772161/v1"), /本地或内网/);    // 10.0.0.1
+});
+
+test("assertSafeEndpoint 拒绝 IPv6 环回与未指定地址变体", () => {
+  assert.throws(() => assertSafeEndpoint("https://[0:0:0:0:0:0:0:1]/v1"), /本地或内网/);
+});
+
+test("assertSafeEndpoint 放行 172.16/12 之外的公网地址", () => {
+  assertSafeEndpoint("https://172.32.0.1/v1");
+  assertSafeEndpoint("https://8.8.8.8/v1");
+  assertSafeEndpoint("https://example.com/v1");
+});
+
 test("assertSafeEndpoint 拒绝空值与非法 URL", () => {
   assert.throws(() => assertSafeEndpoint(""), /未配置/);
   assert.throws(() => assertSafeEndpoint("not-a-url"), /格式不正确/);
@@ -166,4 +188,16 @@ test("DEFAULTS 有必要字段", () => {
   assert.ok(DEFAULTS.endpoint.startsWith("https://"));
   assert.equal(DEFAULTS.apiKey, "");
   assert.equal(DEFAULTS.disableThinking, true);
+});
+
+test("escapeCsv 拦截公式注入前缀", () => {
+  assert.equal(escapeCsv('=SUM(A1)'), `"'=SUM(A1)"`);
+  assert.equal(escapeCsv('+123'), `"'+123"`);
+  assert.equal(escapeCsv('@cmd'), `"'@cmd"`);
+  assert.equal(escapeCsv('-1'), `"\'-1"`);
+});
+
+test("escapeCsv 正常内容不受影响", () => {
+  assert.equal(escapeCsv("正常文本"), '"正常文本"');
+  assert.equal(escapeCsv("前导空格 =ok"), '"前导空格 =ok"');
 });

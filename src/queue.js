@@ -91,8 +91,13 @@ export async function generateQueue() {
     const candidateProfile = state.config.candidateProfile;
     const greetingPrompt = state.config.greetingPrompt || DEFAULT_GREETING_PROMPT;
     const response = await send({ type: "QUEUE_GET" });
-    const items = (response?.queue || []).filter(item => !["投递中", "已成功", "已发送待归档"].includes(item.status));
-    if (!items.length) throw new Error("清单中没有可生成的岗位。");
+    const allItems = response?.queue || [];
+    if (!state.selectedQueueKeys.size) throw new Error("请先勾选要生成招呼语的岗位，或点击“全选”。");
+    const items = allItems.filter(item =>
+      state.selectedQueueKeys.has(item.key) &&
+      !["投递中", "已成功", "已发送待归档", "已中断", "发送结果未知"].includes(item.status)
+    );
+    if (!items.length) throw new Error("所选岗位中没有可生成招呼语的岗位，请重新勾选或先加入投递清单。");
     button.disabled = true;
     let success = 0;
     const failures = [];
@@ -104,14 +109,12 @@ export async function generateQueue() {
       const startedAt = Date.now();
       let receivedChars = 0;
       let phase = "正在分析岗位与简历";
+      // 明细写入清单头部的 queueProgress，按钮只保留简短进度，避免长文本换行。
       const renderProgress = () => {
         const seconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
-        button.textContent = receivedChars
-          ? `生成 ${index + 1}/${items.length} · ${receivedChars} 字 · ${seconds} 秒`
-          : `分析 ${index + 1}/${items.length} · ${seconds} 秒`;
         $("queueProgress").textContent = receivedChars
-          ? `正在生成「${item.title}」：已接收 ${receivedChars} 字`
-          : `${phase}：「${item.title}」`;
+          ? `正在生成「${item.title}」：已接收 ${receivedChars} 字 · ${seconds} 秒`
+          : `${phase}：「${item.title}」· ${seconds} 秒`;
       };
       progressTimer = setInterval(renderProgress, 500);
       renderProgress();
@@ -171,12 +174,15 @@ export async function startQueue() {
       toast("投递正在进行中，已开始刷新每个岗位的实时进度。");
       return;
     }
-    const count = (before?.queue || []).filter(item => ["待投递", "待确认"].includes(item.status)).length;
-    if (!count) throw new Error("还没有生成成功的岗位。请先点击“批量生成招呼语”。");
+    const allReady = (before?.queue || []).filter(item => ["待投递", "待确认"].includes(item.status));
+    if (!state.selectedQueueKeys.size) throw new Error("请先勾选要投递的岗位，或点击“全选”。");
+    const selectedReady = allReady.filter(item => state.selectedQueueKeys.has(item.key));
+    if (!selectedReady.length) throw new Error("所选岗位中没有已生成招呼语的岗位，请先点击“批量生成招呼语”或重新勾选。");
+    const count = selectedReady.length;
     button.disabled = true;
     button.textContent = `正在启动 ${count} 个岗位…`;
     toast(`正在启动 ${count} 个岗位的投递，请留在此页面查看状态。`);
-    const response = await send({ type: "QUEUE_START" });
+    const response = await send({ type: "QUEUE_START", keys: selectedReady.map(item => item.key) });
     if (!response?.ok) throw new Error(response?.error || "无法开始投递");
     state.queueWasRunning = true;
     await loadQueue();
