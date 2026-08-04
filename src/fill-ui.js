@@ -327,6 +327,7 @@ async function ensureOriginPermission(tab) {
 export async function scanFillPage() {
   const button = $("scanFillPage");
   button.disabled = true;
+  stopIncrementalWatch();
   try {
     const tab = await currentTab();
     if (!tab?.url || !/^https?:/i.test(tab.url)) throw new Error("请先打开目标公司的网申页面。");
@@ -645,7 +646,7 @@ export async function runFill(all = false) {
     }
     $("fillProgress").textContent = `填充完成：成功 ${summary.ok} / ${summary.total}${failedIds.length ? `，${failedIds.length} 项需手动处理（已在页面高亮）` : ""}`;
     await afterFill(tab, results, Date.now() - start);
-    startIncrementalWatch();
+    if (summary.ok > 0) startIncrementalWatch();
     return { summary, failedIds };
   } finally {
     fillRunning = false;
@@ -661,11 +662,13 @@ export async function stopFill() {
   const tab = session?.tabId ? { id: session.tabId, url: session.url } : await currentTab();
   if (tab?.id && tab?.url && /^https?:/i.test(tab.url)) {
     fillMessagePage(tab, { type: "SMART_FILL_CANCEL" }).catch(() => {});
+    fillMessagePage(tab, { type: "SMART_FILL_WATCH_STOP" }).catch(() => {});
   }
   $("fillProgress").textContent = "已请求停止填充…";
 }
 
 export async function clearFill() {
+  stopIncrementalWatch();
   const session = state.fillScanSession;
   const tab = session?.tabId ? { id: session.tabId, url: session.url } : await currentTab();
   if (tab?.id && tab?.url && /^https?:/i.test(tab.url) && state.fillFailedIds.length) {
@@ -914,6 +917,7 @@ async function continueFill() {
 export function handleFillRuntimeMessage(message) {
   if (!message || typeof message !== "object") return;
   if (message.type === "SMART_FILL_NEW_FIELDS") {
+    if (!state.fillScanSession || (message.scanId && message.scanId !== state.fillScanSession.scanId)) return;
     if (state.fillContinueRounds >= 3) { stopIncrementalWatch(); return; }
     showContinueFillPrompt(message.count || 0);
     return;

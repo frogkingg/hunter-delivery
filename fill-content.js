@@ -588,7 +588,7 @@
     }) => {
       const markRoot = container || target;
       if (scanOptions.onlyUnprocessed && isElementProcessed(markRoot)) return;
-      markElementProcessed(markRoot);
+      if (!scanOptions.dryRun) markElementProcessed(markRoot);
       const context = { ...fieldContext(target), ...(contextOverride || {}) };
       const evidence = collectEvidence(target, labelInfo, context, semanticHint);
       const attributes = semanticAttributes(target);
@@ -1630,8 +1630,8 @@
     return new Promise(resolve => {
       if (pickController) {
         const old = pickController;
-        pickController = null;
         old.cleanup();
+        pickController = null;
         old.resolve({ ok: false, cancelled: true, error: "已有进行中的点击填充" });
       }
       let controller = null;
@@ -1715,7 +1715,7 @@
       if (!onFound) return;
       try {
         const result = scan(document, { onlyUnprocessed: true, dryRun: true });
-        const count = result.fields.filter(field => !field.skipped).length;
+        const count = result.fields.filter(field => !field.skipped && !String(field.value ?? "").trim()).length;
         if (count >= threshold) {
           stopNewFieldsWatch();
           onFound(count);

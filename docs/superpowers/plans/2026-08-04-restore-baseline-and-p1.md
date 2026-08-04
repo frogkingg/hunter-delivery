@@ -116,3 +116,13 @@
 - 任务 6「增量续填」：新字段计数采用**全量 dryRun 扫描**（`scan(doc, { onlyUnprocessed, dryRun })`，dryRun 不重建 elementRegistry/scanSession，避免破坏面板会话）而非"仅扫描变化子树"；MutationObserver 120ms debounce 观察 form roots，行为与验收一致。
 - 任务 6 面板侧：运行时消息监听抽为可导出的 `handleFillRuntimeMessage(message)`，便于面板消息处理单测（避免 app.js 模块缓存导致 DOMContentLoaded 无法在新 jsdom 窗口重放）。
 - 任务 6「继续填写」按钮置于 `panel.html` 的 `.fill-actions` 中（隐藏，收到 `SMART_FILL_NEW_FIELDS` 且轮次 <3 时显示）。
+
+---
+
+## 代码评审修复记录（PR #5 review round）
+
+- **[必须修复] dryRun 扫描打标**：`addField` 的 `markElementProcessed` 在 `scanOptions.dryRun` 时也会执行，导致 watch 计数把新增字段标记为"已见"，「继续填写」的 onlyNew 扫描返回 0。已改为 `if (!scanOptions.dryRun) markElementProcessed(markRoot)`，并补回归测试（watch 触发后 onlyNew ≥4）。
+- **[必须修复] pickFill 重复进入泄漏捕获监听器**：旧 controller 清理顺序错误（先置空 pickController 再 cleanup，finish 守卫提前返回），旧 mousemove/click/keydown 捕获监听器残留，Esc 取消后点击页面会被旧监听器用旧值写入并吞掉页面事件。已改为先 `old.cleanup()` 再置空，并补回归测试（Esc 后点击不写旧值、页面事件不被吞）。
+- **[建议修改] 新字段计数未过滤已有值字段**：watch 计数增加 `!String(field.value ?? "").trim()` 过滤，避免 SPA 重渲染后把已填值的新元素误报为"未填新字段"。
+- **[建议修改] watch 生命周期未闭环**：`clearFill`/`stopFill`/`scanFillPage` 均补发 `SMART_FILL_WATCH_STOP`；`runFill` 仅在有成功项时启动 watch；`handleFillRuntimeMessage` 对 `SMART_FILL_NEW_FIELDS` 增加当前会话 scanId 校验，杜绝陈旧提示。
+- **[仅供参考] 已记录**：`SMART_FILL_FILL_FIELD` 目前为引擎级单字段 API（测试使用，面板走 PICK_START），保留以便后续收敛；拾取态无超时（页面跳转后 promise 悬挂，下次 startPickFill 覆盖 requestId，影响有限）；计划中"每轮间隔 ≥600ms"未显式强制（依赖用户点击自然间隔）；`src/matcher.js` 的 time 模式字段在 `hardTypeCompatible` 恒为 false（保守设计，永远手动）。

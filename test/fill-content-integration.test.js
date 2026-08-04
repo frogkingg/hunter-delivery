@@ -876,7 +876,7 @@ test("点击填充：stale fieldId 返回 STALE_FIELD", async () => {
   dom.window.close();
 });
 
-test("点击填充：同一目标在同一批次内只填充一次（去重）", async () => {
+test("点击填充：同一 fieldId 批次内重复提交幂等成功且只写入一次", async () => {
   const dom = loadFixture("antd-generic.html");
   const engine = dom.window.__hunterFill;
   const scan = engine.scan(dom.window.document);
@@ -1003,5 +1003,49 @@ test("增量续填：onlyNew 新增字段可单独填充", async () => {
   });
   assert.equal(result.ok, true);
   assert.equal(doc.getElementById("newSchool").value, "香港大学");
+  dom.window.close();
+});
+
+test("增量续填：watch 触发后 onlyNew 仍能返回新增字段（dryRun 不打标）", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const form = doc.getElementById("applyForm");
+  engine.scan(doc);
+  const found = [];
+  engine.startWatch({ threshold: 4, onFound: count => found.push(count) });
+  for (let i = 0; i < 4; i++) {
+    const card = doc.createElement("div");
+    card.className = "ant-form-item";
+    card.innerHTML = `<div class="ant-form-item-label"><label for="nb${i}">新字段${i}</label></div><div class="ant-form-item-control"><input id="nb${i}" type="text"></div>`;
+    form.appendChild(card);
+  }
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(found.length, 1, "应触发一次回调");
+  const onlyNew = engine.scan(doc, { onlyUnprocessed: true });
+  assert.ok(onlyNew.fields.length >= 4, `dryRun 不得打标新增字段，onlyNew 应为 ${found[0]} 个而非 0，实际 ${onlyNew.fields.length}`);
+  dom.window.close();
+});
+
+test("点击填充：重复进入拾取态后旧监听器不残留（Esc 后点击不写旧值）", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  engine.scan(doc);
+  const input = doc.getElementById("name");
+  const p1 = engine.pickFill("旧值");
+  const p2 = engine.pickFill("新值");
+  doc.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  await new Promise(resolve => setTimeout(resolve, 30));
+  let pageClickFired = false;
+  input.addEventListener("click", () => { pageClickFired = true; });
+  input.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const r1 = await p1;
+  const r2 = await p2;
+  assert.equal(r1.ok, false);
+  assert.equal(r2.cancelled, true);
+  assert.notEqual(input.value, "旧值", "旧拾取监听器不得残留并写入旧值");
+  assert.equal(pageClickFired, true, "取消后页面点击不应被吞掉");
   dom.window.close();
 });

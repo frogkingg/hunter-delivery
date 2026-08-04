@@ -414,3 +414,55 @@ test("增量续填：达到 3 轮后不再提示", async () => {
     dom.window.close();
   }
 });
+
+// —— 一键智能填充：未授权场景（P1 任务4 回归） ——
+test("一键智能填充：未授权时不填充并提示授权", async () => {
+  const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  const appliedFills = [];
+  const tab = { id: 9, url: "https://jobs.example.com/apply" };
+  globalThis.chrome = {
+    storage: { local: {
+      get: async keys => {
+        const list = typeof keys === "string" ? [keys] : keys;
+        const out = {};
+        for (const k of list) {
+          if (k === "smartFillTemplates") out[k] = {};
+          else if (k === "smartFillLogs") out[k] = [];
+          else if (k === "smartFillSettings") out[k] = {};
+          else out[k] = undefined;
+        }
+        return out;
+      },
+      set: async () => {},
+    } },
+    runtime: { sendMessage: (_m, cb) => { if (cb) cb({ ok: true }); }, onMessage: { addListener() {} }, connect: () => ({ onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }), getURL: p => p },
+    tabs: {
+      query: async () => [tab],
+      sendMessage: async (_id, message) => {
+        if (message.type === "SMART_FILL_APPLY") appliedFills.push(...message.fills);
+        return { ok: true };
+      },
+    },
+    permissions: { contains: async () => false, request: async () => false },
+    scripting: { executeScript: async () => [] },
+  };
+  const { setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { runSmartFillOnce } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(true);
+    await runSmartFillOnce();
+    assert.deepEqual(appliedFills, [], "未授权时不得填充");
+    assert.match(window.document.getElementById("toast").textContent, /需要授权/);
+  } finally {
+    delete globalThis.window;
+    delete globalThis.document;
+    delete globalThis.chrome;
+    dom.window.close();
+  }
+});
