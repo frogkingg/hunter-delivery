@@ -23,7 +23,8 @@
     <h3>扫描网申页面</h3>
     <p class="hint" id="fillCurrentSite">未检测到网申页面。请打开目标公司的网申/信息录入页后点击「扫描」。首次使用需授权该网站。</p>
     <div class="fill-actions">
-      <button id="scanFillPage" class="primary">扫描当前页面</button>
+      <button id="smartFillOnce" class="primary">智能填充</button>
+      <button id="scanFillPage" class="secondary">扫描当前页面</button>
       <button id="prepareFillSections" class="secondary" disabled>展开简历经历</button>
       <button id="clearFill" class="secondary">清空</button>
       <button id="fillSelected" class="primary" disabled>填充选中项（0）</button>
@@ -33,6 +34,7 @@
     <p id="fillProgress" class="hint" aria-live="polite"></p>
     <div class="row toggle-setting"><label><input id="fillAiToggle" type="checkbox" checked><span>复杂字段使用 AI 匹配<small>仅将未识别字段的页面证据发送给已配置的 AI 服务</small></span></label></div>
     <div class="row toggle-setting"><label><input id="fillTemplateToggle" type="checkbox" checked><span>自动记忆站点模板<small>只记忆页面字段与简历字段的映射，不保存具体填写值</small></span></label></div>
+    <div class="row toggle-setting"><label><input id="fillAutoToggle" type="checkbox" checked><span>自动填充高置信项<small>扫描后自动填写已匹配字段，未匹配项保留人工确认</small></span></label></div>
     <div id="fillResultList" class="fill-result-list"></div>
     <p class="hint privacy-note">⚠ 隐私提示：开启 AI 匹配时，仅表单字段标签、控件属性和上下文会发送到你配置的 AI 服务；简历字段值、简历图片与全文不会因字段匹配被发送。「重新提取简历字段」仍会发送简历全文。</p>
     <hr>

@@ -2,7 +2,7 @@
 import {
   state, activeProfile, setFillScanFields, setFillScanPage, setFillScanSession,
   setFillRepeaters, setFillMatches, setFillSelected, setFillValues, setFillFailedIds,
-  setFillAiEnabled, setFillTemplateEnabled, setResumeFieldsDraft, setResumeFieldsDirty,
+  setFillAiEnabled, setFillTemplateEnabled, setFillAutoMode, setResumeFieldsDraft, setResumeFieldsDirty,
 } from "./state.js";
 import { $, toast, fillMessagePage } from "./chrome-helpers.js";
 import { escapeHtml } from "./pure-utils.js";
@@ -352,6 +352,7 @@ export async function scanFillPage() {
     await buildMatches();
     await renderFillTemplate();
     toast(`已识别 ${fields.length} 个表单项`);
+    return true;
   } catch (error) {
     toast(error.message);
   } finally {
@@ -829,7 +830,26 @@ export async function changeFillProfile(index) {
   return savedDraft;
 }
 
+// 一键智能填充：扫描 → 自动填充已匹配（高置信）项；未匹配/需手动项保留预览确认。
+// 受「自动填充高置信项」开关（state.fillAutoMode）控制。
+export async function runSmartFillOnce() {
+  if (fillRunning) throw new Error("填充进行中，请等待完成或点击停止。");
+  const ok = await scanFillPage();
+  if (!ok) return; // scanFillPage 内部已 toast 错误
+  if (!state.fillMatches.some(match => match.status === "match")) {
+    toast("未发现可自动填充的字段，请在列表中手动确认");
+    return;
+  }
+  if (!state.fillAutoMode) {
+    toast("已扫描，请在预览中确认后点击「填充选中项」");
+    return;
+  }
+  const result = await runFill(false);
+  toast(`一键填充完成：成功 ${result.summary.ok}/${result.summary.total}${result.failedIds.length ? `，${result.failedIds.length} 项需手动处理（已在页面高亮）` : ""}`);
+}
+
 function bindFillEvents() {
+  $("smartFillOnce").onclick = () => runSmartFillOnce().catch(error => toast(error.message));
   $("scanFillPage").onclick = () => scanFillPage().catch(error => toast(error.message));
   $("prepareFillSections").onclick = () => prepareFillSections().catch(error => toast(error.message));
   $("fillSelected").onclick = () => runFill(false).catch(error => toast(error.message));
@@ -855,12 +875,16 @@ function bindFillEvents() {
   };
   $("fillAiToggle").onchange = (event) => {
     setFillAiEnabled(event.target.checked);
-    chrome.storage.local.set({ smartFillSettings: { aiEnabled: state.fillAiEnabled, templateEnabled: state.fillTemplateEnabled } }).catch(() => {});
+    chrome.storage.local.set({ smartFillSettings: { aiEnabled: state.fillAiEnabled, templateEnabled: state.fillTemplateEnabled, autoMode: state.fillAutoMode } }).catch(() => {});
     if (state.fillMatches.length) buildMatches().catch(() => {});
   };
   $("fillTemplateToggle").onchange = (event) => {
     setFillTemplateEnabled(event.target.checked);
-    chrome.storage.local.set({ smartFillSettings: { aiEnabled: state.fillAiEnabled, templateEnabled: state.fillTemplateEnabled } }).catch(() => {});
+    chrome.storage.local.set({ smartFillSettings: { aiEnabled: state.fillAiEnabled, templateEnabled: state.fillTemplateEnabled, autoMode: state.fillAutoMode } }).catch(() => {});
+  };
+  $("fillAutoToggle").onchange = (event) => {
+    setFillAutoMode(event.target.checked);
+    chrome.storage.local.set({ smartFillSettings: { aiEnabled: state.fillAiEnabled, templateEnabled: state.fillTemplateEnabled, autoMode: state.fillAutoMode } }).catch(() => {});
   };
   document.addEventListener("change", (event) => {
     if (updateResumeDraftFromControl(event.target)) return;
@@ -931,8 +955,10 @@ export async function initFillUi() {
   const { smartFillSettings = {} } = await chrome.storage.local.get("smartFillSettings");
   setFillAiEnabled(smartFillSettings.aiEnabled !== false);
   setFillTemplateEnabled(smartFillSettings.templateEnabled !== false);
+  setFillAutoMode(smartFillSettings.autoMode !== false);
   $("fillAiToggle").checked = state.fillAiEnabled;
   $("fillTemplateToggle").checked = state.fillTemplateEnabled;
+  $("fillAutoToggle").checked = state.fillAutoMode;
   renderFillProfileSelect();
   renderResumeFields();
   renderFillLogs();

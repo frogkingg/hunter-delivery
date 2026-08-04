@@ -45,12 +45,13 @@ test("面板初始化：所有关键按钮绑定事件且无未捕获异常", as
       if (scan && typeof scan.onclick === "function") break;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "scanFillPage", "prepareFillSections", "fillSelected", "fillAll", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "deleteFillTemplate", "darkToggle"];
+    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "scanFillPage", "prepareFillSections", "fillSelected", "fillAll", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "smartFillOnce", "deleteFillTemplate", "darkToggle"];
     for (const id of ids) {
       const el = window.document.getElementById(id);
       assert.ok(el, `元素 #${id} 应存在`);
       assert.equal(typeof el.onclick, "function", `按钮 #${id} 应绑定 onclick`);
     }
+    assert.equal(typeof window.document.getElementById("fillAutoToggle").onchange, "function", "开关 #fillAutoToggle 应绑定 onchange");
   } finally {
     delete globalThis.window;
     delete globalThis.document;
@@ -238,4 +239,101 @@ test("简历资料独立编辑视图：分组折叠、筛选和经历单一入�
     delete globalThis.chrome;
     dom.window.close();
   }
+});
+
+// —— 一键智能填充（P1 任务4） ——
+const ONECLICK_SCAN_FIELDS = [
+  { id: "f-name", type: "text", label: "姓名", rawLabel: "姓名", labelSource: "label", skipped: false, options: [], fingerprint: "fp-name", path: "#f-name", evidence: [{ source: "label", text: "姓名" }], context: {}, attributes: {} },
+  { id: "f-phone", type: "tel", label: "手机号", rawLabel: "手机号", labelSource: "label", skipped: false, options: [], fingerprint: "fp-phone", path: "#f-phone", evidence: [{ source: "label", text: "手机号" }], context: {}, attributes: {} },
+  { id: "f-referral", type: "text", label: "内推码", rawLabel: "内推码", labelSource: "label", skipped: false, options: [], fingerprint: "fp-ref", path: "#f-ref", evidence: [{ source: "label", text: "内推码" }], context: {}, attributes: {} },
+];
+
+function setupOneClickDom() {
+  const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  const appliedFills = [];
+  const sentTypes = [];
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  const tab = { id: 7, url: "https://jobs.example.com/apply" };
+  globalThis.chrome = {
+    storage: { local: {
+      get: async keys => {
+        const list = typeof keys === "string" ? [keys] : keys;
+        const out = {};
+        for (const k of list) {
+          if (k === "smartFillTemplates") out[k] = {};
+          else if (k === "smartFillLogs") out[k] = [];
+          else if (k === "smartFillSettings") out[k] = {};
+          else out[k] = undefined;
+        }
+        return out;
+      },
+      set: async () => {},
+    } },
+    runtime: {
+      sendMessage: (_message, callback) => { if (callback) callback({ ok: true }); },
+      onMessage: { addListener() {} },
+      connect: () => ({ onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }),
+      getURL: path => path,
+    },
+    tabs: {
+      query: async () => [tab],
+      sendMessage: async (_id, message) => {
+        sentTypes.push(message.type);
+        if (message.type === "SMART_FILL_SCAN") {
+          return { ok: true, engineVersion: 3, fields: ONECLICK_SCAN_FIELDS, repeaters: [], page: { title: "apply", url: tab.url, host: "jobs.example.com" }, scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1" };
+        }
+        if (message.type === "SMART_FILL_APPLY") {
+          appliedFills.push(...message.fills);
+          return { ok: true, results: message.fills.map(f => ({ id: f.id, ok: true, resolvedFingerprint: f.fingerprint })) };
+        }
+        return { ok: true };
+      },
+    },
+    permissions: { contains: async () => true, request: async () => true },
+    scripting: { executeScript: async () => [] },
+  };
+  return { dom, appliedFills, sentTypes, close: () => { delete globalThis.window; delete globalThis.document; delete globalThis.chrome; dom.window.close(); } };
+}
+
+test("一键智能填充：自动模式下扫描后自动填充高置信项，需手动项不填", async () => {
+  const { appliedFills, close } = setupOneClickDom();
+  const { setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { runSmartFillOnce } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000", email: "a@b.com" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(true);
+    await runSmartFillOnce();
+    assert.deepEqual(appliedFills.map(f => f.id).sort(), ["f-name", "f-phone"]);
+  } finally { close(); }
+});
+
+test("一键智能填充：关闭自动填充时仅扫描不填充", async () => {
+  const { appliedFills, close } = setupOneClickDom();
+  const { state, setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { runSmartFillOnce } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(false);
+    await runSmartFillOnce();
+    assert.deepEqual(appliedFills, [], "关闭自动填充时不得发送填充请求");
+    assert.ok(state.fillScanFields.length >= 3, "扫描结果应保留供预览");
+  } finally { close(); }
+});
+
+test("一键智能填充：无自动匹配字段时不发送填充请求", async () => {
+  const { appliedFills, close } = setupOneClickDom();
+  const { setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { runSmartFillOnce } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: {} }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(true);
+    await runSmartFillOnce();
+    assert.deepEqual(appliedFills, [], "没有可自动匹配的字段时不得发送填充请求");
+  } finally { close(); }
 });
