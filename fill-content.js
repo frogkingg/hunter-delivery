@@ -44,6 +44,21 @@
     return `h${(hash >>> 0).toString(16).padStart(8, "0")}`;
   };
 
+  // 增量续填：已见字段标记。初始扫描与每次填充都会打标，onlyNew 扫描据此排除旧字段。
+  const PROCESSED_ATTR = "data-hunter-seen";
+  function markElementProcessed(el) {
+    if (!el || typeof el.setAttribute !== "function") return;
+    const custom = typeof el.closest === "function" ? el.closest(".ant-select, .el-select, .ant-picker, .el-date-editor") : null;
+    const root = custom || el;
+    try { root.setAttribute(PROCESSED_ATTR, "1"); } catch (_) {}
+  }
+  function isElementProcessed(el) {
+    if (!el) return false;
+    if (el.getAttribute && el.getAttribute(PROCESSED_ATTR)) return true;
+    const custom = typeof el.closest === "function" ? el.closest(".ant-select, .el-select, .ant-picker, .el-date-editor") : null;
+    return !!(custom && custom.getAttribute && custom.getAttribute(PROCESSED_ATTR));
+  }
+
   function prepareDocumentIndexes(doc) {
     indexedDocument = doc;
     labelForIndex = new Map();
@@ -555,7 +570,7 @@
   }
 
   // —— 扫描 ——
-  function scan(doc) {
+  function scan(doc, scanOptions = {}) {
     const root = doc || (typeof document !== "undefined" ? document : null);
     if (!root) return { fields: [], page: null };
     prepareDocumentIndexes(root);
@@ -571,6 +586,9 @@
       required = isRequired(target), semanticHint = "", optionsComplete = false, contextOverride = null,
       dateMeta = null,
     }) => {
+      const markRoot = container || target;
+      if (scanOptions.onlyUnprocessed && isElementProcessed(markRoot)) return;
+      markElementProcessed(markRoot);
       const context = { ...fieldContext(target), ...(contextOverride || {}) };
       const evidence = collectEvidence(target, labelInfo, context, semanticHint);
       const attributes = semanticAttributes(target);
@@ -806,16 +824,18 @@
     const fingerprintCounts = new Map();
     for (const field of fields) fingerprintCounts.set(field.fingerprint, (fingerprintCounts.get(field.fingerprint) || 0) + 1);
     for (const entry of registry.values()) entry.fingerprintMultiplicity = fingerprintCounts.get(entry.fingerprint) || 1;
-    elementRegistry = registry;
-    scanSession = {
-      scanId,
-      documentFingerprint,
-      formFingerprint,
-      url: page?.url || "",
-      dirty: false,
-      formRoots: [...new Set([...registry.values()].map(entry => entry.el.closest && entry.el.closest("form")).filter(Boolean))],
-    };
-    installStructureObserver(root);
+    if (!scanOptions.dryRun) {
+      elementRegistry = registry;
+      scanSession = {
+        scanId,
+        documentFingerprint,
+        formFingerprint,
+        url: page?.url || "",
+        dirty: false,
+        formRoots: [...new Set([...registry.values()].map(entry => entry.el.closest && entry.el.closest("form")).filter(Boolean))],
+      };
+      installStructureObserver(root);
+    }
     return { engineVersion: ENGINE_VERSION, fields, repeaters, page, scanId, documentFingerprint, formFingerprint };
   }
 
@@ -1458,6 +1478,7 @@
         item.ok = true;
         item.resolvedFingerprint = verifiedTarget ? entryFingerprint(entry, verifiedTarget) : entry.fingerprint;
         item.verification = "adapter";
+        markElementProcessed(verifiedTarget || target);
       } catch (error) {
         item.error = error.message || String(error);
         item.errorCode = error.code || "FILL_FAILED";
@@ -1599,7 +1620,9 @@
       slot: "single",
       dateMeta: classified.type === "date" ? dateMetaForNative(el) : null,
     };
-    return fillOne({ id: entry.id, value, type: entry.type, fingerprint: entry.fingerprint }, entry, el);
+    const result = await fillOne({ id: entry.id, value, type: entry.type, fingerprint: entry.fingerprint }, entry, el);
+    markElementProcessed(container || el);
+    return result;
   }
 
   // 拾取态：高亮可填控件；点击可填控件即填充；点击非可填区域给出提示且保持拾取；Esc 取消。
@@ -1679,12 +1702,56 @@
     });
   }
 
+  // —— 增量续填（P1 任务6） ——
+  let newFieldsWatch = null;
+  function startNewFieldsWatch(options = {}) {
+    stopNewFieldsWatch();
+    const threshold = Number.isFinite(options.threshold) ? Math.max(1, options.threshold) : 4;
+    const onFound = typeof options.onFound === "function" ? options.onFound : null;
+    const roots = scanSession?.formRoots?.length ? scanSession.formRoots : [document.body || document.documentElement];
+    let timer = null;
+    const check = () => {
+      timer = null;
+      if (!onFound) return;
+      try {
+        const result = scan(document, { onlyUnprocessed: true, dryRun: true });
+        const count = result.fields.filter(field => !field.skipped).length;
+        if (count >= threshold) {
+          stopNewFieldsWatch();
+          onFound(count);
+        }
+      } catch (_) {}
+    };
+    const observer = new MutationObserver(() => {
+      if (timer) return;
+      timer = setTimeout(check, 120);
+    });
+    roots.forEach(root => {
+      if (root && root.isConnected) {
+        try { observer.observe(root, { subtree: true, childList: true, attributes: false, characterData: false }); } catch (_) {}
+      }
+    });
+    newFieldsWatch = {
+      observer,
+      stop: () => {
+        if (timer) clearTimeout(timer);
+        try { observer.disconnect(); } catch (_) {}
+      },
+    };
+  }
+  function stopNewFieldsWatch() {
+    if (newFieldsWatch) {
+      newFieldsWatch.stop();
+      newFieldsWatch = null;
+    }
+  }
+
   // —— 消息监听（真实环境） ——
   if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       try {
         if (message.type === "SMART_FILL_SCAN") {
-          const result = scan();
+          const result = scan(undefined, { onlyUnprocessed: !!message.onlyNew });
           sendResponse({ ok: true, ...result });
         } else if (message.type === "SMART_FILL_FILL_FIELD") {
           (async () => {
@@ -1750,6 +1817,26 @@
             }
           })();
           return true;
+        } else if (message.type === "SMART_FILL_WATCH_START") {
+          try {
+            startNewFieldsWatch({
+              threshold: Number.isFinite(message.threshold) ? message.threshold : 4,
+              onFound: count => {
+                try {
+                  if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+                    chrome.runtime.sendMessage({ type: "SMART_FILL_NEW_FIELDS", count, scanId: scanSession?.scanId }).catch(() => {});
+                  }
+                } catch (_) {}
+              },
+            });
+            sendResponse({ ok: true });
+          } catch (error) {
+            sendResponse({ ok: false, error: error.message || String(error) });
+          }
+          return true;
+        } else if (message.type === "SMART_FILL_WATCH_STOP") {
+          stopNewFieldsWatch();
+          sendResponse({ ok: true });
         } else if (message.type === "SMART_FILL_HIGHLIGHT") {
           highlight(message.ids || [], !!message.on);
           sendResponse({ ok: true });
@@ -1765,6 +1852,6 @@
 
   // —— 测试 / 面板直连入口 ——
   if (typeof globalThis !== "undefined") {
-    globalThis.__hunterFill = { scan, apply, prepareRepeaters, highlight, reset, fillField: fillFieldById, pickFill };
+    globalThis.__hunterFill = { scan, apply, prepareRepeaters, highlight, reset, fillField: fillFieldById, pickFill, startWatch: startNewFieldsWatch, stopWatch: stopNewFieldsWatch };
   }
 })();

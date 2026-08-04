@@ -24,6 +24,7 @@ export const state = {
   fillAiEnabled: true,
   fillTemplateEnabled: true,
   fillAutoMode: true,
+  fillContinueRounds: 0,
   resumeFieldsDraft: null,
   resumeFieldsDraftProfile: null,
   resumeFieldsDirty: false,
@@ -56,6 +57,7 @@ export function setFillFailedIds(ids) { state.fillFailedIds = ids; }
 export function setFillAiEnabled(value) { state.fillAiEnabled = value; }
 export function setFillTemplateEnabled(value) { state.fillTemplateEnabled = value; }
 export function setFillAutoMode(value) { state.fillAutoMode = !!value; }
+export function setFillContinueRounds(value) { state.fillContinueRounds = Math.max(0, Number(value) || 0); }
 export function setResumeFieldsDraft(value, profile = activeProfile()) {
   state.resumeFieldsDraft = value;
   state.resumeFieldsDraftProfile = profile;

@@ -2,7 +2,7 @@
 import {
   state, activeProfile, setFillScanFields, setFillScanPage, setFillScanSession,
   setFillRepeaters, setFillMatches, setFillSelected, setFillValues, setFillFailedIds,
-  setFillAiEnabled, setFillTemplateEnabled, setFillAutoMode, setResumeFieldsDraft, setResumeFieldsDirty,
+  setFillAiEnabled, setFillTemplateEnabled, setFillAutoMode, setFillContinueRounds, setResumeFieldsDraft, setResumeFieldsDirty,
 } from "./state.js";
 import { $, toast, fillMessagePage } from "./chrome-helpers.js";
 import { escapeHtml } from "./pure-utils.js";
@@ -352,6 +352,8 @@ export async function scanFillPage() {
     renderPrepareFillAction();
     await buildMatches();
     await renderFillTemplate();
+    setFillContinueRounds(0);
+    hideContinueFillPrompt();
     toast(`已识别 ${fields.length} 个表单项`);
     return true;
   } catch (error) {
@@ -643,6 +645,7 @@ export async function runFill(all = false) {
     }
     $("fillProgress").textContent = `填充完成：成功 ${summary.ok} / ${summary.total}${failedIds.length ? `，${failedIds.length} 项需手动处理（已在页面高亮）` : ""}`;
     await afterFill(tab, results, Date.now() - start);
+    startIncrementalWatch();
     return { summary, failedIds };
   } finally {
     fillRunning = false;
@@ -864,6 +867,71 @@ export async function startPickFill(fieldKey) {
   toast("请在页面点击要填入的位置（Esc 取消）");
 }
 
+// —— 增量续填（P1 任务6） ——
+function startIncrementalWatch() {
+  const session = state.fillScanSession;
+  if (!session?.tabId) return;
+  fillMessagePage({ id: session.tabId }, { type: "SMART_FILL_WATCH_START", threshold: 4 }).catch(() => {});
+}
+function stopIncrementalWatch() {
+  const session = state.fillScanSession;
+  if (!session?.tabId) return;
+  fillMessagePage({ id: session.tabId }, { type: "SMART_FILL_WATCH_STOP" }).catch(() => {});
+}
+function showContinueFillPrompt(count) {
+  const button = $("continueFill");
+  if (!button) return;
+  button.textContent = `继续填写（${count} 个新字段）`;
+  button.hidden = false;
+}
+function hideContinueFillPrompt() {
+  const button = $("continueFill");
+  if (button) button.hidden = true;
+}
+
+// 继续填写：仅重新扫描并填充新增字段（引擎按已见标记过滤），最多 3 轮。
+async function continueFill() {
+  if (fillRunning) throw new Error("填充进行中，请等待完成或点击停止。");
+  hideContinueFillPrompt();
+  if (state.fillContinueRounds >= 3) { stopIncrementalWatch(); return; }
+  const session = state.fillScanSession;
+  const tab = session?.tabId ? { id: session.tabId, url: session.url || "" } : await currentTab();
+  if (!tab?.id || !/^https?:/i.test(tab.url || "")) throw new Error("请先打开目标网申页面。");
+  const response = await fillMessagePage(tab, { type: "SMART_FILL_SCAN", onlyNew: true });
+  if (!response?.ok) throw new Error(response?.error || "扫描失败");
+  const newFields = response.fields || [];
+  if (!newFields.length) { toast("没有发现新的可填字段"); return; }
+  applyScanResponse(response, tab);
+  await buildMatches();
+  await renderFillTemplate();
+  if (!state.fillMatches.some(match => match.status === "match")) { toast("新增字段无自动匹配项"); return; }
+  const result = await runFill(false);
+  state.fillContinueRounds += 1;
+  toast(`已继续填充：成功 ${result.summary.ok}/${result.summary.total}`);
+}
+
+// 面板运行时消息处理（内容脚本经 background 中继回传）。
+export function handleFillRuntimeMessage(message) {
+  if (!message || typeof message !== "object") return;
+  if (message.type === "SMART_FILL_NEW_FIELDS") {
+    if (state.fillContinueRounds >= 3) { stopIncrementalWatch(); return; }
+    showContinueFillPrompt(message.count || 0);
+    return;
+  }
+  if (message.type === "SMART_FILL_PICK_RESULT") {
+    if (state.pickFillRequestId && message.requestId !== state.pickFillRequestId) return;
+    state.pickFillRequestId = null;
+    if (message.cancelled) toast("已取消点击填充");
+    else if (!message.ok) toast(`点击填充失败：${message.error || "未知错误"}`);
+    else toast(`已填入「${message.value ?? ""}」`);
+    return;
+  }
+  if (message.type === "SMART_FILL_PROGRESS") {
+    const progress = $("fillProgress");
+    if (progress) progress.textContent = `正在填充 ${message.index}/${message.total}…${message.error ? `（${message.error}）` : ""}`;
+  }
+}
+
 function bindFillEvents() {
   $("smartFillOnce").onclick = () => runSmartFillOnce().catch(error => toast(error.message));
   $("scanFillPage").onclick = () => scanFillPage().catch(error => toast(error.message));
@@ -872,6 +940,7 @@ function bindFillEvents() {
   $("fillAll").onclick = () => runFill(true).catch(error => toast(error.message));
   $("stopFill").onclick = () => stopFill().catch(error => toast(error.message));
   $("clearFill").onclick = () => clearFill().catch(error => toast(error.message));
+  $("continueFill").onclick = () => continueFill().catch(error => toast(error.message));
   $("extractResumeFields").onclick = () => extractResumeFields().catch(error => toast(error.message));
   $("saveResumeFields").onclick = () => saveResumeFields().catch(error => toast(error.message));
   $("manageResumeFields").onclick = () => openResumeFieldsEditor();
@@ -965,20 +1034,7 @@ function bindFillEvents() {
       return;
     }
   });
-  chrome.runtime.onMessage.addListener((message) => {
-    if (message?.type === "SMART_FILL_PICK_RESULT") {
-      if (state.pickFillRequestId && message.requestId !== state.pickFillRequestId) return;
-      state.pickFillRequestId = null;
-      if (message.cancelled) toast("已取消点击填充");
-      else if (!message.ok) toast(`点击填充失败：${message.error || "未知错误"}`);
-      else toast(`已填入「${message.value ?? ""}」`);
-      return;
-    }
-    if (message?.type === "SMART_FILL_PROGRESS") {
-      const progress = $("fillProgress");
-      if (progress) progress.textContent = `正在填充 ${message.index}/${message.total}…${message.error ? `（${message.error}）` : ""}`;
-    }
-  });
+  chrome.runtime.onMessage.addListener(handleFillRuntimeMessage);
 }
 
 export async function initFillUi() {

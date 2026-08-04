@@ -933,3 +933,75 @@ test("点击填充：点击非可填区域提示且不填充，拾取态保持",
   assert.equal(input.value, "李四");
   dom.window.close();
 });
+
+// —— 增量续填（P1 任务6） ——
+test("增量续填：扫描标记已见字段，onlyNew 仅返回新增字段", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const initial = engine.scan(doc);
+  assert.ok(initial.fields.length >= 5, "初始应有多个字段");
+  const card = doc.createElement("div");
+  card.className = "ant-form-item";
+  card.innerHTML = '<div class="ant-form-item-label"><label for="newSchool">新增学校</label></div><div class="ant-form-item-control"><input id="newSchool" type="text"></div>';
+  doc.body.appendChild(card);
+  const onlyNew = engine.scan(doc, { onlyUnprocessed: true });
+  assert.ok(onlyNew.fields.some(field => field.attributes?.id === "newSchool"), "新增字段应包含在 onlyNew 结果中");
+  assert.ok(!onlyNew.fields.some(field => field.attributes?.id === "name"), "已见字段不得出现在 onlyNew 结果中");
+  dom.window.close();
+});
+
+test("增量续填：无新增字段时 onlyNew 返回空", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  engine.scan(doc);
+  const onlyNew = engine.scan(doc, { onlyUnprocessed: true });
+  assert.equal(onlyNew.fields.length, 0, "无新增字段时 onlyNew 应为空");
+  dom.window.close();
+});
+
+test("增量续填：watch 检测到新增字段并触发回调，停止后不再触发", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  engine.scan(doc);
+  const found = [];
+  engine.startWatch({ threshold: 1, onFound: count => found.push(count) });
+  const form = doc.getElementById("applyForm");
+  const card = doc.createElement("div");
+  card.className = "ant-form-item";
+  card.innerHTML = '<div class="ant-form-item-label"><label for="newA">新增字段A</label></div><div class="ant-form-item-control"><input id="newA" type="text"></div>';
+  form.appendChild(card);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(found.length, 1, "应触发一次回调");
+  assert.ok(found[0] >= 1);
+  engine.stopWatch();
+  const card2 = doc.createElement("div");
+  card2.className = "ant-form-item";
+  card2.innerHTML = '<div class="ant-form-item-label"><label for="newB">新增字段B</label></div><div class="ant-form-item-control"><input id="newB" type="text"></div>';
+  form.appendChild(card2);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(found.length, 1, "停止后不再触发");
+  dom.window.close();
+});
+
+test("增量续填：onlyNew 新增字段可单独填充", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  engine.scan(doc);
+  const card = doc.createElement("div");
+  card.className = "ant-form-item";
+  card.innerHTML = '<div class="ant-form-item-label"><label for="newSchool">新增学校</label></div><div class="ant-form-item-control"><input id="newSchool" type="text"></div>';
+  doc.body.appendChild(card);
+  const onlyNew = engine.scan(doc, { onlyUnprocessed: true });
+  const schoolField = onlyNew.fields.find(field => field.attributes?.id === "newSchool");
+  assert.ok(schoolField, "应识别新增学校字段");
+  const result = await engine.fillField({ id: schoolField.id, value: "香港大学" }, {
+    scanId: onlyNew.scanId, documentFingerprint: onlyNew.documentFingerprint, formFingerprint: onlyNew.formFingerprint,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(doc.getElementById("newSchool").value, "香港大学");
+  dom.window.close();
+});

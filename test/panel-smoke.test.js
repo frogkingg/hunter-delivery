@@ -365,3 +365,52 @@ test("点击字段填充：简历字段为空时不发送拾取请求", async ()
     assert.ok(!sentTypes.includes("SMART_FILL_PICK_START"), "空字段不得发起拾取");
   } finally { close(); }
 });
+
+// —— 增量续填（P1 任务6） ——
+test("增量续填：收到新字段通知后显示继续填写提示（3 轮内）", async () => {
+  const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  const { setProfiles, setActiveProfileIndex, setFillContinueRounds } = await import("../src/state.js");
+  const { handleFillRuntimeMessage } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三" } }]);
+    setActiveProfileIndex(0);
+    setFillContinueRounds(0);
+    const btn = window.document.getElementById("continueFill");
+    assert.ok(btn, "continueFill 按钮应存在");
+    assert.equal(btn.hidden, true, "默认隐藏");
+    handleFillRuntimeMessage({ type: "SMART_FILL_NEW_FIELDS", count: 5, scanId: "s1" });
+    assert.equal(btn.hidden, false, "收到通知后应显示");
+    assert.match(btn.textContent, /继续填写/);
+    assert.match(btn.textContent, /5/, "应显示新字段数量");
+  } finally {
+    delete globalThis.window;
+    delete globalThis.document;
+    dom.window.close();
+  }
+});
+
+test("增量续填：达到 3 轮后不再提示", async () => {
+  const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
+  globalThis.window = window;
+  globalThis.document = window.document;
+  const { setProfiles, setActiveProfileIndex, setFillContinueRounds } = await import("../src/state.js");
+  const { handleFillRuntimeMessage } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三" } }]);
+    setActiveProfileIndex(0);
+    setFillContinueRounds(3);
+    const btn = window.document.getElementById("continueFill");
+    handleFillRuntimeMessage({ type: "SMART_FILL_NEW_FIELDS", count: 5, scanId: "s1" });
+    assert.equal(btn.hidden, true, "3 轮后不再提示");
+  } finally {
+    delete globalThis.window;
+    delete globalThis.document;
+    dom.window.close();
+  }
+});
