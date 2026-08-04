@@ -248,11 +248,13 @@ const ONECLICK_SCAN_FIELDS = [
   { id: "f-referral", type: "text", label: "内推码", rawLabel: "内推码", labelSource: "label", skipped: false, options: [], fingerprint: "fp-ref", path: "#f-ref", evidence: [{ source: "label", text: "内推码" }], context: {}, attributes: {} },
 ];
 
-function setupOneClickDom() {
+function setupOneClickDom(options = {}) {
+  const { repeaters = [], prepareOk = true } = options;
   const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
   const appliedFills = [];
   const sentTypes = [];
+  const preparedPlans = [];
   window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
   globalThis.window = window;
   globalThis.document = window.document;
@@ -283,7 +285,27 @@ function setupOneClickDom() {
       sendMessage: async (_id, message) => {
         sentTypes.push(message.type);
         if (message.type === "SMART_FILL_SCAN") {
-          return { ok: true, engineVersion: 3, fields: ONECLICK_SCAN_FIELDS, repeaters: [], page: { title: "apply", url: tab.url, host: "jobs.example.com" }, scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1" };
+          return { ok: true, engineVersion: 3, fields: ONECLICK_SCAN_FIELDS, repeaters, page: { title: "apply", url: tab.url, host: "jobs.example.com" }, scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1" };
+        }
+        if (message.type === "SMART_FILL_PREPARE") {
+          preparedPlans.push(...message.plans);
+          if (!prepareOk) {
+            return { ok: false, error: "模拟展开失败", results: message.plans.map(p => ({ id: p.id, ok: false, error: "模拟展开失败" })) };
+          }
+          const extra = message.plans.map((plan, i) => ({
+            id: `f-edu-${i}`, type: "text", label: "毕业院校", rawLabel: "毕业院校",
+            labelSource: "label", skipped: false, options: [], fingerprint: `fp-edu-${i}`, path: `#f-edu-${i}`,
+            evidence: [{ source: "label", text: "毕业院校" }],
+            context: { repeat: { arrayKey: "education", itemIndex: i } }, attributes: {},
+          }));
+          return {
+            ok: true,
+            fields: [...ONECLICK_SCAN_FIELDS, ...extra],
+            repeaters: message.plans.map(p => ({ ...p, currentCount: p.targetCount })),
+            results: message.plans.map(p => ({ id: p.id, ok: true, added: p.targetCount })),
+            scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1",
+            page: { title: "apply", url: tab.url, host: "jobs.example.com" },
+          };
         }
         if (message.type === "SMART_FILL_APPLY") {
           appliedFills.push(...message.fills);
@@ -295,7 +317,7 @@ function setupOneClickDom() {
     permissions: { contains: async () => true, request: async () => true },
     scripting: { executeScript: async () => [] },
   };
-  return { dom, appliedFills, sentTypes, close: () => { delete globalThis.window; delete globalThis.document; delete globalThis.chrome; dom.window.close(); } };
+  return { dom, appliedFills, sentTypes, preparedPlans, close: () => { delete globalThis.window; delete globalThis.document; delete globalThis.chrome; dom.window.close(); } };
 }
 
 test("一键智能填充：自动模式下扫描后自动填充高置信项，需手动项不填", async () => {
@@ -335,6 +357,38 @@ test("一键智能填充：无自动匹配字段时不发送填充请求", async
     setFillAutoMode(true);
     await runSmartFillOnce();
     assert.deepEqual(appliedFills, [], "没有可自动匹配的字段时不得发送填充请求");
+  } finally { close(); }
+});
+
+test("一键智能填充：有经历区块时自动展开后填充", async () => {
+  const repeaters = [{ id: "edu", arrayKey: "education", title: "教育经历", currentCount: 0, fingerprint: "fp-edu" }];
+  const { appliedFills, sentTypes, preparedPlans, close } = setupOneClickDom({ repeaters });
+  const { setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { runSmartFillOnce } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000", education: [{ id: "e1", school: "复旦大学" }] } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(true);
+    await runSmartFillOnce();
+    assert.ok(sentTypes.includes("SMART_FILL_PREPARE"), "应自动发送展开经历请求");
+    assert.ok(preparedPlans.length >= 1, "展开计划应包含教育经历");
+    assert.ok(preparedPlans.some(p => p.id === "edu"), "展开计划应为教育经历区块");
+    assert.ok(appliedFills.some(f => f.id.startsWith("f-edu-")), "展开后的教育经历字段应被填充");
+  } finally { close(); }
+});
+
+test("一键智能填充：展开经历失败时降级继续填充", async () => {
+  const repeaters = [{ id: "edu", arrayKey: "education", title: "教育经历", currentCount: 0, fingerprint: "fp-edu" }];
+  const { appliedFills, sentTypes, close } = setupOneClickDom({ repeaters, prepareOk: false });
+  const { setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { runSmartFillOnce } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000", education: [{ id: "e1", school: "复旦大学" }] } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(true);
+    await runSmartFillOnce();
+    assert.ok(sentTypes.includes("SMART_FILL_PREPARE"), "应尝试展开经历");
+    assert.deepEqual(appliedFills.map(f => f.id).sort(), ["f-name", "f-phone"], "展开失败仍应填充已扫到的字段");
   } finally { close(); }
 });
 

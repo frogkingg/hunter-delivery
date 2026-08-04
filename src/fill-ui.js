@@ -347,7 +347,9 @@ export async function scanFillPage() {
       formFingerprint: response.formFingerprint,
       url: response.page?.url || tab.url,
     });
-    $("fillCurrentSite").textContent = `当前站点：${pageUrl.hostname}（识别到 ${fields.length} 个表单项）`;
+    $("fillCurrentSite").textContent = "";
+    $("fillCurrentSiteText").textContent = `当前站点：${pageUrl.hostname}（识别到 ${fields.length} 个表单项）`;
+    $("clearFill").hidden = false;
     await buildMatches();
     await renderFillTemplate();
     setFillContinueRounds(0);
@@ -436,7 +438,9 @@ export async function prepareFillSections() {
     });
     if (response?.fields?.length) {
       applyScanResponse(response, tab);
-      $("fillCurrentSite").textContent = `当前站点：${state.fillScanPage?.host || new URL(tab.url).hostname}（识别到 ${response.fields.length} 个表单项）`;
+      $("fillCurrentSite").textContent = "";
+      $("fillCurrentSiteText").textContent = `当前站点：${state.fillScanPage?.host || new URL(tab.url).hostname}（识别到 ${response.fields.length} 个表单项）`;
+      $("clearFill").hidden = false;
       progress.textContent = "经历区块已展开，正在重新匹配字段…";
       await buildMatches();
       await renderFillTemplate();
@@ -831,12 +835,20 @@ export async function runSmartFillOnce() {
   if (fillRunning) throw new Error("填充进行中，请等待完成或点击停止。");
   const ok = await scanFillPage();
   if (!ok) return; // scanFillPage 内部已 toast 错误
+  // 自动展开经历（失败降级：继续填充已扫到的字段）
+  if (computeRepeaterAdditions() > 0) {
+    try {
+      await prepareFillSections();
+    } catch (_error) {
+      // 展开失败已 toast，不中断一键流程
+    }
+  }
   if (!state.fillMatches.some(match => match.status === "match")) {
     toast("未发现可自动填充的字段，请在列表中手动确认");
     return;
   }
   if (!state.fillAutoMode) {
-    toast("已扫描，请在预览中确认后点击「填充选中项」");
+    toast("已扫描，请在预览中勾选后点击「填充勾选项」");
     return;
   }
   const result = await runFill(false);
