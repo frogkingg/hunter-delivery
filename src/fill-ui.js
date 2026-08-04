@@ -102,7 +102,8 @@ function scalarFieldHtml(field, value) {
       ? `<select data-resume-key="${field.key}"><option value="">请选择</option>${options.map(option => `<option value="${escapeHtml(option)}" ${option === value ? "selected" : ""}>${escapeHtml(option)}</option>`).join("")}${value && !options.includes(value) ? `<option value="${escapeHtml(value)}" selected>${escapeHtml(value)}</option>` : ""}</select>`
       : `<input type="text" data-resume-key="${field.key}" value="${escapeHtml(value)}"${field.type === "date" ? ` inputmode="numeric" placeholder="YYYY-MM 或 YYYY-MM-DD"` : ""}>`;
   const hidden = fieldVisible(field, value) ? "" : " hidden";
-  return `<label class="resume-field${empty ? " is-empty" : ""}${textarea ? " is-textarea" : ""}"${hidden}><span>${escapeHtml(field.label)}</span>${input}</label>`;
+  const pickButton = `<button type="button" class="text-button pick-fill" data-pick-field-key="${field.key}"${empty ? " disabled" : ""} title="点击后在页面选择要填入的位置">填入页面</button>`;
+  return `<label class="resume-field${empty ? " is-empty" : ""}${textarea ? " is-textarea" : ""}"${hidden}><span>${escapeHtml(field.label)}</span>${input}${pickButton}</label>`;
 }
 
 function entryGroupVisible(group, entries) {
@@ -848,6 +849,21 @@ export async function runSmartFillOnce() {
   toast(`一键填充完成：成功 ${result.summary.ok}/${result.summary.total}${result.failedIds.length ? `，${result.failedIds.length} 项需手动处理（已在页面高亮）` : ""}`);
 }
 
+// 点击字段填充：从简历资料编辑器发起拾取态，用户点击页面目标后单字段填入。
+export async function startPickFill(fieldKey) {
+  const resume = ensureResumeDraft();
+  const value = String(resume[fieldKey] || "").trim();
+  if (!value) throw new Error("该简历字段暂无内容，请先填写。");
+  const session = state.fillScanSession;
+  const tab = session?.tabId ? { id: session.tabId, url: session.url || "" } : await currentTab();
+  if (!tab?.id || !/^https?:/i.test(tab.url || "")) throw new Error("请先打开目标网申页面并扫描。");
+  const requestId = `pick-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  state.pickFillRequestId = requestId;
+  const response = await fillMessagePage(tab, { type: "SMART_FILL_PICK_START", value, requestId });
+  if (!response?.ok) throw new Error(response?.error || "进入点击填充失败");
+  toast("请在页面点击要填入的位置（Esc 取消）");
+}
+
 function bindFillEvents() {
   $("smartFillOnce").onclick = () => runSmartFillOnce().catch(error => toast(error.message));
   $("scanFillPage").onclick = () => scanFillPage().catch(error => toast(error.message));
@@ -923,6 +939,12 @@ function bindFillEvents() {
     }
   });
   document.addEventListener("click", (event) => {
+    const pickButton = event.target.closest("[data-pick-field-key]");
+    if (pickButton) {
+      event.preventDefault();
+      startPickFill(pickButton.dataset.pickFieldKey).catch(error => toast(error.message));
+      return;
+    }
     const filterButton = event.target.closest("[data-resume-filter]");
     if (filterButton) {
       setResumeFieldFilter(filterButton.dataset.resumeFilter);
@@ -944,6 +966,14 @@ function bindFillEvents() {
     }
   });
   chrome.runtime.onMessage.addListener((message) => {
+    if (message?.type === "SMART_FILL_PICK_RESULT") {
+      if (state.pickFillRequestId && message.requestId !== state.pickFillRequestId) return;
+      state.pickFillRequestId = null;
+      if (message.cancelled) toast("已取消点击填充");
+      else if (!message.ok) toast(`点击填充失败：${message.error || "未知错误"}`);
+      else toast(`已填入「${message.value ?? ""}」`);
+      return;
+    }
     if (message?.type === "SMART_FILL_PROGRESS") {
       const progress = $("fillProgress");
       if (progress) progress.textContent = `正在填充 ${message.index}/${message.total}…${message.error ? `（${message.error}）` : ""}`;

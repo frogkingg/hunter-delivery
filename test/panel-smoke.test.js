@@ -337,3 +337,31 @@ test("一键智能填充：无自动匹配字段时不发送填充请求", async
     assert.deepEqual(appliedFills, [], "没有可自动匹配的字段时不得发送填充请求");
   } finally { close(); }
 });
+
+// —— 点击字段填充（P1 任务5） ——
+test("点击字段填充：填入页面按钮发送拾取请求并提示", async () => {
+  const { sentTypes, close } = setupOneClickDom();
+  const { setProfiles, setActiveProfileIndex, setFillScanSession } = await import("../src/state.js");
+  const { startPickFill } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000" } }]);
+    setActiveProfileIndex(0);
+    setFillScanSession({ tabId: 7, scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1", url: "https://jobs.example.com/apply" });
+    await startPickFill("name");
+    assert.ok(sentTypes.includes("SMART_FILL_PICK_START"), "应向页面发送拾取请求");
+    assert.match(window.document.getElementById("toast").textContent, /点击要填入的位置/);
+  } finally { close(); }
+});
+
+test("点击字段填充：简历字段为空时不发送拾取请求", async () => {
+  const { sentTypes, close } = setupOneClickDom();
+  const { setProfiles, setActiveProfileIndex, setFillScanSession } = await import("../src/state.js");
+  const { startPickFill } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三" } }]);
+    setActiveProfileIndex(0);
+    setFillScanSession({ tabId: 7, scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1", url: "https://jobs.example.com/apply" });
+    await assert.rejects(() => startPickFill("email"), /暂无内容/);
+    assert.ok(!sentTypes.includes("SMART_FILL_PICK_START"), "空字段不得发起拾取");
+  } finally { close(); }
+});

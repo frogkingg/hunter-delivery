@@ -1535,6 +1535,150 @@
     return { ...latest, results };
   }
 
+  // —— 点击字段填充（P1 任务5） ——
+  // 单字段按 fieldId 填充：复用 apply 的会话/指纹/重复目标预检。
+  async function fillFieldById(fill, options = {}) {
+    const id = String(fill?.id || "");
+    const entry = elementRegistry.get(id);
+    if (!entry) throw sessionError("字段未找到，请重新扫描", "STALE_FIELD");
+    const results = await apply(
+      [{ id, value: String(fill?.value ?? ""), type: entry.type, fingerprint: entry.fingerprint }],
+      { ...options, delayMs: 0 }
+    );
+    return results[0] || { id, ok: false, error: "填充失败", errorCode: "FILL_FAILED" };
+  }
+
+  let pickSeq = 0;
+  let pickController = null;
+
+  function findPickableControl(target) {
+    if (!(target instanceof HTMLElement)) return null;
+    if (target.closest && target.closest("#hunter-pick-overlay")) return null;
+    const selector = 'input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea, select, .ant-select, .el-select, .ant-picker, .el-date-editor';
+    return target.closest ? target.closest(selector) || null : null;
+  }
+
+  function logicalControlFor(control) {
+    const custom = control.closest && control.closest(".ant-select, .el-select, .ant-picker, .el-date-editor");
+    if (custom) {
+      const inner = custom.querySelector('input:not([type="hidden"]), textarea, select');
+      return { el: inner || custom, container: custom };
+    }
+    if (control.matches && control.matches('input:not([type="hidden"]), textarea, select')) {
+      return { el: control, container: null };
+    }
+    const inner = control.querySelector && control.querySelector('input:not([type="hidden"]), textarea, select');
+    if (inner) return { el: inner, container: null };
+    return null;
+  }
+
+  // 把点击的控件按扫描同款逻辑建成临时 entry 后走 fillOne（含回读校验）。
+  async function fillPickedControl(control, value) {
+    const logical = logicalControlFor(control);
+    if (!logical) throw sessionError("请点击可填写的输入框或下拉框", "NOT_FILLABLE");
+    const { el, container } = logical;
+    const classified = classifyControl(el);
+    const isCustom = !!container || ["custom-select", "custom-date"].includes(classified.type);
+    const kind = classified.type === "radio" ? "radio" : (isCustom ? "custom" : "native");
+    const entry = {
+      id: `pick-${Date.now().toString(36)}-${pickSeq++}`,
+      kind,
+      el,
+      container,
+      group: null,
+      type: classified.type,
+      adapter: isCustom
+        ? (classified.type === "custom-select"
+          ? (container && /ant-select/.test(String(container.className || "")) ? "antd-select" : "element-select")
+          : "custom-date")
+        : (String(el.tagName).toLowerCase() === "select" ? "native-select" : "native-input"),
+      fingerprint: fieldFingerprintOf(el, classified.type, "single", classified.type === "radio"),
+      label: (controlLabel(el).text || el.getAttribute("placeholder") || "").trim() || "已选字段",
+      path: uniquePath(el),
+      locators: locatorBundle(el),
+      slot: "single",
+      dateMeta: classified.type === "date" ? dateMetaForNative(el) : null,
+    };
+    return fillOne({ id: entry.id, value, type: entry.type, fingerprint: entry.fingerprint }, entry, el);
+  }
+
+  // 拾取态：高亮可填控件；点击可填控件即填充；点击非可填区域给出提示且保持拾取；Esc 取消。
+  function pickFill(value) {
+    return new Promise(resolve => {
+      if (pickController) {
+        const old = pickController;
+        pickController = null;
+        old.cleanup();
+        old.resolve({ ok: false, cancelled: true, error: "已有进行中的点击填充" });
+      }
+      let controller = null;
+      let highlight = null;
+      const overlay = document.createElement("div");
+      overlay.id = "hunter-pick-overlay";
+      overlay.setAttribute("aria-hidden", "true");
+      overlay.style.cssText = "position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:2147483646;pointer-events:none;font:14px/1.6 sans-serif;color:#2563eb;display:flex;align-items:flex-start;justify-content:center;padding-top:72px;text-align:center;";
+      (document.body || document.documentElement).appendChild(overlay);
+
+      const setHighlight = el => {
+        if (highlight === el) return;
+        if (highlight && highlight.style) highlight.style.outline = "";
+        highlight = el;
+        if (el && el.style) el.style.outline = "2px solid #2563eb";
+      };
+
+      const hintTimer = { id: null };
+      const showHint = text => {
+        overlay.textContent = text;
+        if (hintTimer.id) clearTimeout(hintTimer.id);
+        hintTimer.id = setTimeout(() => { overlay.textContent = ""; }, 1200);
+      };
+
+      const finish = () => {
+        if (pickController !== controller) return;
+        pickController = null;
+        document.removeEventListener("mousemove", onMouseMove, true);
+        document.removeEventListener("click", onClick, true);
+        document.removeEventListener("keydown", onKeyDown, true);
+        setHighlight(null);
+        overlay.remove();
+      };
+
+      const onMouseMove = event => setHighlight(findPickableControl(event.target));
+
+      const onClick = async event => {
+        const control = findPickableControl(event.target);
+        if (!control) {
+          showHint("请点击输入框/下拉框（Esc 取消）");
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        finish();
+        try {
+          const r = await fillPickedControl(control, value);
+          resolve({ ...r, value: r.actualValue ?? value });
+        } catch (error) {
+          resolve({ ok: false, error: error.message || String(error), errorCode: error.code || "PICK_FAILED" });
+        }
+      };
+
+      const onKeyDown = event => {
+        if (event.key === "Escape" || event.key === "Esc") {
+          event.preventDefault();
+          finish();
+          resolve({ ok: false, cancelled: true });
+        }
+      };
+
+      controller = { cleanup: finish, resolve };
+      pickController = controller;
+      overlay.textContent = "点击要填入的位置（Esc 取消）";
+      document.addEventListener("mousemove", onMouseMove, true);
+      document.addEventListener("click", onClick, true);
+      document.addEventListener("keydown", onKeyDown, true);
+    });
+  }
+
   // —— 消息监听（真实环境） ——
   if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -1542,6 +1686,36 @@
         if (message.type === "SMART_FILL_SCAN") {
           const result = scan();
           sendResponse({ ok: true, ...result });
+        } else if (message.type === "SMART_FILL_FILL_FIELD") {
+          (async () => {
+            try {
+              const result = await fillFieldById(message, {
+                scanId: message.scanId,
+                documentFingerprint: message.documentFingerprint,
+                formFingerprint: message.formFingerprint,
+              });
+              sendResponse({ ok: true, ...result });
+            } catch (error) {
+              sendResponse({ ok: false, error: error.message || String(error), errorCode: error.code || "FILL_FAILED" });
+            }
+          })();
+          return true;
+        } else if (message.type === "SMART_FILL_PICK_START") {
+          (async () => {
+            try {
+              const value = String(message.value ?? "").trim();
+              if (!value) throw new Error("填充值为空");
+              const requestId = String(message.requestId || "");
+              sendResponse({ ok: true });
+              const result = await pickFill(value);
+              if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+                chrome.runtime.sendMessage({ type: "SMART_FILL_PICK_RESULT", requestId, ...result }).catch(() => {});
+              }
+            } catch (error) {
+              sendResponse({ ok: false, error: error.message || String(error), errorCode: error.code || "PICK_FAILED" });
+            }
+          })();
+          return true;
         } else if (message.type === "SMART_FILL_APPLY") {
           (async () => {
             try {
@@ -1591,6 +1765,6 @@
 
   // —— 测试 / 面板直连入口 ——
   if (typeof globalThis !== "undefined") {
-    globalThis.__hunterFill = { scan, apply, prepareRepeaters, highlight, reset };
+    globalThis.__hunterFill = { scan, apply, prepareRepeaters, highlight, reset, fillField: fillFieldById, pickFill };
   }
 })();

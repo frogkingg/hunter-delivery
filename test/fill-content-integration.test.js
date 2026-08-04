@@ -849,3 +849,87 @@ test("重复区块：显式准备按目标数量新增并返回重扫结果", as
   assert.ok(prepared.fields.some(field => field.attributes.id === "educations_1_schoolName"));
   dom.window.close();
 });
+
+// —— 点击字段填充（P1 任务5） ——
+test("点击填充：单字段按 fieldId 填充成功并回读一致", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const scan = engine.scan(dom.window.document);
+  const nameField = scan.fields.find(field => field.label === "姓名");
+  assert.ok(nameField, "夹具应包含姓名字段");
+  const result = await engine.fillField({ id: nameField.id, value: "李四" }, {
+    scanId: scan.scanId, documentFingerprint: scan.documentFingerprint, formFingerprint: scan.formFingerprint,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(dom.window.document.getElementById("name").value, "李四", "回读值应与填入值一致");
+  dom.window.close();
+});
+
+test("点击填充：stale fieldId 返回 STALE_FIELD", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const scan = engine.scan(dom.window.document);
+  await assert.rejects(
+    () => engine.fillField({ id: "not-exist" }, { scanId: scan.scanId }),
+    error => error.code === "STALE_FIELD"
+  );
+  dom.window.close();
+});
+
+test("点击填充：同一目标在同一批次内只填充一次（去重）", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const scan = engine.scan(dom.window.document);
+  const nameField = scan.fields.find(field => field.label === "姓名");
+  const results = await engine.apply([
+    { id: nameField.id, value: "李四", type: nameField.type, fingerprint: nameField.fingerprint },
+    { id: nameField.id, value: "李四", type: nameField.type, fingerprint: nameField.fingerprint },
+  ], { scanId: scan.scanId, documentFingerprint: scan.documentFingerprint, formFingerprint: scan.formFingerprint });
+  assert.equal(results.length, 2);
+  assert.ok(results.every(result => result.ok), "同目标重复项不得触发错误");
+  assert.equal(dom.window.document.getElementById("name").value, "李四");
+  dom.window.close();
+});
+
+test("点击填充：拾取态点击目标控件后填充并回读", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  engine.scan(dom.window.document);
+  const picking = engine.pickFill("李四");
+  const input = dom.window.document.getElementById("name");
+  input.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  const result = await picking;
+  assert.equal(result.ok, true);
+  assert.equal(input.value, "李四");
+  dom.window.close();
+});
+
+test("点击填充：Esc 取消拾取态且不写入", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  engine.scan(dom.window.document);
+  const input = dom.window.document.getElementById("name");
+  const picking = engine.pickFill("李四");
+  dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  const result = await picking;
+  assert.equal(result.cancelled, true);
+  assert.notEqual(input.value, "李四");
+  dom.window.close();
+});
+
+test("点击填充：点击非可填区域提示且不填充，拾取态保持", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  engine.scan(dom.window.document);
+  const input = dom.window.document.getElementById("name");
+  const picking = engine.pickFill("李四");
+  const heading = dom.window.document.querySelector("h1") || dom.window.document.body;
+  heading.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.notEqual(input.value, "李四", "点击非可填区域不得写入");
+  input.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  const result = await picking;
+  assert.equal(result.ok, true, "拾取态应保持到点击可填控件");
+  assert.equal(input.value, "李四");
+  dom.window.close();
+});
