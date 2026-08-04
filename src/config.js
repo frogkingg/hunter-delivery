@@ -1,5 +1,6 @@
 // 配置管理：setupConfig / persistConfig / allowApiOrigin / ensureAiConsent / 多简历管理。
-import { state, setConfig, setUploadedImages, setProfiles, setActiveProfileIndex, activeProfile, saveCurrentProfileFields } from "./state.js";
+import { state, setConfig, setUploadedImages, setProfiles, setActiveProfileIndex, activeProfile, saveCurrentProfileFields, setResumeFieldsDraft, setResumeFieldsDirty } from "./state.js";
+import { aggregateResumeFields } from "./resume-fields.js";
 import { $, send, toast } from "./chrome-helpers.js";
 import { handleError } from "./error-handler.js";
 import { escapeHtml, validateEndpoint } from "./pure-utils.js";
@@ -100,10 +101,21 @@ export function applyActiveProfile() {
   setUploadedImages(profile.resumeImages || []);
 }
 
+// 设置入口切换简历前，把智能填充资料编辑器中未保存的草稿聚合进源简历，
+// 避免用户在编辑器里改了姓名/经历后直接切换简历导致草稿丢失。
+function submitResumeFieldsDraft() {
+  const profile = activeProfile();
+  if (!profile || !state.resumeFieldsDirty || !state.resumeFieldsDraft) return;
+  profile.resumeFields = aggregateResumeFields(JSON.parse(JSON.stringify(state.resumeFieldsDraft)));
+  setResumeFieldsDraft(null, null);
+  setResumeFieldsDirty(false);
+}
+
 export async function switchProfile(index) {
   const max = state.profiles.length;
   if (index < 0 || index >= max) throw new Error("简历序号无效。");
   if (index === state.activeProfileIndex) return;
+  submitResumeFieldsDraft();
   saveCurrentProfileFields();
   setActiveProfileIndex(index);
   applyActiveProfile();
