@@ -24,6 +24,7 @@ import {
   startQueue,
 } from "./queue.js";
 import { renderSavedResumes, loadLibrary, loadQueue, switchGreeting } from "./render.js";
+import { initFillUi, refreshFillUi } from "./fill-ui.js";
 import { DEFAULT_GREETING_PROMPT, LEGACY_GREETING_PROMPT } from "./prompts.js";
 
 async function initConfig() {
@@ -147,6 +148,7 @@ function bindEvents() {
         renderProfileList("profileList");
         setupConfig();
         renderSavedResumes();
+        refreshFillUi();
         toast(`已删除简历"${name}"`);
       } catch (error) { toast(error.message); }
       return;
@@ -157,6 +159,7 @@ function bindEvents() {
       renderProfileList("profileList");
       setupConfig();
       renderSavedResumes();
+      refreshFillUi();
       toast(`已切换到"${state.profiles[index]?.name || "未命名"}"`);
     } catch (error) { toast(error.message); }
   });
@@ -169,6 +172,7 @@ function bindEvents() {
       try {
         await createProfile(name.trim());
         renderProfileList("profileList");
+        refreshFillUi();
         toast(`已创建简历"${name.trim()}"`);
       } catch (error) { toast(error.message); }
     };
@@ -219,4 +223,5 @@ document.addEventListener("DOMContentLoaded", async () => {
     chrome.storage.local.set({ darkMode: isDark }).catch(() => {});
   };
   loadQueue();
+  initFillUi();
 });
