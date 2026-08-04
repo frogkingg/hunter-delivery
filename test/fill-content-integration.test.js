@@ -363,7 +363,7 @@ test("字段身份不变量：DOM 同级插入后仍写入原字段，不按旧�
   dom.window.close();
 });
 
-test("复合控件不变量：日期范围两个 slot 分别写入各自 input", async () => {
+test("受控日期组件无可确认面板时不得直接写内部 input", async () => {
   const dom = new JSDOM(`<form>
     <div class="ant-form-item">
       <div class="ant-form-item-label"><label>项目时间</label></div>
@@ -383,8 +383,152 @@ test("复合控件不变量：日期范围两个 slot 分别写入各自 input",
     { id: scanned.fields[0].id, value: "2024-01", type: "custom-date", fingerprint: scanned.fields[0].fingerprint },
     { id: scanned.fields[1].id, value: "2024-12", type: "custom-date", fingerprint: scanned.fields[1].fingerprint },
   ], { delayMs: 0, scanId: scanned.scanId, documentFingerprint: scanned.documentFingerprint, formFingerprint: scanned.formFingerprint });
+  assert.equal(applied.every(result => !result.ok), true, JSON.stringify(applied));
+  assert.deepEqual([...dom.window.document.querySelectorAll(".ant-picker input")].map(input => input.value), ["", ""]);
+  assert.ok(applied.every(result => /未确认选择结果/.test(result.error)));
+  dom.window.close();
+});
+
+test("原生日期控件按目标精度写值，不再为 month 补 -01", async () => {
+  const dom = new JSDOM(`<form>
+    <label>入学月份<input id="month" type="month"></label>
+    <label>出生日期<input id="date" type="date"></label>
+  </form>`, { url: "https://x.com/native-date-types", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const scanned = engine.scan(dom.window.document);
+  const month = scanned.fields.find(field => field.attributes.id === "month");
+  const date = scanned.fields.find(field => field.attributes.id === "date");
+  assert.equal(month.dateMeta.nativeType, "month");
+  assert.equal(date.dateMeta.nativeType, "date");
+
+  const applied = await engine.apply([
+    { id: month.id, value: "2024-01", type: month.type, fingerprint: month.fingerprint },
+    { id: date.id, value: "1998-06-15", type: date.type, fingerprint: date.fingerprint },
+  ], { delayMs: 0, scanId: scanned.scanId, documentFingerprint: scanned.documentFingerprint, formFingerprint: scanned.formFingerprint });
   assert.equal(applied.every(result => result.ok), true, JSON.stringify(applied));
-  assert.deepEqual([...dom.window.document.querySelectorAll(".ant-picker input")].map(input => input.value), ["2024-01", "2024-12"]);
+  assert.equal(dom.window.document.getElementById("month").value, "2024-01");
+  assert.equal(dom.window.document.getElementById("date").value, "1998-06-15");
+  dom.window.close();
+});
+
+test("原生 date 缺少日精度时明确失败且不编造日期", async () => {
+  const dom = new JSDOM(`<form><label>出生日期<input id="date" type="date"></label></form>`, {
+    url: "https://x.com/native-date-precision",
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const scanned = engine.scan(dom.window.document);
+  const field = scanned.fields[0];
+  const applied = await engine.apply([
+    { id: field.id, value: "1998-06", type: field.type, fingerprint: field.fingerprint },
+  ], { delayMs: 0, scanId: scanned.scanId, documentFingerprint: scanned.documentFingerprint, formFingerprint: scanned.formFingerprint });
+  assert.equal(applied[0].ok, false);
+  assert.match(applied[0].error, /日期精度/);
+  assert.equal(dom.window.document.getElementById("date").value, "");
+  dom.window.close();
+});
+
+test("Ant 月份选择需经确认按钮提交并稳定回读", async () => {
+  const dom = new JSDOM(`<form>
+    <div class="ant-picker ant-picker-month need-confirm"><input id="month" placeholder="选择月份"></div>
+  </form>`, { url: "https://x.com/month-confirm", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const input = doc.getElementById("month");
+  let pending = "";
+  input.addEventListener("click", () => {
+    if (doc.querySelector(".ant-picker-dropdown")) return;
+    const dropdown = doc.createElement("div");
+    dropdown.className = "ant-picker-dropdown";
+    dropdown.innerHTML = `<table><tbody><tr><td title="2026-08"><div class="ant-picker-cell-inner">8月</div></td></tr></tbody></table>
+      <div class="ant-picker-ok"><button type="button">确定</button></div>`;
+    doc.body.appendChild(dropdown);
+    dropdown.querySelector("td").addEventListener("click", () => { pending = "2026-08"; });
+    dropdown.querySelector("button").addEventListener("click", () => {
+      input.value = pending;
+      dropdown.remove();
+    });
+  });
+  const scanned = engine.scan(doc);
+  const field = scanned.fields[0];
+  const applied = await engine.apply([
+    { id: field.id, value: "2026-08", type: field.type, fingerprint: field.fingerprint },
+  ], { delayMs: 0, scanId: scanned.scanId, documentFingerprint: scanned.documentFingerprint, formFingerprint: scanned.formFingerprint });
+  assert.equal(applied[0].ok, true, JSON.stringify(applied[0]));
+  assert.equal(input.value, "2026-08");
+  dom.window.close();
+});
+
+test("Ant 日期面板支持同一年跨月导航", async () => {
+  const dom = new JSDOM(`<form><div class="ant-picker"><input id="date" placeholder="选择日期"></div></form>`, {
+    url: "https://x.com/date-navigation",
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const input = doc.getElementById("date");
+  input.addEventListener("click", () => {
+    if (doc.querySelector(".ant-picker-dropdown")) return;
+    const dropdown = doc.createElement("div");
+    dropdown.className = "ant-picker-dropdown";
+    dropdown.innerHTML = `<button class="ant-picker-header-next-btn">下月</button>
+      <table><tbody><tr><td title="2026-06-15"><div class="ant-picker-cell-inner">15</div></td></tr></tbody></table>`;
+    doc.body.appendChild(dropdown);
+    dropdown.querySelector("button").addEventListener("click", () => {
+      dropdown.querySelector("tbody").innerHTML = `<tr><td title="2026-08-20"><div class="ant-picker-cell-inner">20</div></td></tr>`;
+      dropdown.querySelector("td").addEventListener("click", () => {
+        input.value = "2026-08-20";
+        dropdown.remove();
+      });
+    });
+  });
+  const scanned = engine.scan(doc);
+  const field = scanned.fields[0];
+  const applied = await engine.apply([
+    { id: field.id, value: "2026-08-20", type: field.type, fingerprint: field.fingerprint },
+  ], { delayMs: 0, scanId: scanned.scanId, documentFingerprint: scanned.documentFingerprint, formFingerprint: scanned.formFingerprint });
+  assert.equal(applied[0].ok, true, JSON.stringify(applied[0]));
+  assert.equal(input.value, "2026-08-20");
+  dom.window.close();
+});
+
+test("Element 月份面板可按表头年份与月份文本提交", async () => {
+  const dom = new JSDOM(`<form><div class="el-date-editor el-date-editor--month"><input id="month" placeholder="选择月份"></div></form>`, {
+    url: "https://x.com/element-month",
+    runScripts: "outside-only",
+    pretendToBeVisual: true,
+  });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const input = doc.getElementById("month");
+  input.addEventListener("click", () => {
+    if (doc.querySelector(".el-picker-panel")) return;
+    const panel = doc.createElement("div");
+    panel.className = "el-picker-panel";
+    panel.innerHTML = `<div class="el-date-picker__header">2026年</div>
+      <table class="el-month-table"><tbody><tr><td><span class="cell">8月</span></td></tr></tbody></table>`;
+    doc.body.appendChild(panel);
+    panel.querySelector("td").addEventListener("click", () => {
+      input.value = "2026-08";
+      panel.remove();
+    });
+  });
+  const scanned = engine.scan(doc);
+  const field = scanned.fields[0];
+  assert.equal(field.dateMeta.framework, "element");
+  assert.equal(field.dateMeta.mode, "month");
+  const applied = await engine.apply([
+    { id: field.id, value: "2026-08", type: field.type, fingerprint: field.fingerprint },
+  ], { delayMs: 0, scanId: scanned.scanId, documentFingerprint: scanned.documentFingerprint, formFingerprint: scanned.formFingerprint });
+  assert.equal(applied[0].ok, true, JSON.stringify(applied[0]));
+  assert.equal(input.value, "2026-08");
   dom.window.close();
 });
 
@@ -703,5 +847,205 @@ test("重复区块：显式准备按目标数量新增并返回重扫结果", as
   assert.equal(doc.querySelectorAll(".education-card").length, 2);
   assert.equal(prepared.repeaters.find(item => item.arrayKey === "education").currentCount, 2);
   assert.ok(prepared.fields.some(field => field.attributes.id === "educations_1_schoolName"));
+  dom.window.close();
+});
+
+// —— 点击字段填充（P1 任务5） ——
+test("点击填充：单字段按 fieldId 填充成功并回读一致", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const scan = engine.scan(dom.window.document);
+  const nameField = scan.fields.find(field => field.label === "姓名");
+  assert.ok(nameField, "夹具应包含姓名字段");
+  const result = await engine.fillField({ id: nameField.id, value: "李四" }, {
+    scanId: scan.scanId, documentFingerprint: scan.documentFingerprint, formFingerprint: scan.formFingerprint,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(dom.window.document.getElementById("name").value, "李四", "回读值应与填入值一致");
+  dom.window.close();
+});
+
+test("点击填充：stale fieldId 返回 STALE_FIELD", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const scan = engine.scan(dom.window.document);
+  await assert.rejects(
+    () => engine.fillField({ id: "not-exist" }, { scanId: scan.scanId }),
+    error => error.code === "STALE_FIELD"
+  );
+  dom.window.close();
+});
+
+test("点击填充：同一 fieldId 批次内重复提交幂等成功且只写入一次", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const scan = engine.scan(dom.window.document);
+  const nameField = scan.fields.find(field => field.label === "姓名");
+  const results = await engine.apply([
+    { id: nameField.id, value: "李四", type: nameField.type, fingerprint: nameField.fingerprint },
+    { id: nameField.id, value: "李四", type: nameField.type, fingerprint: nameField.fingerprint },
+  ], { scanId: scan.scanId, documentFingerprint: scan.documentFingerprint, formFingerprint: scan.formFingerprint });
+  assert.equal(results.length, 2);
+  assert.ok(results.every(result => result.ok), "同目标重复项不得触发错误");
+  assert.equal(dom.window.document.getElementById("name").value, "李四");
+  dom.window.close();
+});
+
+test("点击填充：拾取态点击目标控件后填充并回读", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  engine.scan(dom.window.document);
+  const picking = engine.pickFill("李四");
+  const input = dom.window.document.getElementById("name");
+  input.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  const result = await picking;
+  assert.equal(result.ok, true);
+  assert.equal(input.value, "李四");
+  dom.window.close();
+});
+
+test("点击填充：Esc 取消拾取态且不写入", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  engine.scan(dom.window.document);
+  const input = dom.window.document.getElementById("name");
+  const picking = engine.pickFill("李四");
+  dom.window.document.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  const result = await picking;
+  assert.equal(result.cancelled, true);
+  assert.notEqual(input.value, "李四");
+  dom.window.close();
+});
+
+test("点击填充：点击非可填区域提示且不填充，拾取态保持", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  engine.scan(dom.window.document);
+  const input = dom.window.document.getElementById("name");
+  const picking = engine.pickFill("李四");
+  const heading = dom.window.document.querySelector("h1") || dom.window.document.body;
+  heading.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.notEqual(input.value, "李四", "点击非可填区域不得写入");
+  input.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  const result = await picking;
+  assert.equal(result.ok, true, "拾取态应保持到点击可填控件");
+  assert.equal(input.value, "李四");
+  dom.window.close();
+});
+
+// —— 增量续填（P1 任务6） ——
+test("增量续填：扫描标记已见字段，onlyNew 仅返回新增字段", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const initial = engine.scan(doc);
+  assert.ok(initial.fields.length >= 5, "初始应有多个字段");
+  const card = doc.createElement("div");
+  card.className = "ant-form-item";
+  card.innerHTML = '<div class="ant-form-item-label"><label for="newSchool">新增学校</label></div><div class="ant-form-item-control"><input id="newSchool" type="text"></div>';
+  doc.body.appendChild(card);
+  const onlyNew = engine.scan(doc, { onlyUnprocessed: true });
+  assert.ok(onlyNew.fields.some(field => field.attributes?.id === "newSchool"), "新增字段应包含在 onlyNew 结果中");
+  assert.ok(!onlyNew.fields.some(field => field.attributes?.id === "name"), "已见字段不得出现在 onlyNew 结果中");
+  dom.window.close();
+});
+
+test("增量续填：无新增字段时 onlyNew 返回空", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  engine.scan(doc);
+  const onlyNew = engine.scan(doc, { onlyUnprocessed: true });
+  assert.equal(onlyNew.fields.length, 0, "无新增字段时 onlyNew 应为空");
+  dom.window.close();
+});
+
+test("增量续填：watch 检测到新增字段并触发回调，停止后不再触发", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  engine.scan(doc);
+  const found = [];
+  engine.startWatch({ threshold: 1, onFound: count => found.push(count) });
+  const form = doc.getElementById("applyForm");
+  const card = doc.createElement("div");
+  card.className = "ant-form-item";
+  card.innerHTML = '<div class="ant-form-item-label"><label for="newA">新增字段A</label></div><div class="ant-form-item-control"><input id="newA" type="text"></div>';
+  form.appendChild(card);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(found.length, 1, "应触发一次回调");
+  assert.ok(found[0] >= 1);
+  engine.stopWatch();
+  const card2 = doc.createElement("div");
+  card2.className = "ant-form-item";
+  card2.innerHTML = '<div class="ant-form-item-label"><label for="newB">新增字段B</label></div><div class="ant-form-item-control"><input id="newB" type="text"></div>';
+  form.appendChild(card2);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(found.length, 1, "停止后不再触发");
+  dom.window.close();
+});
+
+test("增量续填：onlyNew 新增字段可单独填充", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  engine.scan(doc);
+  const card = doc.createElement("div");
+  card.className = "ant-form-item";
+  card.innerHTML = '<div class="ant-form-item-label"><label for="newSchool">新增学校</label></div><div class="ant-form-item-control"><input id="newSchool" type="text"></div>';
+  doc.body.appendChild(card);
+  const onlyNew = engine.scan(doc, { onlyUnprocessed: true });
+  const schoolField = onlyNew.fields.find(field => field.attributes?.id === "newSchool");
+  assert.ok(schoolField, "应识别新增学校字段");
+  const result = await engine.fillField({ id: schoolField.id, value: "香港大学" }, {
+    scanId: onlyNew.scanId, documentFingerprint: onlyNew.documentFingerprint, formFingerprint: onlyNew.formFingerprint,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(doc.getElementById("newSchool").value, "香港大学");
+  dom.window.close();
+});
+
+test("增量续填：watch 触发后 onlyNew 仍能返回新增字段（dryRun 不打标）", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const form = doc.getElementById("applyForm");
+  engine.scan(doc);
+  const found = [];
+  engine.startWatch({ threshold: 4, onFound: count => found.push(count) });
+  for (let i = 0; i < 4; i++) {
+    const card = doc.createElement("div");
+    card.className = "ant-form-item";
+    card.innerHTML = `<div class="ant-form-item-label"><label for="nb${i}">新字段${i}</label></div><div class="ant-form-item-control"><input id="nb${i}" type="text"></div>`;
+    form.appendChild(card);
+  }
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(found.length, 1, "应触发一次回调");
+  const onlyNew = engine.scan(doc, { onlyUnprocessed: true });
+  assert.ok(onlyNew.fields.length >= 4, `dryRun 不得打标新增字段，onlyNew 应为 ${found[0]} 个而非 0，实际 ${onlyNew.fields.length}`);
+  dom.window.close();
+});
+
+test("点击填充：重复进入拾取态后旧监听器不残留（Esc 后点击不写旧值）", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  engine.scan(doc);
+  const input = doc.getElementById("name");
+  const p1 = engine.pickFill("旧值");
+  const p2 = engine.pickFill("新值");
+  doc.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  await new Promise(resolve => setTimeout(resolve, 30));
+  let pageClickFired = false;
+  input.addEventListener("click", () => { pageClickFired = true; });
+  input.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  await new Promise(resolve => setTimeout(resolve, 50));
+  const r1 = await p1;
+  const r2 = await p2;
+  assert.equal(r1.ok, false);
+  assert.equal(r2.cancelled, true);
+  assert.notEqual(input.value, "旧值", "旧拾取监听器不得残留并写入旧值");
+  assert.equal(pageClickFired, true, "取消后页面点击不应被吞掉");
   dom.window.close();
 });

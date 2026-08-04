@@ -23,6 +23,11 @@ export const state = {
   fillFailedIds: [],
   fillAiEnabled: true,
   fillTemplateEnabled: true,
+  fillAutoMode: true,
+  fillContinueRounds: 0,
+  resumeFieldsDraft: null,
+  resumeFieldsDraftProfile: null,
+  resumeFieldsDirty: false,
 };
 
 // —— State Actions（集中管理状态写入） ——
@@ -33,7 +38,12 @@ export function setUploadedImages(images) { state.uploadedImages = images; }
 export function setJobPromptOverride(prompt) { state.jobPromptOverride = prompt; }
 export function setQueuePollTimer(timer) { state.queuePollTimer = timer; }
 export function setQueueWasRunning(running) { state.queueWasRunning = running; }
-export function setProfiles(profiles) { state.profiles = profiles; }
+export function setProfiles(profiles) {
+  state.profiles = profiles;
+  state.resumeFieldsDraft = null;
+  state.resumeFieldsDraftProfile = null;
+  state.resumeFieldsDirty = false;
+}
 export function setActiveProfileIndex(index) { state.activeProfileIndex = index; }
 
 export function setFillScanFields(fields) { state.fillScanFields = fields; }
@@ -46,6 +56,13 @@ export function setFillValues(values) { state.fillValues = values; }
 export function setFillFailedIds(ids) { state.fillFailedIds = ids; }
 export function setFillAiEnabled(value) { state.fillAiEnabled = value; }
 export function setFillTemplateEnabled(value) { state.fillTemplateEnabled = value; }
+export function setFillAutoMode(value) { state.fillAutoMode = !!value; }
+export function setFillContinueRounds(value) { state.fillContinueRounds = Math.max(0, Number(value) || 0); }
+export function setResumeFieldsDraft(value, profile = activeProfile()) {
+  state.resumeFieldsDraft = value;
+  state.resumeFieldsDraftProfile = profile;
+}
+export function setResumeFieldsDirty(value) { state.resumeFieldsDirty = !!value; }
 
 export function activeProfile() { return state.profiles[state.activeProfileIndex] || null; }
 export function saveCurrentProfileFields() {

@@ -44,6 +44,21 @@
     return `h${(hash >>> 0).toString(16).padStart(8, "0")}`;
   };
 
+  // 增量续填：已见字段标记。初始扫描与每次填充都会打标，onlyNew 扫描据此排除旧字段。
+  const PROCESSED_ATTR = "data-hunter-seen";
+  function markElementProcessed(el) {
+    if (!el || typeof el.setAttribute !== "function") return;
+    const custom = typeof el.closest === "function" ? el.closest(".ant-select, .el-select, .ant-picker, .el-date-editor") : null;
+    const root = custom || el;
+    try { root.setAttribute(PROCESSED_ATTR, "1"); } catch (_) {}
+  }
+  function isElementProcessed(el) {
+    if (!el) return false;
+    if (el.getAttribute && el.getAttribute(PROCESSED_ATTR)) return true;
+    const custom = typeof el.closest === "function" ? el.closest(".ant-select, .el-select, .ant-picker, .el-date-editor") : null;
+    return !!(custom && custom.getAttribute && custom.getAttribute(PROCESSED_ATTR));
+  }
+
   function prepareDocumentIndexes(doc) {
     indexedDocument = doc;
     labelForIndex = new Map();
@@ -507,6 +522,43 @@
     return { type: "text", skipped: true };
   }
 
+  function dateMetaForNative(el) {
+    const nativeType = String(el?.type || "date").toLowerCase();
+    return {
+      framework: "native",
+      nativeType,
+      mode: nativeType === "datetime-local" ? "datetime" : nativeType,
+      requiresConfirm: false,
+    };
+  }
+
+  function dateMetaForCustom(container, target) {
+    const className = `${container?.className || ""} ${target?.className || ""}`.toLowerCase();
+    const semantic = [
+      className,
+      target?.getAttribute?.("placeholder"),
+      target?.getAttribute?.("aria-label"),
+      container?.getAttribute?.("data-type"),
+      container?.getAttribute?.("data-picker"),
+    ].filter(Boolean).join(" ").toLowerCase();
+    const framework = /ant-picker/.test(className)
+      ? "antd"
+      : /el-date-editor/.test(className) ? "element" : "generic";
+    const mode = /datetime|日期时间/.test(semantic)
+      ? "datetime"
+      : /(?:^|[-_\s])time(?:$|[-_\s])|时间选择/.test(semantic)
+        ? "time"
+        : /month|月份|年月/.test(semantic)
+          ? "month"
+          : /year|年份|年度/.test(semantic) ? "year" : "date";
+    return {
+      framework,
+      nativeType: "",
+      mode,
+      requiresConfirm: /need-confirm|show-time|confirm/.test(semantic),
+    };
+  }
+
   function optionText(el) {
     if (!el) return "";
     const wrap = el.closest("label");
@@ -518,7 +570,7 @@
   }
 
   // —— 扫描 ——
-  function scan(doc) {
+  function scan(doc, scanOptions = {}) {
     const root = doc || (typeof document !== "undefined" ? document : null);
     if (!root) return { fields: [], page: null };
     prepareDocumentIndexes(root);
@@ -532,7 +584,11 @@
       fieldId, type, target, labelInfo, options = [], value = "", skipped = false,
       kind = "native", group = null, container = null, adapter = "native", slot = "single",
       required = isRequired(target), semanticHint = "", optionsComplete = false, contextOverride = null,
+      dateMeta = null,
     }) => {
+      const markRoot = container || target;
+      if (scanOptions.onlyUnprocessed && isElementProcessed(markRoot)) return;
+      if (!scanOptions.dryRun) markElementProcessed(markRoot);
       const context = { ...fieldContext(target), ...(contextOverride || {}) };
       const evidence = collectEvidence(target, labelInfo, context, semanticHint);
       const attributes = semanticAttributes(target);
@@ -557,6 +613,7 @@
         attributes,
         adapter,
         slot,
+        dateMeta,
         semanticHint,
         locators,
       };
@@ -571,6 +628,7 @@
         type,
         adapter,
         slot,
+        dateMeta,
         fingerprint,
       });
       fields.push(descriptor);
@@ -655,6 +713,7 @@
           container,
           adapter: targets.length > 1 ? "date-range" : "custom-date",
           slot,
+          dateMeta: dateMetaForCustom(container, target),
           semanticHint,
           contextOverride: sharedRepeat ? { repeat: fieldContext(target).repeat || sharedRepeat } : null,
         });
@@ -744,6 +803,7 @@
           : isCompoundMain ? "compound-value"
           : String(el.tagName).toLowerCase() === "select" ? "native-select" : "native-input",
         slot: isPhoneMain || isCompoundMain ? "main" : "single",
+        dateMeta: classified.type === "date" ? dateMetaForNative(el) : null,
         semanticHint: isCompoundMain ? `${compoundGroup.labelInfo.text}账号` : "",
       });
     }
@@ -764,16 +824,18 @@
     const fingerprintCounts = new Map();
     for (const field of fields) fingerprintCounts.set(field.fingerprint, (fingerprintCounts.get(field.fingerprint) || 0) + 1);
     for (const entry of registry.values()) entry.fingerprintMultiplicity = fingerprintCounts.get(entry.fingerprint) || 1;
-    elementRegistry = registry;
-    scanSession = {
-      scanId,
-      documentFingerprint,
-      formFingerprint,
-      url: page?.url || "",
-      dirty: false,
-      formRoots: [...new Set([...registry.values()].map(entry => entry.el.closest && entry.el.closest("form")).filter(Boolean))],
-    };
-    installStructureObserver(root);
+    if (!scanOptions.dryRun) {
+      elementRegistry = registry;
+      scanSession = {
+        scanId,
+        documentFingerprint,
+        formFingerprint,
+        url: page?.url || "",
+        dirty: false,
+        formRoots: [...new Set([...registry.values()].map(entry => entry.el.closest && entry.el.closest("form")).filter(Boolean))],
+      };
+      installStructureObserver(root);
+    }
     return { engineVersion: ENGINE_VERSION, fields, repeaters, page, scanId, documentFingerprint, formFingerprint };
   }
 
@@ -922,6 +984,12 @@
 
   function normalizeDateCompare(value) {
     const text = String(value || "").trim();
+    if (/^\d{4}$/.test(text)) return text;
+    const dateTime = text.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (dateTime) {
+      return `${dateTime[1]}-${dateTime[2]}-${dateTime[3]}T${dateTime[4]}:${dateTime[5]}${dateTime[6] ? `:${dateTime[6]}` : ""}`;
+    }
+    if (/^\d{2}:\d{2}(?::\d{2})?$/.test(text)) return text;
     let match = text.match(/^(\d{4})[-/.年](\d{1,2})(?:[-/.月](\d{1,2})日?)?$/);
     if (match) {
       const normalized = `${match[1]}-${String(match[2]).padStart(2, "0")}`;
@@ -930,6 +998,37 @@
     match = text.match(/^(\d{1,2})[-/.](\d{4})$/);
     if (match) return `${match[2]}-${String(match[1]).padStart(2, "0")}`;
     return normalizeCompare(text);
+  }
+
+  function dateParts(value) {
+    const normalized = normalizeDateCompare(value);
+    let match = normalized.match(/^(\d{4})$/);
+    if (match) return { normalized, precision: "year", year: Number(match[1]) };
+    match = normalized.match(/^(\d{4})-(\d{2})$/);
+    if (match) return { normalized, precision: "month", year: Number(match[1]), month: Number(match[2]) };
+    match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (match) return {
+      normalized,
+      precision: "day",
+      year: Number(match[1]),
+      month: Number(match[2]),
+      day: Number(match[3]),
+    };
+    match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/);
+    if (match) return { normalized, precision: "datetime", year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) };
+    if (/^\d{2}:\d{2}(?::\d{2})?$/.test(normalized)) return { normalized, precision: "time" };
+    return null;
+  }
+
+  function valueForNativeDate(input, value) {
+    const nativeType = String(input?.type || "date").toLowerCase();
+    const parts = dateParts(value);
+    if (!parts) return "";
+    if (nativeType === "month") return ["month", "day", "datetime"].includes(parts.precision) ? parts.normalized.slice(0, 7) : "";
+    if (nativeType === "date") return ["day", "datetime"].includes(parts.precision) ? parts.normalized.slice(0, 10) : "";
+    if (nativeType === "datetime-local") return parts.precision === "datetime" ? parts.normalized : "";
+    if (nativeType === "time") return parts.precision === "time" ? parts.normalized : "";
+    return "";
   }
 
   // 自定义下拉兜底：写入内部 input 后，仅当容器展示值反映所选值才算成功。
@@ -1013,51 +1112,175 @@
     return applyCustomInputFallback(container, value);
   }
 
-  function visiblePickerDropdown(doc) {
+  function visiblePickerDropdown(doc, entry) {
+    const linkedIds = new Set();
+    for (const node of [entry?.el, entry?.container, ...Array.from(entry?.container?.querySelectorAll?.("[aria-controls], [aria-owns]") || [])]) {
+      const ids = `${node?.getAttribute?.("aria-controls") || ""} ${node?.getAttribute?.("aria-owns") || ""}`.trim();
+      ids.split(/\s+/).filter(Boolean).forEach(id => linkedIds.add(id));
+    }
+    const linked = [...linkedIds].map(id => doc.getElementById(id)).filter(Boolean)
+      .map(node => node.closest?.(".ant-picker-dropdown, .el-picker-panel") || node)
+      .filter(node => isVisible(node) && !node.classList?.contains("ant-picker-dropdown-hidden"));
+    if (linked.length === 1) return linked[0];
     const visible = Array.from(doc.querySelectorAll(".ant-picker-dropdown, .el-picker-panel"))
       .filter(dropdown => !dropdown.classList.contains("ant-picker-dropdown-hidden") && isVisible(dropdown));
-    return visible[visible.length - 1] || null;
+    return visible.length === 1 ? visible[0] : null;
+  }
+
+  function pickerMode(entry, dropdown) {
+    const configured = entry?.dateMeta?.mode || "date";
+    if (configured !== "date") return configured;
+    if (dropdown?.querySelector(".ant-picker-year-panel, .el-year-table")) return "year";
+    if (dropdown?.querySelector(".ant-picker-month-panel, .el-month-table")) return "month";
+    const precisions = Array.from(dropdown?.querySelectorAll("td[title], [data-value], [data-date]") || [])
+      .flatMap(cell => pickerDateTokens(pickerCellValue(cell)))
+      .map(value => dateParts(value)?.precision)
+      .filter(Boolean);
+    if (precisions.length && precisions.every(precision => precision === "year")) return "year";
+    if (precisions.length && precisions.every(precision => precision === "month")) return "month";
+    return "date";
+  }
+
+  function pickerCellValue(cell) {
+    return [
+      cell.getAttribute?.("title"),
+      cell.getAttribute?.("data-value"),
+      cell.getAttribute?.("data-date"),
+      cell.getAttribute?.("aria-label"),
+    ].filter(Boolean).join(" ");
+  }
+
+  function pickerDateTokens(value) {
+    const text = String(value || "");
+    const tokens = text.match(/\d{4}(?:[-/.]\d{1,2}(?:[-/.]\d{1,2})?)?|\d{1,2}[-/.]\d{4}/g) || [];
+    return tokens.length ? tokens : [text];
+  }
+
+  function findPickerCell(dropdown, expected, mode) {
+    const candidates = Array.from(dropdown.querySelectorAll(
+      "td[title], [data-value], [data-date], td[aria-label], .el-month-table td, .el-year-table td, .el-date-table td"
+    )).filter(isVisible);
+    const exact = candidates.find(cell => {
+      return pickerDateTokens(pickerCellValue(cell)).some(value => {
+        const normalized = normalizeDateCompare(value);
+        if (mode === "year") return normalized.slice(0, 4) === expected;
+        if (mode === "month") return normalized.slice(0, 7) === expected;
+        return normalized === expected;
+      });
+    });
+    if (exact) return exact;
+    const header = cleanText(dropdown.querySelector(".ant-picker-header-view, .el-date-picker__header, .el-picker-panel__content"));
+    const parts = dateParts(expected);
+    if (!parts || !header.includes(String(parts.year))) return null;
+    return candidates.find(cell => {
+      if (cell.classList.contains("prev-month") || cell.classList.contains("next-month")) return false;
+      const text = cleanText(cell.querySelector(".cell, .el-date-table-cell__text, .ant-picker-cell-inner") || cell);
+      if (mode === "year") return Number(text.replace(/\D/g, "")) === parts.year;
+      if (mode === "month") return Number(text.replace(/\D/g, "")) === parts.month;
+      return Number(text.replace(/\D/g, "")) === parts.day;
+    }) || null;
+  }
+
+  function pickerNavigation(dropdown, expected, mode) {
+    const target = dateParts(expected);
+    if (!target) return null;
+    const values = Array.from(dropdown.querySelectorAll("td[title], [data-value], [data-date]"))
+      .flatMap(cell => pickerDateTokens(pickerCellValue(cell)))
+      .map(value => dateParts(value))
+      .filter(Boolean);
+    if (!values.length) return null;
+    const key = parts => mode === "year"
+      ? parts.year
+      : mode === "month" ? parts.year * 12 + (parts.month || 1) : parts.year * 372 + (parts.month || 1) * 31 + (parts.day || 1);
+    const targetKey = key(target);
+    const keys = values.map(key);
+    const backwards = targetKey < Math.min(...keys);
+    const forwards = targetKey > Math.max(...keys);
+    if (!backwards && !forwards) return null;
+    const selector = mode === "date"
+      ? (backwards
+        ? ".ant-picker-header-prev-btn, .el-picker-panel__icon-btn.arrow-left"
+        : ".ant-picker-header-next-btn, .el-picker-panel__icon-btn.arrow-right")
+      : (backwards
+        ? ".ant-picker-header-super-prev-btn, .el-picker-panel__icon-btn.d-arrow-left, .el-icon-d-arrow-left"
+        : ".ant-picker-header-super-next-btn, .el-picker-panel__icon-btn.d-arrow-right, .el-icon-d-arrow-right");
+    return dropdown.querySelector(selector);
+  }
+
+  function clickPickerConfirm(dropdown) {
+    const buttons = Array.from(dropdown.querySelectorAll(".ant-picker-ok button, .el-picker-panel__footer button, button"));
+    const confirm = buttons.find(button =>
+      !button.disabled
+      && isVisible(button)
+      && /^(确定|确认|ok)$/i.test(cleanText(button))
+    );
+    if (confirm) triggerAction(confirm);
+  }
+
+  function dateValueMatches(actual, expected, mode) {
+    const left = normalizeDateCompare(actual);
+    const right = normalizeDateCompare(expected);
+    if (!left || !right) return false;
+    if (mode === "year") return left.slice(0, 4) === right.slice(0, 4);
+    if (mode === "month") return left.slice(0, 7) === right.slice(0, 7);
+    return left === right;
+  }
+
+  async function waitForStableDateValue(input, expected, mode, timeoutMs = 700) {
+    const deadline = Date.now() + timeoutMs;
+    let consecutive = 0;
+    while (Date.now() < deadline) {
+      await sleep(50);
+      if (dateValueMatches(input.value, expected, mode)) {
+        consecutive += 1;
+        if (consecutive >= 3) return true;
+      } else {
+        consecutive = 0;
+      }
+    }
+    return false;
   }
 
   async function applyPickerValue(entry, value) {
     const input = entry.el;
     const doc = input.ownerDocument;
+    const parts = dateParts(value);
+    if (!parts) throw new Error("日期格式无效，请手动选择");
     // 即使已有其他日期弹层，也必须先聚焦当前 slot，避免把结束月写到开始端。
     triggerAction(input);
     await sleep(80);
-    let dropdown = visiblePickerDropdown(doc);
+    let dropdown = visiblePickerDropdown(doc, entry);
     const deadline = Date.now() + 1000;
     while (!dropdown && Date.now() < deadline) {
       await sleep(80);
-      dropdown = visiblePickerDropdown(doc);
+      dropdown = visiblePickerDropdown(doc, entry);
     }
     if (!dropdown) return null;
-    const expected = normalizeDateCompare(value);
-    const targetYear = Number(expected.slice(0, 4));
-    for (let attempt = 0; attempt < 30; attempt++) {
-      dropdown = visiblePickerDropdown(doc);
+    const mode = pickerMode(entry, dropdown);
+    if (mode === "date" && !["day", "datetime"].includes(parts.precision)) {
+      throw new Error("页面要求具体日期，但简历仅包含年月，请手动选择");
+    }
+    if (mode === "datetime" && parts.precision !== "datetime") {
+      throw new Error("页面要求日期和时间，简历信息精度不足，请手动选择");
+    }
+    if (mode === "time" && parts.precision !== "time") {
+      throw new Error("页面要求具体时间，简历信息精度不足，请手动选择");
+    }
+    const expected = mode === "year"
+      ? parts.normalized.slice(0, 4)
+      : mode === "month" ? parts.normalized.slice(0, 7) : parts.normalized;
+    for (let attempt = 0; attempt < 48; attempt++) {
+      dropdown = visiblePickerDropdown(doc, entry);
       if (!dropdown) break;
-      const cell = Array.from(dropdown.querySelectorAll("td[title]"))
-        .find(item => normalizeDateCompare(item.getAttribute("title")) === expected);
+      const cell = findPickerCell(dropdown, expected, mode);
       if (cell) {
         triggerAction(cell.querySelector(".ant-picker-cell-inner") || cell);
-        await sleep(120);
-        if (normalizeDateCompare(input.value) === expected) return { ok: true, via: "picker" };
+        await sleep(80);
+        clickPickerConfirm(dropdown);
+        if (await waitForStableDateValue(input, expected, mode)) return { ok: true, via: "picker" };
         return null;
       }
-      const years = Array.from(dropdown.querySelectorAll("td[title]"))
-        .map(item => Number(String(item.getAttribute("title") || "").slice(0, 4)))
-        .filter(Number.isFinite);
-      if (!years.length || !Number.isFinite(targetYear)) break;
-      const minYear = Math.min(...years);
-      const maxYear = Math.max(...years);
-      const selector = targetYear < minYear
-        ? ".ant-picker-header-super-prev-btn, .el-icon-d-arrow-left"
-        : targetYear > maxYear
-          ? ".ant-picker-header-super-next-btn, .el-icon-d-arrow-right"
-          : "";
-      if (!selector) break;
-      const navigation = dropdown.querySelector(selector);
+      const navigation = pickerNavigation(dropdown, expected, mode);
       if (!navigation) break;
       triggerAction(navigation);
       await sleep(100);
@@ -1208,12 +1431,7 @@
       if (type === "custom-select") return applyCustomSelect(activeEntry, value);
       const pickerResult = await applyPickerValue(activeEntry, value);
       if (pickerResult) return pickerResult;
-      const input = /^(input|textarea)$/i.test(el.tagName) ? el : container.querySelector("input");
-      if (!input) throw new Error("自定义控件无输入框");
-      setNativeValue(input, value);
-      dispatchInput(input);
-      if (!verifyValue(input, type, value)) throw new Error("回读校验失败");
-      return { ok: true, via: "input" };
+      throw new Error("日期组件未确认选择结果，请手动选择");
     }
     if (type === "checkbox") return applyCheckbox(el, value);
     if (type === "select") {
@@ -1228,7 +1446,10 @@
       if (String(el.value || "") !== String(target.value)) throw new Error("选项未找到");
       return { ok: true };
     }
-    const finalValue = type === "date" && /^\d{4}-\d{2}$/.test(value) ? `${value}-01` : value;
+    const finalValue = type === "date" ? valueForNativeDate(el, value) : value;
+    if (type === "date" && !finalValue) {
+      throw new Error("日期精度与页面控件不匹配，请手动选择");
+    }
     setNativeValue(el, finalValue);
     dispatchInput(el);
     if (!verifyValue(el, type, finalValue)) throw new Error("回读校验失败");
@@ -1257,6 +1478,7 @@
         item.ok = true;
         item.resolvedFingerprint = verifiedTarget ? entryFingerprint(entry, verifiedTarget) : entry.fingerprint;
         item.verification = "adapter";
+        markElementProcessed(verifiedTarget || target);
       } catch (error) {
         item.error = error.message || String(error);
         item.errorCode = error.code || "FILL_FAILED";
@@ -1334,13 +1556,233 @@
     return { ...latest, results };
   }
 
+  // —— 点击字段填充（P1 任务5） ——
+  // 单字段按 fieldId 填充：复用 apply 的会话/指纹/重复目标预检。
+  async function fillFieldById(fill, options = {}) {
+    const id = String(fill?.id || "");
+    const entry = elementRegistry.get(id);
+    if (!entry) throw sessionError("字段未找到，请重新扫描", "STALE_FIELD");
+    const results = await apply(
+      [{ id, value: String(fill?.value ?? ""), type: entry.type, fingerprint: entry.fingerprint }],
+      { ...options, delayMs: 0 }
+    );
+    return results[0] || { id, ok: false, error: "填充失败", errorCode: "FILL_FAILED" };
+  }
+
+  let pickSeq = 0;
+  let pickController = null;
+
+  function findPickableControl(target) {
+    if (!(target instanceof HTMLElement)) return null;
+    if (target.closest && target.closest("#hunter-pick-overlay")) return null;
+    const selector = 'input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea, select, .ant-select, .el-select, .ant-picker, .el-date-editor';
+    return target.closest ? target.closest(selector) || null : null;
+  }
+
+  function logicalControlFor(control) {
+    const custom = control.closest && control.closest(".ant-select, .el-select, .ant-picker, .el-date-editor");
+    if (custom) {
+      const inner = custom.querySelector('input:not([type="hidden"]), textarea, select');
+      return { el: inner || custom, container: custom };
+    }
+    if (control.matches && control.matches('input:not([type="hidden"]), textarea, select')) {
+      return { el: control, container: null };
+    }
+    const inner = control.querySelector && control.querySelector('input:not([type="hidden"]), textarea, select');
+    if (inner) return { el: inner, container: null };
+    return null;
+  }
+
+  // 把点击的控件按扫描同款逻辑建成临时 entry 后走 fillOne（含回读校验）。
+  async function fillPickedControl(control, value) {
+    const logical = logicalControlFor(control);
+    if (!logical) throw sessionError("请点击可填写的输入框或下拉框", "NOT_FILLABLE");
+    const { el, container } = logical;
+    const classified = classifyControl(el);
+    const isCustom = !!container || ["custom-select", "custom-date"].includes(classified.type);
+    const kind = classified.type === "radio" ? "radio" : (isCustom ? "custom" : "native");
+    const entry = {
+      id: `pick-${Date.now().toString(36)}-${pickSeq++}`,
+      kind,
+      el,
+      container,
+      group: null,
+      type: classified.type,
+      adapter: isCustom
+        ? (classified.type === "custom-select"
+          ? (container && /ant-select/.test(String(container.className || "")) ? "antd-select" : "element-select")
+          : "custom-date")
+        : (String(el.tagName).toLowerCase() === "select" ? "native-select" : "native-input"),
+      fingerprint: fieldFingerprintOf(el, classified.type, "single", classified.type === "radio"),
+      label: (controlLabel(el).text || el.getAttribute("placeholder") || "").trim() || "已选字段",
+      path: uniquePath(el),
+      locators: locatorBundle(el),
+      slot: "single",
+      dateMeta: classified.type === "date" ? dateMetaForNative(el) : null,
+    };
+    const result = await fillOne({ id: entry.id, value, type: entry.type, fingerprint: entry.fingerprint }, entry, el);
+    markElementProcessed(container || el);
+    return result;
+  }
+
+  // 拾取态：高亮可填控件；点击可填控件即填充；点击非可填区域给出提示且保持拾取；Esc 取消。
+  function pickFill(value) {
+    return new Promise(resolve => {
+      if (pickController) {
+        const old = pickController;
+        old.cleanup();
+        pickController = null;
+        old.resolve({ ok: false, cancelled: true, error: "已有进行中的点击填充" });
+      }
+      let controller = null;
+      let highlight = null;
+      const overlay = document.createElement("div");
+      overlay.id = "hunter-pick-overlay";
+      overlay.setAttribute("aria-hidden", "true");
+      overlay.style.cssText = "position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:2147483646;pointer-events:none;font:14px/1.6 sans-serif;color:#2563eb;display:flex;align-items:flex-start;justify-content:center;padding-top:72px;text-align:center;";
+      (document.body || document.documentElement).appendChild(overlay);
+
+      const setHighlight = el => {
+        if (highlight === el) return;
+        if (highlight && highlight.style) highlight.style.outline = "";
+        highlight = el;
+        if (el && el.style) el.style.outline = "2px solid #2563eb";
+      };
+
+      const hintTimer = { id: null };
+      const showHint = text => {
+        overlay.textContent = text;
+        if (hintTimer.id) clearTimeout(hintTimer.id);
+        hintTimer.id = setTimeout(() => { overlay.textContent = ""; }, 1200);
+      };
+
+      const finish = () => {
+        if (pickController !== controller) return;
+        pickController = null;
+        document.removeEventListener("mousemove", onMouseMove, true);
+        document.removeEventListener("click", onClick, true);
+        document.removeEventListener("keydown", onKeyDown, true);
+        setHighlight(null);
+        overlay.remove();
+      };
+
+      const onMouseMove = event => setHighlight(findPickableControl(event.target));
+
+      const onClick = async event => {
+        const control = findPickableControl(event.target);
+        if (!control) {
+          showHint("请点击输入框/下拉框（Esc 取消）");
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        finish();
+        try {
+          const r = await fillPickedControl(control, value);
+          resolve({ ...r, value: r.actualValue ?? value });
+        } catch (error) {
+          resolve({ ok: false, error: error.message || String(error), errorCode: error.code || "PICK_FAILED" });
+        }
+      };
+
+      const onKeyDown = event => {
+        if (event.key === "Escape" || event.key === "Esc") {
+          event.preventDefault();
+          finish();
+          resolve({ ok: false, cancelled: true });
+        }
+      };
+
+      controller = { cleanup: finish, resolve };
+      pickController = controller;
+      overlay.textContent = "点击要填入的位置（Esc 取消）";
+      document.addEventListener("mousemove", onMouseMove, true);
+      document.addEventListener("click", onClick, true);
+      document.addEventListener("keydown", onKeyDown, true);
+    });
+  }
+
+  // —— 增量续填（P1 任务6） ——
+  let newFieldsWatch = null;
+  function startNewFieldsWatch(options = {}) {
+    stopNewFieldsWatch();
+    const threshold = Number.isFinite(options.threshold) ? Math.max(1, options.threshold) : 4;
+    const onFound = typeof options.onFound === "function" ? options.onFound : null;
+    const roots = scanSession?.formRoots?.length ? scanSession.formRoots : [document.body || document.documentElement];
+    let timer = null;
+    const check = () => {
+      timer = null;
+      if (!onFound) return;
+      try {
+        const result = scan(document, { onlyUnprocessed: true, dryRun: true });
+        const count = result.fields.filter(field => !field.skipped && !String(field.value ?? "").trim()).length;
+        if (count >= threshold) {
+          stopNewFieldsWatch();
+          onFound(count);
+        }
+      } catch (_) {}
+    };
+    const observer = new MutationObserver(() => {
+      if (timer) return;
+      timer = setTimeout(check, 120);
+    });
+    roots.forEach(root => {
+      if (root && root.isConnected) {
+        try { observer.observe(root, { subtree: true, childList: true, attributes: false, characterData: false }); } catch (_) {}
+      }
+    });
+    newFieldsWatch = {
+      observer,
+      stop: () => {
+        if (timer) clearTimeout(timer);
+        try { observer.disconnect(); } catch (_) {}
+      },
+    };
+  }
+  function stopNewFieldsWatch() {
+    if (newFieldsWatch) {
+      newFieldsWatch.stop();
+      newFieldsWatch = null;
+    }
+  }
+
   // —— 消息监听（真实环境） ——
   if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       try {
         if (message.type === "SMART_FILL_SCAN") {
-          const result = scan();
+          const result = scan(undefined, { onlyUnprocessed: !!message.onlyNew });
           sendResponse({ ok: true, ...result });
+        } else if (message.type === "SMART_FILL_FILL_FIELD") {
+          (async () => {
+            try {
+              const result = await fillFieldById(message, {
+                scanId: message.scanId,
+                documentFingerprint: message.documentFingerprint,
+                formFingerprint: message.formFingerprint,
+              });
+              sendResponse({ ok: true, ...result });
+            } catch (error) {
+              sendResponse({ ok: false, error: error.message || String(error), errorCode: error.code || "FILL_FAILED" });
+            }
+          })();
+          return true;
+        } else if (message.type === "SMART_FILL_PICK_START") {
+          (async () => {
+            try {
+              const value = String(message.value ?? "").trim();
+              if (!value) throw new Error("填充值为空");
+              const requestId = String(message.requestId || "");
+              sendResponse({ ok: true });
+              const result = await pickFill(value);
+              if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+                chrome.runtime.sendMessage({ type: "SMART_FILL_PICK_RESULT", requestId, ...result }).catch(() => {});
+              }
+            } catch (error) {
+              sendResponse({ ok: false, error: error.message || String(error), errorCode: error.code || "PICK_FAILED" });
+            }
+          })();
+          return true;
         } else if (message.type === "SMART_FILL_APPLY") {
           (async () => {
             try {
@@ -1375,6 +1817,26 @@
             }
           })();
           return true;
+        } else if (message.type === "SMART_FILL_WATCH_START") {
+          try {
+            startNewFieldsWatch({
+              threshold: Number.isFinite(message.threshold) ? message.threshold : 4,
+              onFound: count => {
+                try {
+                  if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+                    chrome.runtime.sendMessage({ type: "SMART_FILL_NEW_FIELDS", count, scanId: scanSession?.scanId }).catch(() => {});
+                  }
+                } catch (_) {}
+              },
+            });
+            sendResponse({ ok: true });
+          } catch (error) {
+            sendResponse({ ok: false, error: error.message || String(error) });
+          }
+          return true;
+        } else if (message.type === "SMART_FILL_WATCH_STOP") {
+          stopNewFieldsWatch();
+          sendResponse({ ok: true });
         } else if (message.type === "SMART_FILL_HIGHLIGHT") {
           highlight(message.ids || [], !!message.on);
           sendResponse({ ok: true });
@@ -1390,6 +1852,6 @@
 
   // —— 测试 / 面板直连入口 ——
   if (typeof globalThis !== "undefined") {
-    globalThis.__hunterFill = { scan, apply, prepareRepeaters, highlight, reset };
+    globalThis.__hunterFill = { scan, apply, prepareRepeaters, highlight, reset, fillField: fillFieldById, pickFill, startWatch: startNewFieldsWatch, stopWatch: stopNewFieldsWatch };
   }
 })();

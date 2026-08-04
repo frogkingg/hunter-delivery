@@ -17,32 +17,52 @@
 <section id="smartfill" class="page">
   <div class="section-head"><div><h2>智能填充</h2><p>在第三方网申页面自动识别表单项，用简历内容匹配并一键填充。</p></div></div>
   <label>使用简历<select id="fillProfileSelect"></select></label>
-  <details class="resume-fields-box"><summary>简历字段（供匹配使用）<small id="resumeFieldsStatus"></small></summary>
-    <div id="resumeFieldsList" class="resume-fields-list"></div>
-    <div class="row"><button id="extractResumeFields" class="secondary">重新提取简历字段</button><button id="saveResumeFields" class="secondary">保存字段</button></div>
-    <p class="hint">复杂字段（自我评价/技能等）提取需要已配置 AI；未配置时仅提取常见字段。</p>
-  </details>
-  <hr>
-  <h3>扫描网申页面</h3>
-  <p class="hint" id="fillCurrentSite">未检测到网申页面。请打开目标公司的网申/信息录入页后点击「扫描」。首次使用需授权该网站。</p>
-  <div class="fill-actions">
-    <button id="scanFillPage" class="primary">扫描当前页面</button>
-    <button id="prepareFillSections" class="secondary" disabled>展开简历经历</button>
-    <button id="clearFill" class="secondary">清空</button>
-    <button id="fillSelected" class="primary" disabled>填充选中项（0）</button>
-    <button id="fillAll" class="secondary" disabled>全部填充</button>
-    <button id="stopFill" class="secondary" hidden>停止</button>
+  <div id="smartFillMain">
+    <div class="row"><button id="manageResumeFields" class="secondary">管理资料</button></div>
+    <hr>
+    <h3>扫描网申页面</h3>
+    <p class="hint" id="fillCurrentSite">未检测到网申页面。请打开目标公司的网申/信息录入页后点击「扫描」。首次使用需授权该网站。</p>
+    <div class="fill-actions">
+      <button id="smartFillOnce" class="primary">智能填充</button>
+      <button id="scanFillPage" class="secondary">扫描当前页面</button>
+      <button id="prepareFillSections" class="secondary" disabled>展开简历经历</button>
+      <button id="clearFill" class="secondary">清空</button>
+      <button id="fillSelected" class="primary" disabled>填充选中项（0）</button>
+      <button id="fillAll" class="secondary" disabled>全部填充</button>
+      <button id="stopFill" class="secondary" hidden>停止</button>
+      <button id="continueFill" class="secondary" hidden>继续填写</button>
+    </div>
+    <p id="fillProgress" class="hint" aria-live="polite"></p>
+    <div class="row toggle-setting"><label><input id="fillAiToggle" type="checkbox" checked><span>复杂字段使用 AI 匹配<small>仅将未识别字段的页面证据发送给已配置的 AI 服务</small></span></label></div>
+    <div class="row toggle-setting"><label><input id="fillTemplateToggle" type="checkbox" checked><span>自动记忆站点模板<small>只记忆页面字段与简历字段的映射，不保存具体填写值</small></span></label></div>
+    <div class="row toggle-setting"><label><input id="fillAutoToggle" type="checkbox" checked><span>自动填充高置信项<small>扫描后自动填写已匹配字段，未匹配项保留人工确认</small></span></label></div>
+    <div id="fillResultList" class="fill-result-list"></div>
+    <p class="hint privacy-note">⚠ 隐私提示：开启 AI 匹配时，仅表单字段标签、控件属性和上下文会发送到你配置的 AI 服务；简历字段值、简历图片与全文不会因字段匹配被发送。「重新提取简历字段」仍会发送简历全文。</p>
+    <hr>
+    <div class="section-head"><div><h3>当前站点模板</h3><p id="fillTemplateInfo">未保存模板</p></div><button id="deleteFillTemplate" class="secondary" disabled>删除模板</button></div>
+    <div id="fillTemplateList" class="fill-template-list"></div>
+    <hr>
+    <div class="section-head"><div><h3>填充历史</h3></div></div>
+    <div id="fillLogList" class="fill-log-list"></div>
   </div>
-  <p id="fillProgress" class="hint" aria-live="polite"></p>
-  <div class="row toggle-setting"><label><input id="fillAiToggle" type="checkbox" checked><span>复杂字段使用 AI 匹配<small>仅将未识别字段的页面证据发送给已配置的 AI 服务</small></span></label></div>
-  <div class="row toggle-setting"><label><input id="fillTemplateToggle" type="checkbox" checked><span>自动记忆站点模板<small>只记忆页面字段与简历字段的映射，不保存具体填写值</small></span></label></div>
-  <div id="fillResultList" class="fill-result-list"></div>
-  <p class="hint privacy-note">⚠ 隐私提示：开启 AI 匹配时，仅表单字段标签、控件属性和上下文会发送到你配置的 AI 服务；简历字段值、简历图片与全文不会因字段匹配被发送。「重新提取简历字段」仍会发送简历全文。</p>
-  <hr>
-  <div class="section-head"><div><h3>当前站点模板</h3><p id="fillTemplateInfo">未保存模板</p></div><button id="deleteFillTemplate" class="secondary" disabled>删除模板</button></div>
-  <div id="fillTemplateList" class="fill-template-list"></div>
-  <hr>
-  <div class="section-head"><div><h3>填充历史</h3></div></div>
-  <div id="fillLogList" class="fill-log-list"></div>
+  <div id="resumeFieldsEditor" hidden>
+    <div class="section-head"><div><h3>简历资料</h3><p id="resumeFieldsSummary"></p></div><div class="row"><button id="discardResumeFields" class="secondary">放弃修改</button><button id="saveResumeFields" class="primary">保存字段</button><button id="closeResumeFieldsEditor" class="secondary">返回</button></div></div>
+    <input id="resumeFieldSearch" class="resume-field-search" type="search" placeholder="搜索字段…">
+    <div class="resume-field-filters">
+      <button type="button" class="active" data-resume-filter="all">全部</button>
+      <button type="button" data-resume-filter="missing">待补充</button>
+      <button type="button" data-resume-filter="basic">基本信息</button>
+      <button type="button" data-resume-filter="intention">求职意向</button>
+      <button type="button" data-resume-filter="work">工作经历</button>
+      <button type="button" data-resume-filter="education">教育经历</button>
+      <button type="button" data-resume-filter="internship">实习经历</button>
+      <button type="button" data-resume-filter="project">项目经历</button>
+      <button type="button" data-resume-filter="profile">个人介绍</button>
+      <button type="button" data-resume-filter="other">其他</button>
+    </div>
+    <p class="hint" id="resumeFieldsStatus"></p>
+    <div id="resumeFieldsList" class="resume-fields-list"></div>
+    <div class="row"><button id="extractResumeFields" class="secondary">重新提取简历字段</button></div>
+  </div>
 </section>
 </main><script src="src/app.js" type="module"></script></body></html>

@@ -33,6 +33,11 @@ const BOOLEAN_VALUE = /^(是|有|true|1|同意|愿意|会|否|无|false|0|不同
 
 function normalizeDateValue(value) {
   const text = String(value || "").trim();
+  if (/^\d{4}$/.test(text) || /^\d{2}:\d{2}(?::\d{2})?$/.test(text)) return text;
+  const dateTime = text.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (dateTime) {
+    return `${dateTime[1]}-${dateTime[2]}-${dateTime[3]}T${dateTime[4]}:${dateTime[5]}${dateTime[6] ? `:${dateTime[6]}` : ""}`;
+  }
   let match = text.match(/^(\d{4})[-/.年](\d{1,2})(?:[-/.月](\d{1,2})日?)?$/);
   if (match) {
     const normalized = `${match[1]}-${String(match[2]).padStart(2, "0")}`;
@@ -41,6 +46,31 @@ function normalizeDateValue(value) {
   match = text.match(/^(\d{1,2})[-/.](\d{4})$/);
   if (match) return `${match[2]}-${String(match[1]).padStart(2, "0")}`;
   return text;
+}
+
+function datePrecision(value) {
+  const text = normalizeDateValue(value);
+  if (/^\d{4}$/.test(text)) return "year";
+  if (/^\d{4}-\d{2}$/.test(text)) return "month";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return "day";
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?$/.test(text)) return "datetime";
+  if (/^\d{2}:\d{2}(?::\d{2})?$/.test(text)) return "time";
+  return "";
+}
+
+function dateValueCompatible(field, value) {
+  const precision = datePrecision(value);
+  if (!precision) return false;
+  const meta = field?.dateMeta || {};
+  const nativeType = String(meta.nativeType || "").toLowerCase();
+  const mode = String(meta.mode || "").toLowerCase();
+  if (nativeType === "time" || mode === "time") return precision === "time";
+  if (nativeType === "datetime-local" || mode === "datetime") return precision === "datetime";
+  if (nativeType === "date") return ["day", "datetime"].includes(precision);
+  if (nativeType === "month" || mode === "month") return ["month", "day", "datetime"].includes(precision);
+  if (mode === "year") return ["year", "month", "day", "datetime"].includes(precision);
+  // 自定义日期框未暴露 picker mode 时，允许执行适配器根据值和面板结构继续判定。
+  return ["month", "day", "datetime"].includes(precision);
 }
 
 function fieldEvidence(field) {
@@ -98,6 +128,7 @@ function hardTypeCompatible(field, fieldKey) {
   if (type === "tel") return fieldKey === "phone";
   if (type === "url") return ["github", "linkedin", "portfolio"].includes(fieldKey);
   if (type === "date" || type === "custom-date") {
+    if (field?.dateMeta?.nativeType === "time" || field?.dateMeta?.mode === "time") return false;
     return FIELD_BY_KEY[fieldKey]?.type === "date" || ["graduationYear", "availableTime"].includes(fieldKey);
   }
   return true;
@@ -213,14 +244,14 @@ export function valueCompatible(field, fieldKey, value) {
   if (!text || !hardTypeCompatible(field, fieldKey)) return false;
   if (type === "email" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(text)) return false;
   if (type === "tel" && text.replace(/\D/g, "").length < 7) return false;
-  if ((type === "date" || type === "custom-date") && !/^\d{4}[-/年.]\d{1,2}/.test(text)) return false;
+  if ((type === "date" || type === "custom-date") && !dateValueCompatible(field, text)) return false;
   if (type === "number" && !/^-?\d+(?:\.\d+)?$/.test(text.replace(/[,，]/g, ""))) return false;
   const format = FIELD_CONSTRAINTS[fieldKey]?.format;
   if (format === "email" && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(text)) return false;
   if (format === "phone" && looksLikeCountryCodeField(field)) return COUNTRY_CODE_OPTION.test(text);
   if (format === "phone" && !/^\+?\d[\d\- ()]{5,}$/.test(text)) return false;
   if (format === "name" && (/^\d+$/.test(text) || /@/.test(text) || text.length > 60)) return false;
-  if (format === "date" && !/^\d{4}[-/年.]\d{1,2}/.test(text)) return false;
+  if (format === "date" && !datePrecision(text)) return false;
   if (format === "idCard" && !/^\d{17}[\dXx]$/.test(text)) return false;
   if (format === "postcode" && !/^\d{5,10}$/.test(text)) return false;
   if (format === "url" && !/^https?:\/\//i.test(text)) return false;
@@ -262,6 +293,7 @@ function baseResult(field, source = "rule") {
     attributes: field?.attributes || {},
     adapter: field?.adapter || "",
     slot: field?.slot || "single",
+    dateMeta: field?.dateMeta || null,
     locators: Array.isArray(field?.locators) ? field.locators : [],
   };
 }

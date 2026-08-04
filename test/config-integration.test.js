@@ -5,6 +5,8 @@ import {
   setActiveProfileIndex,
   setConfig,
   setProfiles,
+  setResumeFieldsDraft,
+  setResumeFieldsDirty,
   setUploadedImages,
 } from "../src/state.js";
 import { deleteProfile, switchProfile } from "../src/config.js";
@@ -45,6 +47,26 @@ test("switchProfile 保存源简历且不会覆盖目标简历", async () => {
   assert.deepEqual(state.uploadedImages, ["img-B"]);
   assert.equal(writes.at(-1).activeProfileIndex, 1);
   assert.equal(writes.at(-1).config.candidateProfile, "resume-B");
+});
+
+test("switchProfile 从设置入口切换前提交结构化资料草稿", async () => {
+  const writes = setupProfiles();
+  const profile = state.profiles[0];
+  setResumeFieldsDraft({
+    name: "草稿姓名",
+    workHistory: [{ id: "work-1", company: "新公司", title: "产品经理", start: "2024-01", end: "2025-01" }],
+    education: [],
+    internships: [],
+    projects: [],
+  }, profile);
+  setResumeFieldsDirty(true);
+
+  await switchProfile(1);
+
+  assert.equal(state.profiles[0].resumeFields.name, "草稿姓名");
+  assert.equal(state.profiles[0].resumeFields.currentCompany, "新公司");
+  assert.equal(writes.at(-1).profiles[0].resumeFields.currentTitle, "产品经理");
+  assert.equal(state.resumeFieldsDirty, false);
 });
 
 test("deleteProfile 删除当前项后加载相邻简历而不覆盖内容", async () => {
