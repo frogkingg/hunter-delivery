@@ -6,6 +6,8 @@
 
   const ENGINE_VERSION = 3;
   const HIGHLIGHT_CLASS = "hunter-fill-highlight";
+  const DONE_CLASS = "hunter-fill-done";
+  const PENDING_CLASS = "hunter-fill-pending";
   const IS_JSDOM = typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent || "");
   const SECTION_DEFINITIONS = [
     { key: "education", arrayKey: "education", title: "教育经历", pattern: /教育背景|教育经历|education/i, idPattern: /educations?|resume[-_]?form[-_]?edu/i },
@@ -489,7 +491,10 @@
   function installStructureObserver(root) {
     if (structureObserver) structureObserver.disconnect();
     structureObserver = null;
-    if (typeof MutationObserver === "undefined" || !root?.documentElement) return;
+    if (typeof MutationObserver === "undefined") return;
+    // 选区扫描的根是容器元素：观察该元素自身；全页扫描仍观察 documentElement。
+    const observeTarget = root?.documentElement || (root && root.nodeType === 1 && root.isConnected ? root : null);
+    if (!observeTarget) return;
     structureObserver = new MutationObserver(records => {
       if (!scanSession) return;
       const changed = records.some(record => {
@@ -498,7 +503,7 @@
       });
       if (changed) scanSession.dirty = true;
     });
-    structureObserver.observe(root.documentElement, {
+    structureObserver.observe(observeTarget, {
       subtree: true,
       childList: true,
       attributes: true,
@@ -571,8 +576,20 @@
 
   // —— 扫描 ——
   function scan(doc, scanOptions = {}) {
-    const root = doc || (typeof document !== "undefined" ? document : null);
-    if (!root) return { fields: [], page: null };
+    const base = doc || (typeof document !== "undefined" ? document : null);
+    if (!base) return { fields: [], page: null };
+    let root = base;
+    // 选区扫描：scanOptions.region 可为元素或 CSS 选择器，把扫描根限定到该容器。
+    if (scanOptions.region) {
+      const region = typeof scanOptions.region === "string"
+        ? (base.querySelector ? base.querySelector(scanOptions.region) : null)
+        : scanOptions.region;
+      // 选择器未命中或 region 非法：返回空结果，绝不静默回退全页扫描。
+      if (!region || region.nodeType !== 1 || typeof region.querySelector !== "function") {
+        return { engineVersion: ENGINE_VERSION, fields: [], repeaters: [], page: null, scanId: null, documentFingerprint: null, formFingerprint: null };
+      }
+      root = region;
+    }
     prepareDocumentIndexes(root);
     const registry = new Map();
     const fields = [];
@@ -810,8 +827,9 @@
 
     let page = null;
     try {
-      const url = String(root.URL || (root.location && root.location.href) || "");
-      page = { title: root.title || "", url, host: url ? new URL(url).hostname : "" };
+      const pageRef = root.nodeType === 9 ? root : (root.ownerDocument || null);
+      const url = String(pageRef?.URL || (pageRef?.location && pageRef.location.href) || "");
+      page = { title: pageRef?.title || "", url, host: url ? new URL(url).hostname : "" };
     } catch (_) {}
     const repeaters = scanRepeaters(root, fields);
     const formFingerprint = stableHash([
@@ -900,12 +918,81 @@
     return [...new Set(options)];
   }
 
+  // 候选项文本与期望值的相似度打分：归一化包含 + 前缀 + 逐字符公共前缀。
+  function scoreSuggestion(text, value) {
+    const a = normalizeCompare(text);
+    const b = normalizeCompare(value);
+    if (!a || !b) return 0;
+    if (a === b) return 100;
+    // 前缀优先于包含：前缀匹配分值取 max(60, 80−长度差)，保证前缀 ≥ 非前缀包含，
+    // 避免「复旦」误选「上海复旦大学」（前缀 78 > 包含 76）。
+    if (a.startsWith(b) || b.startsWith(a)) return Math.max(60, 80 - Math.abs(a.length - b.length));
+    if (a.includes(b) || b.includes(a)) return 80 - Math.abs(a.length - b.length);
+    // 逐字符公共前缀档（≤40）恒低于选中阈值 50，不参与选中，仅作预留打分。
+    let common = 0;
+    const max = Math.max(a.length, b.length);
+    for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] === b[i]) common++;
+    return Math.round((common / max) * 40);
+  }
+
+  // 廉价前置预检：仅当输入具备联想特征（aria-controls/aria-owns/role=combobox）或页面/容器存在联想列表
+  // （[role='listbox'] / antd / element 下拉，允许 hidden——联想层常初始隐藏、focus 后才显示）时才进入联想路径，
+  // 避免普通文本字段为无谓的 focus + sleep + 全文档扫描付出延迟（10 字段 ≈ +800ms）。
+  // 弹层归属边界（M4）：customOptionRoots 已实现「优先 aria 关联弹层，无 aria 时仅退化唯一可见弹层」，
+  // 此处不再额外收窄，避免破坏无 aria 但页面仅一个 listbox 的联想控件。
+  function hasSuggestPopup(entry) {
+    const el = entry.el;
+    if (el.getAttribute?.("aria-controls") || el.getAttribute?.("aria-owns")) return true;
+    if (String(el.getAttribute?.("role") || "") === "combobox") return true;
+    const doc = el.ownerDocument;
+    const scope = entry.container && entry.container.querySelector ? entry.container : doc;
+    return !!scope.querySelector("[role='listbox'], .ant-select-dropdown, .el-select-dropdown");
+  }
+
+  // 输入型联想控件（如学校/公司/城市联想）适配：focus 弹层 → 候选打分 → 点击选中。
+  // 无候选或未生效时返回 null，由调用方回退标准填充路径，不得因联想失败导致字段报错。
+  async function applySuggestEntry(entry, value) {
+    if (!hasSuggestPopup(entry)) return null;
+    const input = entry.el;
+    input.focus();
+    await sleep(80);
+    const findBest = () => {
+      const roots = customOptionRoots(entry.container || entry.el);
+      const candidates = [];
+      for (const root of roots) {
+        const nodes = root.querySelectorAll("[role='option'], li, .ant-select-item, .el-select-dropdown__item");
+        nodes.forEach(node => {
+          if (!isVisible(node)) return; // 弹层内被过滤项常 display:none，直接排除
+          const text = cleanString(node.textContent);
+          if (text) candidates.push({ node, text, score: scoreSuggestion(text, value) });
+        });
+      }
+      return candidates.filter(c => c.score >= 50).sort((a, b) => b.score - a.score)[0] || null;
+    };
+    let best = findBest();
+    // 弹层可能异步挂载候选：最多再轮询 2 次（各 100ms），避免 80ms 内错过异步加载的弹层。
+    for (let poll = 0; !best && poll < 2; poll++) {
+      await sleep(100);
+      best = findBest();
+    }
+    if (!best) return null;
+    scrollIntoView(best.node);
+    triggerAction(best.node);
+    await sleep(120);
+    if (!verifyValue(input, entry.type, value)) return null;
+    return { ok: true, via: "suggest" };
+  }
+
   // —— 高亮 / 重置 ——
   function ensureStyle(doc) {
     if (doc.getElementById("hunter-fill-style")) return;
     const style = doc.createElement("style");
     style.id = "hunter-fill-style";
-    style.textContent = `.${HIGHLIGHT_CLASS}{outline:2px solid #1d4ed8 !important;outline-offset:2px;box-shadow:0 0 0 2px rgba(29,78,216,.35)!important;}`;
+    style.textContent = [
+      `.${HIGHLIGHT_CLASS}{outline:2px solid #1d4ed8 !important;outline-offset:2px;box-shadow:0 0 0 2px rgba(29,78,216,.35)!important;}`,
+      `.${DONE_CLASS}{outline:2px solid #16a34a !important;outline-offset:1px;}`,
+      `.${PENDING_CLASS}{outline:2px solid #f59e0b !important;outline-offset:1px;}`,
+    ].join("");
     (doc.head || doc.documentElement).appendChild(style);
   }
 
@@ -923,9 +1010,19 @@
     }
   }
 
+  // 统一清除高亮与绿/橙状态着色（含 custom 容器等非 entry.el 目标，按类名全量清理最稳）。
+  // reset 与 undo 共用：撤销后未填字段的 pending 橙也一并清掉，避免页面残留着色。
+  function clearFillColoring(root) {
+    if (!root) return;
+    try {
+      for (const el of root.querySelectorAll(`.${HIGHLIGHT_CLASS}, .${DONE_CLASS}, .${PENDING_CLASS}`)) {
+        el.classList.remove(HIGHLIGHT_CLASS, DONE_CLASS, PENDING_CLASS);
+      }
+    } catch (_) {}
+  }
+
   function reset(doc) {
-    const root = doc || (typeof document !== "undefined" ? document : null);
-    if (root) for (const entry of elementRegistry.values()) entry.el.classList.remove(HIGHLIGHT_CLASS);
+    clearFillColoring(doc || (typeof document !== "undefined" ? document : null));
     elementRegistry = new Map();
     repeaterRegistry = new Map();
     cancelSignal = null;
@@ -947,6 +1044,44 @@
     el.dispatchEvent(new Event("input", { bubbles: true }));
     el.dispatchEvent(new Event("change", { bubbles: true }));
     el.dispatchEvent(new Event("blur", { bubbles: true }));
+  }
+
+  // 逐字符模拟真实输入：keydown→beforeinput→input→keyup，提交时 change→blur。
+  // 用于受控组件（如 React）——直接写 value 会被其内部状态回滚，必须走真实事件链。
+  async function typeText(el, value, stepMs = 30) {
+    const KeyEventCtor = typeof window.KeyboardEvent === "function" ? window.KeyboardEvent : Event;
+    const typeChars = Array.from(String(value || ""));
+    el.focus();
+    el.select();
+    if (typeof el.setRangeText === "function") {
+      el.setRangeText("");
+    } else {
+      el.value = "";
+    }
+    for (const char of typeChars) {
+      el.value += char;
+      const opts = { key: char, bubbles: true, cancelable: true };
+      el.dispatchEvent(new KeyEventCtor("keydown", opts));
+      el.dispatchEvent(new Event("beforeinput", { bubbles: true, cancelable: true }));
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new KeyEventCtor("keyup", opts));
+      await sleep(stepMs);
+    }
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
+    return el.value;
+  }
+
+  // 标准填充 → 回读校验 → 失败则打字重填 → 再次回读。
+  async function fillTextWithRetry(entry, el, type, value) {
+    const finalValue = type === "date" ? valueForNativeDate(el, value) : value;
+    if (type === "date" && !finalValue) throw new Error("日期精度与页面控件不匹配，请手动选择");
+    setNativeValue(el, finalValue);
+    dispatchInput(el);
+    if (verifyValue(el, type, finalValue)) return { ok: true, retried: false };
+    await typeText(el, finalValue);
+    if (!verifyValue(el, type, finalValue)) throw new Error("模拟输入后仍失败");
+    return { ok: true, retried: true };
   }
 
   function scrollIntoView(el) {
@@ -1423,6 +1558,14 @@
       if (!target.checked) throw new Error("回读校验失败");
       return { ok: true };
     }
+    // 联想下拉增强：text/tel/email/textarea 先尝试 focus 弹层并从候选列表选中匹配项；
+    // 无候选或未生效时返回 null，继续走标准填充路径（不得因联想失败导致字段报错）。
+    if (type === "text" || type === "tel" || type === "email" || type === "textarea") {
+      // 防御：页面 focus 处理器等意外抛错不得冒泡导致字段报错，一律回退标准填充路径。
+      let suggestResult = null;
+      try { suggestResult = await applySuggestEntry({ ...entry, el, type }, value); } catch (_) { suggestResult = null; }
+      if (suggestResult) return suggestResult;
+    }
     if (entry.kind === "custom") {
       const container = (entry.container?.isConnected && entry.container)
         || el.closest?.(".ant-select, .el-select, .ant-picker, .el-date-editor")
@@ -1446,14 +1589,105 @@
       if (String(el.value || "") !== String(target.value)) throw new Error("选项未找到");
       return { ok: true };
     }
-    const finalValue = type === "date" ? valueForNativeDate(el, value) : value;
-    if (type === "date" && !finalValue) {
-      throw new Error("日期精度与页面控件不匹配，请手动选择");
+    // 文本类（含 date）：标准填充后回读校验，失败则逐字符打字重填（受控组件兜底）。
+    return fillTextWithRetry(entry, el, type, value);
+  }
+
+  // —— 页面绿/橙双色状态着色 ——
+  // 目标解析与 fillOne 保持一致：radio 整组、custom 含容器（ant-select 等）、其余为唯一目标元素。
+  // fallbackEl 为填充前已确认的 target：受控组件回填后可能重渲染/替换内部 input，
+  // 此时按指纹无法再确认，退回填充前的目标继续着色。
+  function colorTargetsForEntry(entry, fallbackEl) {
+    if (!entry) return [];
+    const el = resolveEntryTarget(entry) || fallbackEl;
+    if (!el) return [];
+    if (entry.kind === "radio") {
+      const group = resolveRadioGroup(el, entry.group).filter(item => item && item.isConnected);
+      return group.length ? group
+        : (Array.isArray(entry.group) ? entry.group.filter(item => item && item.isConnected) : []);
     }
-    setNativeValue(el, finalValue);
-    dispatchInput(el);
-    if (!verifyValue(el, type, finalValue)) throw new Error("回读校验失败");
-    return { ok: true };
+    if (entry.kind === "custom") {
+      // 自定义组件优先着容器（重渲染后容器仍存活），内部 input 仍在时一并着色。
+      const container = (entry.container && entry.container.isConnected && entry.container)
+        || (typeof el.closest === "function" ? el.closest(".ant-select, .el-select, .ant-picker, .el-date-editor") : null)
+        || (fallbackEl && fallbackEl !== el && typeof fallbackEl.closest === "function"
+          ? fallbackEl.closest(".ant-select, .el-select, .ant-picker, .el-date-editor") : null);
+      const targets = [];
+      if (container) targets.push(container);
+      if (el.isConnected && targets.indexOf(el) === -1) targets.push(el);
+      if (fallbackEl && fallbackEl.isConnected && targets.indexOf(fallbackEl) === -1) targets.push(fallbackEl);
+      return targets;
+    }
+    const targets = [el];
+    if (fallbackEl && fallbackEl.isConnected && targets.indexOf(fallbackEl) === -1) targets.push(fallbackEl);
+    return targets;
+  }
+
+  // 成功 done（绿）/ 失败 pending（橙），并清除另一状态与拾取高亮。
+  function colorEntry(entry, status, fallbackEl) {
+    const cls = status === "done" ? DONE_CLASS : PENDING_CLASS;
+    const other = cls === DONE_CLASS ? PENDING_CLASS : DONE_CLASS;
+    for (const el of colorTargetsForEntry(entry, fallbackEl)) {
+      if (!el || typeof el.classList === "undefined") continue;
+      el.classList.remove(HIGHLIGHT_CLASS, other);
+      el.classList.add(cls);
+    }
+  }
+
+  // 占位文案判定：用于「字段是否已有值」判断，避免把「请选择」等占位当真实值。
+  function isPlaceholderText(text) {
+    const t = String(text || "").trim();
+    if (!t) return true;
+    return /^(请选择|未选择|请填写|选择|--|暂无)/i.test(t);
+  }
+
+  // 判断字段当前是否已有值（用户手填或页面预填）：
+  // 文本类判 el.value；select 判选中项非空且非占位项；radio/checkbox 判勾选态（checkbox 的 el.value 默认
+  // "on" 或选项文案，未勾选也为 truthy，不能当已填）；custom 判内部 input 有值或容器展示值非占位。
+  function entryHasValue(entry, el) {
+    if (!entry || !el) return false;
+    if (entry.kind === "radio") {
+      return resolveRadioGroup(el, entry.group).some(item => item && item.checked);
+    }
+    // 扫描注册 checkbox 时 kind 为 "native"（registry 无 kind==="checkbox" 条目），
+    // 故同时按 entry.type 与 DOM el.type 判定，覆盖 kind/type 缺失的兜底场景。
+    if (entry.kind === "checkbox" || entry.type === "checkbox" || String(el.type || "").toLowerCase() === "checkbox") {
+      return !!el.checked;
+    }
+    if (entry.kind === "custom") {
+      const container = (entry.container && entry.container.isConnected && entry.container)
+        || (typeof el.closest === "function" ? el.closest(".ant-select, .el-select, .ant-picker, .el-date-editor") : null);
+      const input = container && container.querySelector ? container.querySelector("input") : null;
+      const inputValue = input ? cleanString(input.value) : "";
+      if (inputValue && !isPlaceholderText(inputValue)) return true;
+      const text = container ? cleanString(container.textContent) : "";
+      return !!text && !isPlaceholderText(text);
+    }
+    const tag = String(el.tagName || "").toLowerCase();
+    if (tag === "select") {
+      const selected = el.options && el.options[el.selectedIndex];
+      const text = selected ? cleanString(selected.text) : "";
+      const value = selected ? cleanString(selected.value) : "";
+      return (!!text && !isPlaceholderText(text)) || (!!value && !isPlaceholderText(value));
+    }
+    return !!cleanString(el.value);
+  }
+
+  // 本次未填、仍需人工的字段统一着 pending：对未着色、无值且可见的字段加橙。
+  // 已着色字段（成功 done / 失败 pending）与已含值字段（手填/预填）保持原状，避免覆盖或误标。
+  function markUnfilledPending() {
+    for (const entry of elementRegistry.values()) {
+      if (entry.kind === "none") continue; // 密码/上传等不支持字段不参与着色
+      const targets = colorTargetsForEntry(entry);
+      if (!targets.length) continue;
+      if (entryHasValue(entry, targets[0])) continue; // 已含值字段不标橙
+      for (const el of targets) {
+        if (!el || typeof el.classList === "undefined") continue;
+        if (el.classList.contains(DONE_CLASS) || el.classList.contains(PENDING_CLASS)) continue;
+        if (!isVisible(el)) continue;
+        el.classList.add(PENDING_CLASS);
+      }
+    }
   }
 
   async function apply(fills, options = {}) {
@@ -1464,12 +1698,37 @@
     const signal = options.signal || cancelSignal;
     if (signal.cancelled) return results;
     const prepared = preflightFills(list, options);
+    const doc = prepared[0]?.entry?.el?.ownerDocument
+      || elementRegistry.values().next().value?.el?.ownerDocument;
+    if (doc) ensureStyle(doc);
+    // 批量兜底着色开关：默认按批量语义开启（未填字段统一着橙供全表核对）；
+    // 单字段填充等逐字段路径传 false，避免整页染橙。
+    const markUnfilled = options.markUnfilledPending !== false;
+    // 撤销本次填充：逐字段填充前记录每个目标原值（同 session 多次填充不覆盖首次原值，
+    // 保证「撤销本次填充」始终恢复填充前的值）。
+    scanSession.prevValues = scanSession.prevValues || new Map();
+    for (const { entry, target } of prepared) {
+      if (scanSession.prevValues.has(target)) continue;
+      const isBinary = entry.type === "radio" || entry.type === "checkbox";
+      scanSession.prevValues.set(target, {
+        kind: entry.kind,
+        type: entry.type,
+        before: isBinary ? target.checked : target.value,
+        container: entry.container || null,
+        radioGroup: entry.type === "radio"
+          ? resolveRadioGroup(target, entry.group).map(radio => ({ el: radio, checked: radio.checked }))
+          : null,
+        // custom 组件：快照容器展示状态，撤销时尽力恢复（受控组件内部 input 置空不回退显示值）。
+        customDisplay: entry.kind === "custom" && entry.container ? snapshotCustomDisplay(entry.container) : null,
+      });
+    }
     for (let index = 0; index < prepared.length; index++) {
       if (signal.cancelled) break;
       const { fill, entry, target } = prepared[index];
       const item = { id: fill.id, ok: false };
       try {
         Object.assign(item, await fillOne(fill, entry, target));
+        item.retried = item.retried || false;
         const verifiedTarget = resolveEntryTarget(entry);
         const adapterVerified = ["antd-select", "element-select", "phone-country-code", "compound-prefix"].includes(entry.adapter);
         if (!verifiedTarget && !adapterVerified) {
@@ -1484,12 +1743,106 @@
         item.errorCode = error.code || "FILL_FAILED";
       }
       results.push(item);
+      // 状态着色：成功 done（绿）/ 失败 pending（橙）。
+      colorEntry(entry, item.ok ? "done" : "pending", target);
       if (typeof options.onProgress === "function") {
         options.onProgress({ index: index + 1, total: prepared.length, id: fill.id, ok: item.ok, error: item.error, errorCode: item.errorCode });
       }
       if (index < prepared.length - 1 && delayMs > 0) await sleep(delayMs);
     }
+    // 本次未填、仍需人工的字段统一着 pending（批量路径；已着色/已含值保持原状）。
+    if (markUnfilled) markUnfilledPending();
     return results;
+  }
+
+  // custom 组件展示快照：独立展示节点（antd/el select 选中项）文本 + 容器整体展示文本。
+  // 撤销时据此尽力恢复受控组件不回退的显示值。
+  function snapshotCustomDisplay(container) {
+    if (!container) return null;
+    const item = container.querySelector(".ant-select-selection-item, .el-select__selected-item, .el-select__selection-item");
+    return {
+      selectionText: item ? item.textContent || "" : null,
+      text: cleanString(container.textContent),
+    };
+  }
+
+  // 尽力恢复 custom 容器展示文本，返回是否已与记录快照一致（可验证性回读）。
+  function restoreCustomDisplay(container, display) {
+    if (!container || !display) return false;
+    const item = container.querySelector(".ant-select-selection-item, .el-select__selected-item, .el-select__selection-item");
+    if (item) {
+      item.textContent = display.selectionText || "";
+    } else if (!container.querySelector("input, select, textarea, button") && display.text != null) {
+      // 无独立展示节点且容器不含表单控件（避免误删 input/select 结构）：直接还原容器文本。
+      if (cleanString(container.textContent) !== display.text) {
+        try { container.textContent = display.text; } catch (_) { return false; }
+      }
+    }
+    // 回读验证：容器展示文本与记录快照一致即视为已恢复（含 ant-picker 等展示即内部 input 的情况）。
+    return cleanString(container.textContent) === display.text;
+  }
+
+  // 撤销本次填充：恢复 apply 记录的每个目标原值并清除全页着色（done/pending/highlight，
+  // 含 markUnfilledPending 染过、不在 prevValues 中的未填字段，避免撤销后残留橙色框）。
+  // 仅基于当前会话的 prevValues；会话失效（assertScanSession）则不执行并返回错误。
+  // 完成后清空 prevValues，避免重复撤销或撤销到更早的状态。
+  async function undo(options = {}) {
+    assertScanSession(options);
+    const doc = scanSession.formRoots?.[0]?.ownerDocument
+      || elementRegistry.values().next().value?.el?.ownerDocument
+      || (typeof document !== "undefined" ? document : null);
+    // 先清全页着色（与 reset 同思路，按类名全量清理最稳），再恢复原值。
+    clearFillColoring(doc);
+    const prevValues = scanSession.prevValues;
+    if (!prevValues || !prevValues.size) return { ok: true, count: 0, unRestored: 0 };
+    const clearClasses = el => {
+      if (!el || typeof el.classList === "undefined") return;
+      el.classList.remove(DONE_CLASS, PENDING_CLASS, HIGHLIGHT_CLASS);
+    };
+    let count = 0;
+    let unRestored = 0;
+    for (const [target, record] of prevValues) {
+      // radio：按记录时整组勾选状态恢复（避免只复位组内单个节点导致组状态不一致）。
+      if (record.type === "radio" && Array.isArray(record.radioGroup)) {
+        for (const item of record.radioGroup) {
+          if (!item.el || !item.el.isConnected) continue;
+          if (item.el.checked !== item.checked) {
+            item.el.checked = item.checked;
+            dispatchInput(item.el);
+          }
+          clearClasses(item.el);
+        }
+        count += 1;
+        continue;
+      }
+      // custom：容器展示优先尽力恢复（内部 input 可能已随重渲染断开），回读不一致上报未恢复。
+      if (record.kind === "custom" && record.container && record.container.isConnected) {
+        if (target && target.isConnected) {
+          setNativeValue(target, record.before);
+          dispatchInput(target);
+        }
+        if (!restoreCustomDisplay(record.container, record.customDisplay)) unRestored += 1;
+        clearClasses(record.container);
+        if (target && target.isConnected) clearClasses(target);
+        count += 1;
+        continue;
+      }
+      if (!target || !target.isConnected) continue;
+      if (record.type === "radio" || record.type === "checkbox") {
+        if (target.checked !== record.before) {
+          target.checked = record.before;
+          dispatchInput(target);
+        }
+      } else {
+        setNativeValue(target, record.before);
+        dispatchInput(target);
+      }
+      clearClasses(target);
+      if (record.container && record.container.isConnected) clearClasses(record.container);
+      count += 1;
+    }
+    prevValues.clear();
+    return { ok: true, count, unRestored };
   }
 
   function triggerAction(action) {
@@ -1564,7 +1917,7 @@
     if (!entry) throw sessionError("字段未找到，请重新扫描", "STALE_FIELD");
     const results = await apply(
       [{ id, value: String(fill?.value ?? ""), type: entry.type, fingerprint: entry.fingerprint }],
-      { ...options, delayMs: 0 }
+      { ...options, delayMs: 0, markUnfilledPending: false }
     );
     return results[0] || { id, ok: false, error: "填充失败", errorCode: "FILL_FAILED" };
   }
@@ -1702,6 +2055,129 @@
     });
   }
 
+  // —— 选区拾取（Wave 2 任务3） ——
+  // 与 pickFill 共用 overlay/拾取骨架；区别是点击任意「含控件的容器」作为 region，
+  // 命中后直接执行选区扫描并返回结果（含 regionPath/regionLabel）。
+  const PICKABLE_CONTROL_SELECTOR = 'input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea, select, .ant-select, .el-select, .ant-picker, .el-date-editor';
+
+  function findRegionFor(target) {
+    if (!target || target.nodeType !== 1) return null;
+    if (target.closest && target.closest("#hunter-pick-overlay")) return null;
+    const containsControls = node => !!(node && node.querySelectorAll && node.querySelectorAll(PICKABLE_CONTROL_SELECTOR).length);
+    const isPageRoot = node => node === document.body || node === document.documentElement;
+    // 点击的元素自身包含控件（如 section/fieldset/表单容器）直接用；否则上溯最近的含控件祖先。
+    // 不把 html/body 作为选区：整页填充由「一键智能填充」承担，hover 也不整页虚线高亮。
+    if (containsControls(target) && !isPageRoot(target)) return target;
+    let node = target.parentElement;
+    while (node && node.nodeType === 1 && !isPageRoot(node)) {
+      if (containsControls(node)) return node;
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function regionLabelOf(el) {
+    if (!el) return "";
+    if (el === document.body || el === document.documentElement) return "整个页面";
+    if (el.id) return el.id;
+    const heading = el.querySelector && el.querySelector("h1, h2, h3, h4, legend, summary, [class*='title'], [class*='header']");
+    const text = cleanText(heading);
+    if (text) return text.slice(0, 40);
+    return el.tagName ? el.tagName.toLowerCase() : "";
+  }
+
+  function regionPathOf(el) {
+    if (!el) return "";
+    if (el === document.body) return "body";
+    if (el === document.documentElement) return "html";
+    return uniquePath(el) || (el.id ? `#${escapeCss(el.id)}` : "");
+  }
+
+  function pickRegion() {
+    return new Promise(resolve => {
+      if (pickController) {
+        const old = pickController;
+        old.cleanup();
+        pickController = null;
+        old.resolve({ ok: false, cancelled: true, error: "已有进行中的点击填充" });
+      }
+      let controller = null;
+      let highlight = null;
+      const overlay = document.createElement("div");
+      overlay.id = "hunter-pick-overlay";
+      overlay.setAttribute("aria-hidden", "true");
+      overlay.style.cssText = "position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:2147483646;pointer-events:none;font:14px/1.6 sans-serif;color:#2563eb;display:flex;align-items:flex-start;justify-content:center;padding-top:72px;text-align:center;";
+      (document.body || document.documentElement).appendChild(overlay);
+
+      const setHighlight = el => {
+        if (el === document.body || el === document.documentElement) el = null;
+        if (highlight === el) return;
+        if (highlight && highlight.style) highlight.style.outline = "";
+        highlight = el;
+        if (el && el.style) el.style.outline = "2px dashed #2563eb";
+      };
+
+      const hintTimer = { id: null };
+      const showHint = text => {
+        overlay.textContent = text;
+        if (hintTimer.id) clearTimeout(hintTimer.id);
+        hintTimer.id = setTimeout(() => { overlay.textContent = ""; }, 1200);
+      };
+
+      const finish = () => {
+        if (pickController !== controller) return;
+        pickController = null;
+        document.removeEventListener("mousemove", onMouseMove, true);
+        document.removeEventListener("click", onClick, true);
+        document.removeEventListener("keydown", onKeyDown, true);
+        setHighlight(null);
+        overlay.remove();
+      };
+
+      const onMouseMove = event => setHighlight(findRegionFor(event.target));
+
+      const onClick = async event => {
+        const region = findRegionFor(event.target);
+        if (!region) {
+          showHint("请点击要填充的容器（Esc 取消）");
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        finish();
+        try {
+          // dryRun：只计算选区内字段，不写全局 elementRegistry/scanSession；
+          // 面板在结果非空时经 SMART_FILL_SCAN(region) 重建真实会话，避免 0 字段选区把
+          // content 会话换成空会话导致后续「填充勾选项」报「扫描会话已过期」。
+          const result = scan(document, { region, dryRun: true });
+          resolve({
+            ok: true,
+            regionPath: regionPathOf(region),
+            regionLabel: regionLabelOf(region) || "已选区域",
+            ...result,
+          });
+        } catch (error) {
+          resolve({ ok: false, error: error.message || String(error), errorCode: error.code || "REGION_PICK_FAILED" });
+        }
+      };
+
+      const onKeyDown = event => {
+        if (event.key === "Escape" || event.key === "Esc") {
+          event.preventDefault();
+          finish();
+          resolve({ ok: false, cancelled: true });
+        }
+      };
+
+      controller = { cleanup: finish, resolve };
+      pickController = controller;
+      overlay.textContent = "点击要填充的容器（如紧急联系人区块，Esc 取消）";
+      document.addEventListener("mousemove", onMouseMove, true);
+      document.addEventListener("click", onClick, true);
+      document.addEventListener("keydown", onKeyDown, true);
+    });
+  }
+
   // —— 增量续填（P1 任务6） ——
   let newFieldsWatch = null;
   function startNewFieldsWatch(options = {}) {
@@ -1751,7 +2227,7 @@
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       try {
         if (message.type === "SMART_FILL_SCAN") {
-          const result = scan(undefined, { onlyUnprocessed: !!message.onlyNew });
+          const result = scan(undefined, { onlyUnprocessed: !!message.onlyNew, region: message.region || undefined });
           sendResponse({ ok: true, ...result });
         } else if (message.type === "SMART_FILL_FILL_FIELD") {
           (async () => {
@@ -1780,6 +2256,20 @@
               }
             } catch (error) {
               sendResponse({ ok: false, error: error.message || String(error), errorCode: error.code || "PICK_FAILED" });
+            }
+          })();
+          return true;
+        } else if (message.type === "SMART_FILL_PICK_REGION") {
+          (async () => {
+            try {
+              const requestId = String(message.requestId || "");
+              sendResponse({ ok: true });
+              const result = await pickRegion();
+              if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+                chrome.runtime.sendMessage({ type: "SMART_FILL_PICK_REGION_RESULT", requestId, ...result }).catch(() => {});
+              }
+            } catch (error) {
+              sendResponse({ ok: false, error: error.message || String(error), errorCode: error.code || "REGION_PICK_FAILED" });
             }
           })();
           return true;
@@ -1840,6 +2330,20 @@
         } else if (message.type === "SMART_FILL_HIGHLIGHT") {
           highlight(message.ids || [], !!message.on);
           sendResponse({ ok: true });
+        } else if (message.type === "SMART_FILL_UNDO") {
+          (async () => {
+            try {
+              const result = await undo({
+                scanId: message.scanId,
+                documentFingerprint: message.documentFingerprint,
+                formFingerprint: message.formFingerprint,
+              });
+              sendResponse({ ok: true, count: result.count, unRestored: result.unRestored || 0 });
+            } catch (error) {
+              sendResponse({ ok: false, error: error.message || String(error), errorCode: error.code || "UNDO_FAILED", count: 0, unRestored: 0 });
+            }
+          })();
+          return true;
         } else if (message.type === "SMART_FILL_CANCEL") {
           if (cancelSignal) cancelSignal.cancelled = true;
           sendResponse({ ok: true });
@@ -1852,6 +2356,6 @@
 
   // —— 测试 / 面板直连入口 ——
   if (typeof globalThis !== "undefined") {
-    globalThis.__hunterFill = { scan, apply, prepareRepeaters, highlight, reset, fillField: fillFieldById, pickFill, startWatch: startNewFieldsWatch, stopWatch: stopNewFieldsWatch };
+    globalThis.__hunterFill = { scan, apply, undo, prepareRepeaters, highlight, reset, fillField: fillFieldById, pickFill, pickRegion, startWatch: startNewFieldsWatch, stopWatch: stopNewFieldsWatch };
   }
 })();

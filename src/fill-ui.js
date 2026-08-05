@@ -6,13 +6,17 @@ import {
 } from "./state.js";
 import { $, toast, fillMessagePage } from "./chrome-helpers.js";
 import { escapeHtml } from "./pure-utils.js";
-import { RESUME_FIELD_LABELS, GROUP_LABELS } from "./form-fields.js";
+import { RESUME_FIELD_LABELS, GROUP_LABELS, normalizeLabel } from "./form-fields.js";
 import { matchRules, applyAiResults, buildAiMatchPrompt, validateBinding } from "./matcher.js";
 import { applyTemplate, saveTemplateFromResults, capTemplates, templateKey } from "./site-templates.js";
 import { appendFillLog, summarizeResults } from "./fill-log.js";
 import { RESUME_FIELDS_SCHEMA, ENTRY_GROUPS, extractResumeFieldsLocal, buildResumeExtractPrompt, mergeResumeFields, aggregateResumeFields } from "./resume-fields.js";
 import { switchProfile, saveProfiles } from "./config.js";
 import { ai, parseAiJson } from "./ai-client.js";
+import { structureSignature, readCache, writeCache } from "./ai-cache.js";
+import { buildDiagnostics } from "./diagnostics.js";
+import { findPlaybook, validatePlaybook } from "./playbook-loader.js";
+import { PLAYBOOKS } from "./playbooks-index.js";
 
 // —— 存储工具 ——
 async function getTemplates() {
@@ -49,6 +53,11 @@ const EDITOR_OPTIONS = {
   acceptAdjustment: ["是", "否"],
 };
 let fillResultMode = "list"; // "list" = 预览/全量平铺；"summary" = 一键填充后的折叠视图
+let fillUndoAvailable = false; // 本次填充是否可撤销（成功填充后启用，清空/重扫/撤销成功后禁用）
+let pickRegionRequestId = null; // 选区拾取（Wave 2 任务3）请求标识
+let aiCacheStore = {}; // AI 映射缓存（内存，Wave 4 任务4）
+let aiRequestSummary = null; // 最近一次 AI 匹配请求摘要（诊断导出用）
+const FILL_ENGINE_VERSION = 3; // 与扫描响应的 engineVersion 校验一致
 let resumeFieldFilter = "all";
 let resumeFieldSearch = "";
 let expandedEntryId = "";
@@ -327,6 +336,7 @@ async function ensureOriginPermission(tab) {
 
 export async function scanFillPage() {
   stopIncrementalWatch();
+  setSmartFillUndoEnabled(false);
   try {
     const tab = await currentTab();
     if (!tab?.url || !/^https?:/i.test(tab.url)) throw new Error("请先打开目标公司的网申页面。");
@@ -335,7 +345,7 @@ export async function scanFillPage() {
     await ensureOriginPermission(tab);
     const response = await fillMessagePage(tab, { type: "SMART_FILL_SCAN" });
     if (!response?.ok) throw new Error(response?.error || "扫描失败");
-    if (response.engineVersion !== 3) throw new Error("页面仍在运行旧版填充引擎，请刷新网申页面后重新扫描。");
+    if (response.engineVersion !== FILL_ENGINE_VERSION) throw new Error("页面仍在运行旧版填充引擎，请刷新网申页面后重新扫描。");
     const fields = response.fields || [];
     if (!fields.length) throw new Error("未检测到可填写的表单项。");
     fillResultMode = "list";
@@ -348,6 +358,7 @@ export async function scanFillPage() {
       documentFingerprint: response.documentFingerprint,
       formFingerprint: response.formFingerprint,
       url: response.page?.url || tab.url,
+      engineVersion: response.engineVersion,
     });
     $("fillCurrentSite").textContent = "";
     $("fillCurrentSiteText").textContent = `当前站点：${pageUrl.hostname}（识别到 ${fields.length} 个表单项）`;
@@ -409,6 +420,7 @@ function computeRepeaterAdditions() {
 }
 
 function applyScanResponse(response, tab) {
+  setSmartFillUndoEnabled(false);
   setFillScanFields(response.fields || []);
   setFillRepeaters(response.repeaters || []);
   setFillScanPage(response.page || state.fillScanPage);
@@ -418,6 +430,7 @@ function applyScanResponse(response, tab) {
     documentFingerprint: response.documentFingerprint,
     formFingerprint: response.formFingerprint,
     url: response.page?.url || tab.url,
+    engineVersion: response.engineVersion,
   });
 }
 
@@ -465,6 +478,38 @@ function currentTemplateStorageKey() {
   return templateKey(url, state.fillScanSession?.formFingerprint || "");
 }
 
+// 在 pb.mappings 中按 siteLabel/controlType/slot 定位 match 对应的语义映射。
+function findPlaybookMapping(playbook, match) {
+  const label = normalizeLabel(match.label ?? match.rawLabel ?? "");
+  return (playbook?.mappings || []).find(mapping =>
+    normalizeLabel(mapping.siteLabel) === label
+    && String(mapping.controlType || "text") === String(match.type || "text")
+    && String(mapping.slot || "single") === String(match.slot || "single")
+  ) || null;
+}
+
+// playbook 只作为规则之上的优先覆盖层：站点内置映射命中且中央校验通过、原 match 非 manual 且
+// 非 userConfirmed 时应用；否则保持原状。模板 userConfirmed 匹配优先于 playbook（不降级、不丢确认标记），
+// 敏感/人工字段不被 playbook 覆盖，playbook 映射校验失败也不改写原 match 的 reason/状态。
+function applyPlaybookOverlay(matches, resumeFields) {
+  const url = state.fillScanPage?.url || state.fillScanSession?.url || "";
+  const playbook = findPlaybook(PLAYBOOKS, url);
+  if (!playbook || !validatePlaybook(playbook).ok) return matches;
+  return (matches || []).map(match => {
+    if (match.status === "manual" || match.userConfirmed) return match;
+    const mapping = findPlaybookMapping(playbook, match);
+    if (!mapping?.fieldKey) return match;
+    const validated = validateBinding(match, mapping.fieldKey, resumeFields || {}, {
+      source: "playbook",
+      confidence: "high",
+      userConfirmed: false,
+      reason: `站点 playbook 映射（${mapping.fieldKey}）`,
+    });
+    if (validated.status !== "match") return match;
+    return { ...match, ...validated, source: "playbook" };
+  });
+}
+
 async function buildMatches() {
   const resume = activeProfile()?.resumeFields || {};
   let matches = matchRules(state.fillScanFields, resume);
@@ -473,16 +518,34 @@ async function buildMatches() {
   matches = applyTemplate(matches, templates[storageKey] || null, resume, {
     formFingerprint: state.fillScanSession?.formFingerprint || "",
   });
+  // playbook 优先覆盖层：位于模板之后、AI 之前，覆盖既有非 manual 匹配。
+  matches = applyPlaybookOverlay(matches, resume);
   if (state.fillAiEnabled && state.config.apiKey) {
     const needs = matches.filter(m => m.status === "manual" || m.confidence === "low");
     if (needs.length) {
-      try {
-        const messages = buildAiMatchPrompt(needs, resume);
-        const response = await ai(messages, 1200, true);
-        const data = await parseAiJson(response.text);
-        matches = applyAiResults(matches, data, state.fillScanFields, resume);
-      } catch (_error) {
-        // AI 失败不阻塞：未识别字段保持「需手动」
+      const signature = structureSignature(state.fillScanFields, { extra: state.fillScanSession?.formFingerprint || "" });
+      const engineVersion = state.fillScanSession?.engineVersion || FILL_ENGINE_VERSION;
+      const model = state.config.model || "default";
+      const cached = readCache(aiCacheStore, signature, engineVersion, model);
+      if (cached !== null) {
+        // 空结果 [] 也是合法缓存（cached !== null 判断，勿用 if(cached)）。
+        aiRequestSummary = { requested: false, cached: true, model, fieldsSent: needs.map(m => m.fieldId) };
+        matches = applyAiResults(matches, cached, state.fillScanFields, resume);
+      } else {
+        const fieldsSent = needs.map(m => m.fieldId);
+        try {
+          const startedAt = Date.now();
+          const messages = buildAiMatchPrompt(needs, resume);
+          const response = await ai(messages, 1200, true);
+          const data = await parseAiJson(response.text);
+          matches = applyAiResults(matches, data, state.fillScanFields, resume);
+          // 仅成功才写缓存（entries 为 AI 返回的 fieldKey 建议列表）；失败不写，下次可重试。
+          writeCache(aiCacheStore, { signature, engineVersion, model, entries: data });
+          aiRequestSummary = { requested: true, cached: false, model, fieldsSent, durationMs: Date.now() - startedAt };
+        } catch (_error) {
+          // AI 失败不阻塞：未识别字段保持「需手动」。
+          aiRequestSummary = { requested: true, cached: false, model, fieldsSent, failed: true };
+        }
       }
     }
   }
@@ -494,7 +557,7 @@ async function buildMatches() {
 
 // —— 匹配列表渲染 ——
 const CONF_LABEL = { high: "高", medium: "中", low: "低" };
-const SRC_LABEL = { template: "模板", rule: "规则", ai: "AI", manual: "手动" };
+const SRC_LABEL = { template: "模板", rule: "规则", playbook: "站点", ai: "AI", manual: "手动" };
 
 function updateFillButtons() {
   const matches = state.fillMatches;
@@ -544,6 +607,12 @@ function resumeBindingChoices() {
   return choices;
 }
 
+// 失败行原因文案：打字重填（模拟输入后仍失败）明确引导手动填写，其余失败保持匹配阶段原文案。
+function fillFailureReason(match) {
+  if (match.fillError && match.fillError.includes("模拟输入后仍失败")) return "已尝试模拟输入仍失败，请手动填写";
+  return match.reason || "";
+}
+
 function matchRowHtml(match) {
   const selected = state.fillSelected.has(match.fieldId);
   const value = state.fillValues[match.fieldId] ?? match.value ?? "";
@@ -559,13 +628,13 @@ function matchRowHtml(match) {
     match.status === "manual" ? `<span class="fill-badge status-manual">需手动</span>` : "",
   ].filter(Boolean).join("");
   const evidence = (match.evidence || []).slice(0, 2).map(item => `${item.source}:${item.text}`).join(" · ");
-  return `<div class="fill-row${match.status === "manual" ? " manual" : ""}">
+  return `<div class="fill-row${match.status === "manual" ? " manual" : ""}" data-fill-id="${match.fieldId}">
     <input type="checkbox" data-fill-id="${match.fieldId}" ${selected ? "checked" : ""} ${editable ? "" : "disabled"}>
     <div class="fill-row-main">
       <div class="fill-row-label">${escapeHtml(match.label || "（未识别标签）")}${match.required ? `<span class="req">*</span>` : ""}${badges}</div>
       <input type="text" list="fillFieldKeyOptions" data-fill-key-id="${match.fieldId}" value="${escapeHtml(bindingChoice)}" ${keyEditable ? "" : "disabled"} placeholder="搜索并选择简历字段">
       <input type="text" data-fill-value-id="${match.fieldId}" value="${escapeHtml(value)}" ${editable ? "" : "disabled"} placeholder="${editable ? (match.status === "match" ? "可手动修改" : "可手动填写，完成后确认") : "选择正确的简历字段后启用"}">
-      <div class="fill-meta">${escapeHtml(match.reason || "")}${evidence ? ` · ${escapeHtml(evidence)}` : ""}</div>
+      <div class="fill-meta">${escapeHtml(fillFailureReason(match))}${evidence ? ` · ${escapeHtml(evidence)}` : ""}</div>
     </div>
   </div>`;
 }
@@ -583,17 +652,34 @@ export function renderFillMatches() {
     .map(choice => `<option value="${escapeHtml(choice.value)}">${escapeHtml(choice.label)}</option>`)
     .join("");
   const datalist = `<datalist id="fillFieldKeyOptions">${fieldKeyOptions}</datalist>`;
+  // 绿/橙图例：与页面 DONE_CLASS/PENDING_CLASS 着色语义一致（已填=绿、待人工=橙）。
+  const legend = `<div class="fill-legend"><span class="dot done"></span>已填<span class="dot pending"></span>待人工</div>`;
   if (fillResultMode === "summary") {
     const manual = matches.filter(m => m.status === "manual" || state.fillFailedIds.includes(m.fieldId));
     const filled = matches.filter(m => m.status === "match" && !state.fillFailedIds.includes(m.fieldId));
-    target.innerHTML = datalist + (manual.length
+    target.innerHTML = legend + datalist + (manual.length
       ? `<details class="fill-summary-manual" open><summary>需人工处理（${manual.length}）</summary>${manual.map(matchRowHtml).join("")}</details>`
       : `<p class="hint fill-done-tip">🎉 全部 ${filled.length} 项已填充</p>`)
       + `<details class="fill-summary-done"><summary>已自动填充（${filled.length}）</summary>${filled.map(matchRowHtml).join("")}</details>`;
   } else {
-    target.innerHTML = datalist + matches.map(matchRowHtml).join("");
+    target.innerHTML = legend + datalist + matches.map(matchRowHtml).join("");
+  }
+  // 结果行点击：向 content 发 SMART_FILL_HIGHLIGHT 高亮页面字段便于定位。
+  // 现有 highlight 仅加描边不滚动，此处保持最小改动只发高亮（不改 fill-content.js）。
+  for (const row of target.querySelectorAll(".fill-row")) {
+    const match = matches.find(item => item.fieldId === row.dataset.fillId);
+    if (match) bindFillRowClick(row, match);
   }
   updateFillButtons();
+}
+
+function bindFillRowClick(row, match) {
+  row.onclick = () => {
+    const session = state.fillScanSession;
+    const tab = session?.tabId ? { id: session.tabId, url: session.url || "" } : null;
+    if (!tab?.id || !/^https?:/i.test(tab.url || "")) return;
+    fillMessagePage(tab, { type: "SMART_FILL_HIGHLIGHT", ids: [match.fieldId], on: true }).catch(() => {});
+  };
 }
 
 // —— 填充执行 ——
@@ -646,6 +732,12 @@ export async function runFill(all = false) {
     const summary = summarizeResults(results);
     const failedIds = results.filter(r => !r.ok).map(r => r.id);
     setFillFailedIds(failedIds);
+    // 记录失败原因到对应 match，供失败行渲染区分「打字重填仍失败」等路径
+    for (const result of results) {
+      const match = state.fillMatches.find(item => item.fieldId === result.id);
+      if (!match) continue;
+      match.fillError = result.ok ? "" : (result.error || "");
+    }
     if (failedIds.length) {
       fillMessagePage(tab, { type: "SMART_FILL_HIGHLIGHT", ids: failedIds, on: true }).catch(() => {});
     }
@@ -655,7 +747,12 @@ export async function runFill(all = false) {
       fillResultMode = "summary";
       renderFillMatches();
     }
-    if (summary.ok > 0) startIncrementalWatch();
+    if (summary.ok > 0) {
+      setSmartFillUndoEnabled(true);
+      startIncrementalWatch();
+    } else {
+      setSmartFillUndoEnabled(false);
+    }
     return { summary, failedIds };
   } finally {
     fillRunning = false;
@@ -678,6 +775,7 @@ export async function stopFill() {
 
 export async function clearFill() {
   stopIncrementalWatch();
+  setSmartFillUndoEnabled(false);
   const session = state.fillScanSession;
   const tab = session?.tabId ? { id: session.tabId, url: session.url } : await currentTab();
   if (tab?.id && tab?.url && /^https?:/i.test(tab.url) && state.fillFailedIds.length) {
@@ -889,6 +987,19 @@ export async function startPickFill(fieldKey) {
   toast("请在页面点击要填入的位置（Esc 取消）");
 }
 
+// 选区填充：进入选区拾取态，用户点击页面容器后按选区内字段渲染匹配。
+// content 拾取到容器后直接回传该容器的 scan 结果（SMART_FILL_PICK_REGION_RESULT）。
+export async function startPickRegion() {
+  const session = state.fillScanSession;
+  const tab = session?.tabId ? { id: session.tabId, url: session.url || "" } : await currentTab();
+  if (!tab?.id || !/^https?:/i.test(tab.url || "")) throw new Error("请先打开目标网申页面。");
+  const requestId = `region-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  pickRegionRequestId = requestId;
+  const response = await fillMessagePage(tab, { type: "SMART_FILL_PICK_REGION", requestId });
+  if (!response?.ok) throw new Error(response?.error || "进入选区拾取失败");
+  toast("请在页面点击要填充的容器（Esc 取消）");
+}
+
 // —— 增量续填（P1 任务6） ——
 function startIncrementalWatch() {
   const session = state.fillScanSession;
@@ -949,13 +1060,182 @@ export function handleFillRuntimeMessage(message) {
     else toast(`已填入「${message.value ?? ""}」`);
     return;
   }
+  if (message.type === "SMART_FILL_PICK_REGION_RESULT") {
+    applyRegionFillResult(message);
+    return;
+  }
   if (message.type === "SMART_FILL_PROGRESS") {
     const progress = $("fillProgress");
     if (progress) progress.textContent = `正在填充 ${message.index}/${message.total}…${message.error ? `（${message.error}）` : ""}`;
   }
 }
 
+// 选区拾取结果：用选区内字段重建扫描会话与匹配列表（复用现有渲染管线）。
+// 引擎拾取时以 dryRun 扫描（不写全局会话），这里用 region 选择器经 SMART_FILL_SCAN 重扫一次，
+// 建立真实 content 会话后再渲染；0 字段或重扫失败时不改任何会话，避免 content/panel 脱同步。
+async function applyRegionFillResult(message) {
+  try {
+    if (pickRegionRequestId && message.requestId !== pickRegionRequestId) return;
+    pickRegionRequestId = null;
+    if (message.cancelled) { toast("已取消选区填充"); return; }
+    if (!message.ok) { toast(`选区填充失败：${message.error || "未知错误"}`); return; }
+    const previewFields = message.fields || [];
+    if (!previewFields.length) { toast("选区内未识别到可填字段，请重新选择更完整的容器"); return; }
+    const session = state.fillScanSession;
+    const tab = session?.tabId ? { id: session.tabId, url: session.url || "" } : await currentTab();
+    if (!tab?.id || !/^https?:/i.test(tab.url || "")) throw new Error("找不到目标页面，请重新扫描");
+    const regionPath = message.regionPath || "";
+    if (!regionPath) throw new Error("选区路径缺失，请重新选择");
+    const response = await fillMessagePage(tab, { type: "SMART_FILL_SCAN", region: regionPath });
+    if (!response?.ok) throw new Error(response?.error || "重建选区扫描失败");
+    const fields = response.fields || [];
+    if (!fields.length) { toast("选区内未识别到可填字段，请重新选择更完整的容器"); return; }
+    stopIncrementalWatch();
+    fillResultMode = "list";
+    applyScanResponse(response, tab);
+    const regionName = message.regionLabel || regionPath || "已选区域";
+    $("fillCurrentSite").textContent = "";
+    $("fillCurrentSiteText").textContent = `选区「${regionName}」：识别到 ${fields.length} 个表单项`;
+    $("clearFill").hidden = false;
+    await buildMatches();
+    await renderFillTemplate();
+    toast(`已识别选区内 ${fields.length} 个字段`);
+  } catch (error) {
+    toast(`选区填充失败：${error.message || String(error)}`);
+  }
+}
+
+// 撤销本次填充：向 content 发送 SMART_FILL_UNDO，恢复本次 session 记录的原值并清除着色；
+// 成功后清空面板结果并提示。会话校验不绕过（scanId/指纹随消息下发，引擎侧 assertScanSession）。
+export async function undoLastFill() {
+  const session = state.fillScanSession;
+  if (!session?.scanId || !session?.tabId) throw new Error("扫描会话已失效，请重新扫描页面。");
+  const tab = await currentTab();
+  if (!tab || tab.id !== session.tabId) throw new Error("当前标签页不是刚才扫描的页面，请切回后重新扫描。");
+  const response = await fillMessagePage(tab, {
+    type: "SMART_FILL_UNDO",
+    scanId: session.scanId,
+    documentFingerprint: session.documentFingerprint,
+    formFingerprint: session.formFingerprint,
+  });
+  if (!response?.ok) throw new Error(response?.error || "撤销失败");
+  const count = Number(response.count) || 0;
+  const unRestored = Number(response.unRestored) || 0;
+  await clearFill();
+  setSmartFillUndoEnabled(false);
+  if (unRestored > 0) {
+    toast(`已撤销本次填充：${unRestored} 项自定义组件未能完全恢复，请手动确认`);
+  } else {
+    toast(count > 0 ? `已撤销本次填充（${count} 项）` : "已撤销本次填充");
+  }
+}
+
+// 智能填充结果工具条：动态创建「撤销本次填充」按钮（不依赖 panel.html 静态骨架）。
+// 初始禁用；填充成功后启用；清空/重新扫描/撤销成功后禁用。
+function ensureSmartFillUndoButton() {
+  const actions = document.querySelector(".fill-actions");
+  if (!actions || document.getElementById("smartFillUndo")) return;
+  const button = document.createElement("button");
+  button.id = "smartFillUndo";
+  button.type = "button";
+  button.className = "secondary";
+  button.textContent = "撤销本次填充";
+  button.title = "恢复本次填充的所有字段原值并清除页面着色";
+  button.disabled = true;
+  button.onclick = () => undoLastFill().catch(error => toast(error.message));
+  actions.appendChild(button);
+}
+
+function setSmartFillUndoEnabled(enabled) {
+  fillUndoAvailable = !!enabled;
+  const button = document.getElementById("smartFillUndo");
+  if (button) button.disabled = !fillUndoAvailable;
+}
+
+// 智能填充工具条：动态创建「选区填充」按钮（不依赖 panel.html 静态骨架）。
+// 点击后进入选区拾取态，用户点选页面容器，仅识别并填充该容器内的字段。
+function ensureRegionFillButton() {
+  const actions = document.querySelector(".fill-actions");
+  if (!actions || document.getElementById("regionFill")) return;
+  const button = document.createElement("button");
+  button.id = "regionFill";
+  button.type = "button";
+  button.className = "secondary";
+  button.textContent = "选区填充";
+  button.title = "点选页面某个容器（如紧急联系人区块），只识别并填充该容器内的字段";
+  button.onclick = () => startPickRegion().catch(error => toast(error.message));
+  actions.appendChild(button);
+}
+
+// —— 诊断导出（Wave 4 任务4） ——
+// 收集「收集→buildDiagnostics→返回 JSON 字符串」，与按钮解耦便于测试。
+export function exportDiagnosticsJson() {
+  const session = state.fillScanSession || {};
+  const matches = state.fillMatches || [];
+  const matchedBy = { rule: 0, template: 0, playbook: 0, ai: 0, manual: 0 };
+  for (const match of matches) {
+    const key = Object.prototype.hasOwnProperty.call(matchedBy, match.source) ? match.source : "rule";
+    matchedBy[key] += 1;
+  }
+  const failures = matches
+    .filter(match => match.fillError)
+    .map(match => ({ fieldId: match.fieldId, siteLabel: match.label ?? match.rawLabel ?? "", type: match.type, reason: match.fillError }));
+  const ai = aiRequestSummary
+    ? { requested: !!aiRequestSummary.requested, model: aiRequestSummary.model || state.config.model || "", fieldsSent: aiRequestSummary.fieldsSent || [] }
+    : { requested: false, model: state.config.model || "", fieldsSent: [] };
+  const diag = buildDiagnostics({
+    engineVersion: session.engineVersion,
+    scanId: session.scanId,
+    url: session.url,
+    fields: state.fillScanFields || [],
+    matchedBy,
+    failures,
+    ai,
+    timings: {},
+    durationMs: 0,
+  });
+  return JSON.stringify(diag, null, 2);
+}
+
+// 导出诊断包：拿到 JSON 后触发 Blob 下载；下载 API 不可用时仅提示，不阻塞面板。
+export async function exportDiagnostics() {
+  const json = exportDiagnosticsJson();
+  try {
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `hunter-diagnostics-${state.fillScanSession?.scanId || "unknown"}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  } catch (_error) {
+    // 受限环境（如 jsdom）无 URL.createObjectURL 时降级为仅提示
+  }
+  toast("诊断包已导出（已脱敏）");
+  return json;
+}
+
+// 智能填充工具条：动态创建「导出诊断包」按钮（不依赖 panel.html 静态骨架）。
+// 点击后导出当前扫描/填充会话的诊断 JSON（已脱敏）。
+function ensureExportDiagnosticsButton() {
+  const actions = document.querySelector(".fill-actions");
+  if (!actions || document.getElementById("exportDiagnostics")) return;
+  const button = document.createElement("button");
+  button.id = "exportDiagnostics";
+  button.type = "button";
+  button.className = "secondary";
+  button.textContent = "导出诊断包";
+  button.title = "导出本次扫描/填充的诊断信息（已脱敏）";
+  button.onclick = () => exportDiagnostics().catch(error => toast(error.message));
+  actions.appendChild(button);
+}
+
 function bindFillEvents() {
+  ensureRegionFillButton();
+  ensureSmartFillUndoButton();
+  ensureExportDiagnosticsButton();
   $("smartFillOnce").onclick = () => runSmartFillOnce().catch(error => toast(error.message));
   $("fillSelected").onclick = () => runFill(false).catch(error => toast(error.message));
   $("stopFill").onclick = () => stopFill().catch(error => toast(error.message));

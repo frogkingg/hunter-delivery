@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MATCHER_DATASET } from "./data/matcher-dataset.js";
-import { matchRules, applyAiResults, buildAiMatchPrompt, matchFields, validateBinding } from "../src/matcher.js";
+import { matchRules, applyAiResults, buildAiMatchPrompt, matchFields, validateBinding, SENSITIVE_FIELD_KEYS } from "../src/matcher.js";
 import { RESUME_FIELD_LABELS } from "../src/form-fields.js";
 
 const FULL_RESUME = {
@@ -44,7 +44,10 @@ test("matchRules: 总体命中率 ≥85%（含噪音与复杂字段）", () => {
   const results = matchRules(toFields(cases.map(c => c.label)), FULL_RESUME);
   const correct = results.filter((r, index) => {
     const expected = cases[index];
-    return expected.key ? (r.fieldKey === expected.key && r.status === "match") : (r.fieldKey === "" && r.status === "manual");
+    if (!expected.key) return r.fieldKey === "" && r.status === "manual";
+    if (r.fieldKey === expected.key && r.status === "match") return true;
+    // 敏感字段按策略强制人工：识别正确即算正确处理（填充需用户显式确认），口径与集成测试一致。
+    return r.fieldKey === expected.key && r.status === "manual" && SENSITIVE_FIELD_KEYS.has(expected.key);
   }).length;
   assert.ok(correct / cases.length >= 0.85, `总体命中率 ${correct}/${cases.length}`);
 });
@@ -55,10 +58,10 @@ test("matchRules: 高置信度的常见字段", () => {
 });
 
 test("matchRules: 简历缺少值时降级为 manual", () => {
-  const results = matchRules(toFields(["期望薪资"]), {});
+  const results = matchRules(toFields(["工作年限"]), {});
   const hit = results[0];
   assert.equal(hit.status, "manual");
-  assert.equal(hit.fieldKey, "expectedSalary");
+  assert.equal(hit.fieldKey, "workYears");
   assert.match(hit.reason, /简历中缺少/);
 });
 
@@ -74,12 +77,12 @@ test("matchRules: 无标签字段标记 manual", () => {
 });
 
 test("applyAiResults: AI 补全未识别字段", () => {
-  const fields = [{ id: "f0", label: "期望薪资待遇", type: "text", skipped: false, options: [] }];
-  const matches = [{ fieldId: "f0", fieldKey: "", value: "", confidence: null, source: "rule", status: "manual", reason: "未识别字段含义", label: "期望薪资待遇", type: "text" }];
-  const ai = [{ fieldId: "f0", fieldKey: "expectedSalary", confidence: "high", reason: "简历期望薪资" }];
+  const fields = [{ id: "f0", label: "工作年限", type: "text", skipped: false, options: [] }];
+  const matches = [{ fieldId: "f0", fieldKey: "", value: "", confidence: null, source: "rule", status: "manual", reason: "未识别字段含义", label: "工作年限", type: "text" }];
+  const ai = [{ fieldId: "f0", fieldKey: "workYears", confidence: "high", reason: "简历工作年限" }];
   const merged = applyAiResults(matches, ai, fields, FULL_RESUME);
-  assert.equal(merged[0].fieldKey, "expectedSalary");
-  assert.equal(merged[0].value, "30-40K");
+  assert.equal(merged[0].fieldKey, "workYears");
+  assert.equal(merged[0].value, "5年");
   assert.equal(merged[0].source, "ai");
   assert.equal(merged[0].status, "match");
 });
@@ -118,17 +121,17 @@ test("matchFields: aiMatch=false 不调用 AI", async () => {
 
 test("matchFields: aiMatch=true 只对需要字段调用 AI", async () => {
   const needs = [];
-  const results = await matchFields(toFields(["姓名", "你期望的薪资待遇"]), FULL_RESUME, {
+  const results = await matchFields(toFields(["姓名", "你期望的工作城市"]), FULL_RESUME, {
     aiMatch: true,
     aiCall: async (messages) => {
       const payload = JSON.parse(messages[0].content.match(/页面字段证据：(\[[\s\S]*\])\n只输出/)?.[1] || "[]");
       needs.push(...payload.map(p => p.fieldId));
-      return [{ fieldId: "f1", fieldKey: "expectedSalary", confidence: "high" }];
+      return [{ fieldId: "f1", fieldKey: "expectedCity", confidence: "high" }];
     },
   });
   assert.deepEqual(needs, ["f1"], "只应调用一次且只含未识别字段");
   assert.equal(results[0].fieldKey, "name");
-  assert.equal(results[1].fieldKey, "expectedSalary");
+  assert.equal(results[1].fieldKey, "expectedCity");
   assert.equal(results[1].source, "ai");
   assert.equal(results[1].status, "manual", "纯 AI 文本语义建议需用户确认");
 });
@@ -153,7 +156,7 @@ test("matchRules: 布尔勾选框可匹配", () => {
 });
 
 test("matchRules: select 选项不匹配时降级 manual（含子串合理匹配）", () => {
-  const noHit = matchRules([{ id: "s1", type: "select", label: "期望薪资", options: ["10-20K", "20-30K"] }], FULL_RESUME);
+  const noHit = matchRules([{ id: "s1", type: "select", label: "学历", options: ["博士"] }], FULL_RESUME);
   assert.equal(noHit[0].status, "manual");
   assert.match(noHit[0].reason, /选项不匹配/);
   const hit = matchRules([{ id: "s2", type: "select", label: "工作年限", options: ["1-3年", "3-5年"] }], FULL_RESUME);
@@ -161,7 +164,7 @@ test("matchRules: select 选项不匹配时降级 manual（含子串合理匹配
 });
 
 test("matchRules: select 无选项信息时不校验", () => {
-  const result = matchRules([{ id: "s3", type: "select", label: "期望薪资", options: [] }], FULL_RESUME);
+  const result = matchRules([{ id: "s3", type: "select", label: "学历", options: [] }], FULL_RESUME);
   assert.equal(result[0].status, "match");
 });
 
@@ -306,16 +309,16 @@ test("applyAiResults: AI 不能绕过 skipped 与 select 选项校验", () => {
 });
 
 test("applyAiResults: 最终值必须从当前简历 fieldKey 解析，不接受 AI 编造值", () => {
-  const fields = [{ id: "salary1", type: "text", label: "你期望的薪资待遇", options: [], skipped: false }];
+  const fields = [{ id: "salary1", type: "text", label: "你的工龄多长", options: [], skipped: false }];
   const rule = matchRules(fields, FULL_RESUME);
   const merged = applyAiResults(
     rule,
-    [{ fieldId: "salary1", fieldKey: "expectedSalary", value: "999K", confidence: "high" }],
+    [{ fieldId: "salary1", fieldKey: "workYears", value: "999K", confidence: "high" }],
     fields,
     FULL_RESUME
   );
   assert.equal(merged[0].status, "manual", "缺少本地证据时仍需人工确认");
-  assert.equal(merged[0].value, FULL_RESUME.expectedSalary);
+  assert.equal(merged[0].value, FULL_RESUME.workYears);
 });
 
 test("buildAiMatchPrompt: AI 只返回语义 fieldKey，不发送简历具体值", () => {
@@ -481,4 +484,38 @@ test("教育日期范围：缺少任一端时整组降级人工，禁止写入�
   });
   assert.ok(results.every(result => result.status === "manual" && result.lockedManual));
   assert.ok(results.every(result => /同时具备开始和结束时间/.test(result.reason)));
+});
+
+test("敏感字段集合：默认强制 manual，用户确认后可填", () => {
+  const fields = [
+    { id: "f1", label: "身份证号", type: "text", evidence: [{ source: "label", text: "身份证号", weight: 90 }], context: {} },
+    { id: "f2", label: "期望薪资", type: "text", evidence: [{ source: "label", text: "期望薪资", weight: 90 }], context: {} },
+    { id: "f3", label: "紧急联系人姓名", type: "text", evidence: [{ source: "label", text: "紧急联系人姓名", weight: 90 }], context: {} },
+  ];
+  const resume = { name: "张三", phone: "13800138000", idCard: "110101199806010011", expectedSalary: "30-40K" };
+  const matches = matchRules(fields, resume);
+  for (const m of matches) assert.equal(m.status, "manual", `${m.label} 应默认 manual`);
+  const confirmed = validateBinding(fields[0], "idCard", resume, { source: "manual", userConfirmed: true });
+  assert.equal(confirmed.status, "match");
+});
+
+test("敏感字段集合：AI 也不能绕过，且不暴露简历值", () => {
+  const fields = [{ id: "f0", label: "身份证号", type: "text", evidence: [{ source: "label", text: "身份证号", weight: 90 }], context: {} }];
+  const matches = matchRules(fields, FULL_RESUME);
+  assert.equal(matches[0].status, "manual");
+  assert.equal(matches[0].value, "", "规则层敏感字段不携带简历值");
+  const merged = applyAiResults(
+    matches,
+    [{ fieldId: "f0", fieldKey: "idCard", confidence: "high" }],
+    fields,
+    FULL_RESUME
+  );
+  assert.equal(merged[0].status, "manual", "AI 不能绕过敏感字段守卫");
+  assert.equal(merged[0].value, "", "敏感字段不暴露简历值");
+});
+
+test("敏感字段集合：规范敏感 key 必须存在于集合中（防误删）", () => {
+  const required = ["idCard", "expectedSalary", "referral", "politicalStatus"];
+  const missing = required.filter(key => !SENSITIVE_FIELD_KEYS.has(key));
+  assert.deepEqual(missing, [], `规范敏感 key 缺失：${missing.join("、")}`);
 });

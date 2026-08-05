@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
-import { matchRules } from "../src/matcher.js";
+import { matchRules, SENSITIVE_FIELD_KEYS } from "../src/matcher.js";
 
 const engineSource = readFileSync(new URL("../fill-content.js", import.meta.url), "utf8");
 const fixture = name => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
@@ -92,6 +92,9 @@ test("匹配：6 个夹具的常见字段与复杂字段", () => {
         if (result.status === "manual") manualCorrect += 1;
       } else if (result.fieldKey === want && result.status === "match") {
         correct += 1;
+      } else if (result.fieldKey === want && result.status === "manual" && SENSITIVE_FIELD_KEYS.has(want)) {
+        // 敏感字段按策略强制人工：识别正确即算正确处理（填充需用户显式确认）。
+        correct += 1;
       }
     }
     dom.window.close();
@@ -142,6 +145,7 @@ test("填充执行：6 个夹具原生/下拉/单选/多选/日期全部成功",
     if (byLabel["姓名"]) {
       const nameInput = doc.getElementById("name") || doc.querySelector("[name=name]") || doc.querySelector(byLabel["姓名"].path);
       assert.equal(nameInput.value, "张三");
+      assert.equal(applied.find(r => r.id === byLabel["姓名"].id).retried, false, "非受控表单应走标准路径 retried:false");
     }
     if (byLabel["手机号码"] || byLabel["手机号"]) {
       const phone = doc.querySelector("[name=phone], #mobile, .index-phoneInput-a1");
@@ -195,6 +199,68 @@ test("hidden 输入不进入扫描结果", () => {
   const { fields } = dom.window.__hunterFill.scan(dom.window.document);
   assert.ok(!fields.some(f => f.label === "" && f.skipped), "hidden 控件不应输出为需手动字段");
   assert.equal(fields.length, 9, "hidden 不增加字段数");
+  dom.window.close();
+});
+
+test("选区填充：region 限定扫描范围", () => {
+  const dom = loadFixture("region-form.html");
+  const doc = dom.window.document;
+  const region = doc.querySelector("#emergency");
+  const { fields } = dom.window.__hunterFill.scan(doc, { region });
+  assert.ok(fields.length === 2, `应只识别选区内字段：${fields.length}`);
+  assert.ok(fields.every(f => /紧急联系人|联系人/.test(f.label)));
+  dom.window.close();
+});
+
+test("选区填充：region 选择器未命中时不回退全页扫描", () => {
+  const dom = loadFixture("region-form.html");
+  const { fields } = dom.window.__hunterFill.scan(dom.window.document, { region: "#not-exists" });
+  assert.equal(fields.length, 0, "未命中选择器应返回空结果而非全页 4 个字段");
+  dom.window.close();
+});
+
+test("选区填充：拾取容器返回选区内字段且不覆盖全页会话（dryRun）", async () => {
+  const dom = loadFixture("region-form.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const full = engine.scan(doc);
+  const nameField = full.fields.find(f => f.label === "姓名");
+  const picking = engine.pickRegion();
+  doc.querySelector("#emergency").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  const result = await picking;
+  assert.equal(result.ok, true);
+  assert.equal(result.regionPath, "section#emergency");
+  assert.equal((result.fields || []).length, 2);
+  assert.ok(result.fields.every(f => /联系人/.test(f.label)));
+  // dryRun 选区扫描不得覆盖全局会话：旧 scanId 填充仍成功
+  const filled = await engine.fillField({ id: nameField.id, value: "李四" }, {
+    scanId: full.scanId, documentFingerprint: full.documentFingerprint, formFingerprint: full.formFingerprint,
+  });
+  assert.equal(filled.ok, true);
+  assert.equal(doc.getElementById("name").value, "李四");
+  dom.window.close();
+});
+
+test("选区填充：0 字段选区拾取不覆盖全局会话（避免 content/panel 脱同步）", async () => {
+  const dom = loadFixture("region-form.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const full = engine.scan(doc);
+  const nameField = full.fields.find(f => f.label === "姓名");
+  // 选区容器含控件但全部不可见：scan 输出 0 字段（拾取判定只看控件存在性）
+  const basic = doc.querySelector("#basic");
+  basic.setAttribute("hidden", "");
+  const picking = engine.pickRegion();
+  basic.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  const result = await picking;
+  assert.equal(result.ok, true);
+  assert.equal((result.fields || []).length, 0, "隐藏控件选区内应 0 字段");
+  // 全局会话仍是全页会话：旧 scanId 填充成功，不会报「扫描会话已过期」
+  const filled = await engine.fillField({ id: nameField.id, value: "李四" }, {
+    scanId: full.scanId, documentFingerprint: full.documentFingerprint, formFingerprint: full.formFingerprint,
+  });
+  assert.equal(filled.ok, true);
+  assert.equal(doc.getElementById("name").value, "李四");
   dom.window.close();
 });
 
@@ -1047,5 +1113,347 @@ test("点击填充：重复进入拾取态后旧监听器不残留（Esc 后点�
   assert.equal(r2.cancelled, true);
   assert.notEqual(input.value, "旧值", "旧拾取监听器不得残留并写入旧值");
   assert.equal(pageClickFired, true, "取消后页面点击不应被吞掉");
+  dom.window.close();
+});
+
+test("受控输入（React 式）：verify 失败后打字重填成功", async () => {
+  const dom = loadFixture("controlled-input.html");
+  const doc = dom.window.document;
+  // loadFixture 使用 runScripts:"outside-only"，夹具内联 <script> 不会自动执行；
+  // 这里按夹具语义手动 eval 其受控校验逻辑（否则夹具形同普通输入框，红灯无法复现）。
+  const inlineScript = /<script>([\s\S]*?)<\/script>/.exec(fixture("controlled-input.html"));
+  assert.ok(inlineScript, "夹具应包含内联受控校验脚本");
+  dom.window.eval(inlineScript[1]);
+  const { fields, scanId, documentFingerprint, formFingerprint } = dom.window.__hunterFill.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  assert.ok(name, "应识别姓名字段");
+  // 说明：apply 实际直接返回结果数组（非 { ok, results }），按真实 API 形状断言。
+  const results = await dom.window.__hunterFill.apply([{ id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  const r = results.find(x => x.id === name.id);
+  assert.equal(r.ok, true, `姓名应填入：${r.error || ""}`);
+  assert.equal(doc.getElementById("name").value, "张三");
+  assert.equal(r.retried, true, "应走打字重填路径");
+  dom.window.close();
+});
+
+test("联想下拉：候选打分并选中匹配项", async () => {
+  const dom = loadFixture("suggest-dropdown.html");
+  const doc = dom.window.document;
+  // 注意：loadFixture 用 runScripts:"outside-only"，夹具内联脚本需手动 eval（参考 W1T1 受控输入用例的 eval 方式）
+  const inline = fixture("suggest-dropdown.html").match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  if (inline) dom.window.eval(inline);
+  const { fields, scanId, documentFingerprint, formFingerprint } = dom.window.__hunterFill.scan(doc);
+  const school = fields.find(f => f.label.includes("毕业院校"));
+  assert.ok(school, "应识别毕业院校字段");
+  const results = await dom.window.__hunterFill.apply([{ id: school.id, value: "复旦大学", type: "text", fingerprint: school.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  const r = results.find(x => x.id === school.id);
+  assert.equal(r.ok, true, `联想下拉应选中：${r.error || ""}`);
+  assert.equal(r.via, "suggest", "应真实走联想选中路径而非回退打字路径");
+  assert.equal(doc.getElementById("school").value, "复旦大学");
+  dom.window.close();
+});
+
+test("联想下拉：无匹配候选时回退打字路径且不误选", async () => {
+  const dom = loadFixture("suggest-dropdown.html");
+  const doc = dom.window.document;
+  const inline = fixture("suggest-dropdown.html").match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  if (inline) dom.window.eval(inline);
+  const { fields, scanId, documentFingerprint, formFingerprint } = dom.window.__hunterFill.scan(doc);
+  const school = fields.find(f => f.label.includes("毕业院校"));
+  assert.ok(school, "应识别毕业院校字段");
+  // 值不在候选列表内：联想无匹配必须回退标准打字路径。
+  // 夹具为受控联想（未选中候选的值会被清空），回退写入同样会被夹具拒绝，故如实失败。
+  const results = await dom.window.__hunterFill.apply([{ id: school.id, value: "北京大学", type: "text", fingerprint: school.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  const r = results.find(x => x.id === school.id);
+  assert.equal(r.ok, false, "联想无匹配且夹具拒绝直接写入时应如实失败");
+  assert.match(r.error || "", /模拟输入后仍失败/);
+  assert.equal(doc.getElementById("school").value, "", "回退失败后输入框不得残留部分输入");
+  dom.window.close();
+});
+
+test("联想下拉：多候选时前缀优先于非前缀包含", async () => {
+  const dom = loadFixture("suggest-dropdown.html");
+  const doc = dom.window.document;
+  const inline = fixture("suggest-dropdown.html").match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  if (inline) dom.window.eval(inline);
+  // 注入「上海复旦大学」作为非前缀包含竞争项：旧打分（前缀 60 < 包含 76）会误选它，用于拦截 I1 回归。
+  // 夹具脚本对 li[role='option'] 的 mousedown 委派是通用的，注入项可正常被选中。
+  doc.getElementById("suggest").insertAdjacentHTML("beforeend", '<li role="option" data-value="上海复旦大学">上海复旦大学</li>');
+  const { fields, scanId, documentFingerprint, formFingerprint } = dom.window.__hunterFill.scan(doc);
+  const school = fields.find(f => f.label.includes("毕业院校"));
+  assert.ok(school, "应识别毕业院校字段");
+  const results = await dom.window.__hunterFill.apply([{ id: school.id, value: "复旦", type: "text", fingerprint: school.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  const r = results.find(x => x.id === school.id);
+  assert.equal(r.ok, true, `前缀候选应选中：${r.error || ""}`);
+  assert.equal(r.via, "suggest");
+  assert.equal(doc.getElementById("school").value, "复旦大学", "前缀匹配应优先于非前缀包含");
+  dom.window.close();
+});
+
+test("填充后页面着色：成功字段 done、失败字段 pending", async () => {
+  const dom = loadFixture("zhilian.html");
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = dom.window.__hunterFill.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  const degree = fields.find(f => f.label.includes("学历"));
+  assert.ok(name && degree, "应识别姓名与学历字段");
+  const results = await dom.window.__hunterFill.apply([
+    { id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint },
+    { id: degree.id, value: "博士", type: "select", fingerprint: degree.fingerprint },
+  ], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(results.find(r => r.id === name.id).ok, true);
+  assert.equal(results.find(r => r.id === degree.id).ok, false, "选项不在列表时应如实失败");
+  const el = doc.querySelector("input[name='name']");
+  assert.ok(el.classList.contains("hunter-fill-done"), "成功字段应有 done class");
+  assert.ok(!el.classList.contains("hunter-fill-pending"));
+  const degreeEl = doc.querySelector("select[name='degree']");
+  assert.ok(degreeEl.classList.contains("hunter-fill-pending"), "失败字段应有 pending class");
+  assert.ok(!degreeEl.classList.contains("hunter-fill-done"));
+  dom.window.__hunterFill.reset(doc);
+  assert.ok(!el.classList.contains("hunter-fill-done"), "reset 后应清除着色");
+  assert.ok(!degreeEl.classList.contains("hunter-fill-pending"), "reset 后应清除失败着色");
+  dom.window.close();
+});
+
+// —— 撤销本次填充（Wave 3 任务2） ——
+test("撤销本次填充：恢复原值并清除着色（引擎 undo 入口）", async () => {
+  const dom = loadFixture("zhilian.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  const nameInput = doc.querySelector("input[name='name']");
+  assert.equal(nameInput.value, "", "姓名原值应为空");
+  const applied = await engine.apply([
+    { id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint },
+  ], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(applied[0].ok, true);
+  assert.equal(nameInput.value, "张三");
+  assert.ok(nameInput.classList.contains("hunter-fill-done"), "填充成功应有 done 着色");
+  const undoResult = await engine.undo({ scanId, documentFingerprint, formFingerprint });
+  assert.equal(undoResult.ok, true);
+  assert.equal(undoResult.count, 1);
+  assert.equal(nameInput.value, "", "撤销后应恢复原值");
+  assert.ok(!nameInput.classList.contains("hunter-fill-done"), "撤销后应清除 done 着色");
+  assert.ok(!nameInput.classList.contains("hunter-fill-pending"), "撤销后应清除 pending 着色");
+  assert.ok(!nameInput.classList.contains("hunter-fill-highlight"), "撤销后应清除高亮");
+  dom.window.close();
+});
+
+test("撤销本次填充：非空原值、radio 勾选状态与 checkbox 均恢复", async () => {
+  const dom = new JSDOM(`<form>
+    <label>姓名<input id="name" name="name" type="text" value="旧名字"></label>
+    <label>性别<input type="radio" name="gender" value="男"><input type="radio" name="gender" value="女" checked></label>
+    <label>同意<input type="checkbox" name="agree" checked></label>
+  </form>`, { url: "https://x.com/undo-binary", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const nameField = fields.find(f => f.type === "text");
+  const genderField = fields.find(f => f.type === "radio");
+  const agreeField = fields.find(f => f.type === "checkbox");
+  assert.ok(nameField && genderField && agreeField, "应识别文本/radio/checkbox 三个字段");
+  const male = doc.querySelector("input[type=radio][value=男]");
+  const agree = doc.querySelector("input[type=checkbox][name=agree]");
+  const applied = await engine.apply([
+    { id: nameField.id, value: "张三", type: "text", fingerprint: nameField.fingerprint },
+    { id: genderField.id, value: "男", type: "radio", fingerprint: genderField.fingerprint },
+    { id: agreeField.id, value: "否", type: "checkbox", fingerprint: agreeField.fingerprint },
+  ], { scanId, documentFingerprint, formFingerprint });
+  assert.ok(applied.every(r => r.ok), JSON.stringify(applied));
+  assert.equal(doc.getElementById("name").value, "张三");
+  assert.equal(male.checked, true, "填充后男应选中");
+  assert.equal(agree.checked, false, "填充后同意应取消勾选");
+  const undoResult = await engine.undo({ scanId, documentFingerprint, formFingerprint });
+  assert.equal(undoResult.ok, true);
+  assert.equal(undoResult.count, 3);
+  assert.equal(doc.getElementById("name").value, "旧名字", "应恢复非空原值");
+  assert.equal(male.checked, false, "撤销后男应恢复未选中");
+  assert.equal(agree.checked, true, "撤销后同意应恢复勾选");
+  dom.window.close();
+});
+
+test("着色：批量填充后未填字段着橙、已手填字段不着橙", async () => {
+  const dom = loadFixture("zhilian.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  assert.ok(name, "应识别姓名字段");
+  // 手动预填三类控件：文本 phone、下拉 degree、radio gender
+  const phoneEl = doc.querySelector("input[name='phone']");
+  const degreeEl = doc.querySelector("select[name='degree']");
+  const maleEl = doc.querySelector("input[name='gender'][value='男']");
+  phoneEl.value = "13800138000";
+  degreeEl.value = "本科";
+  maleEl.checked = true;
+  const results = await engine.apply([{ id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(results[0].ok, true);
+  const nameEl = doc.querySelector("input[name='name']");
+  assert.ok(nameEl.classList.contains("hunter-fill-done"), "成功字段应有 done");
+  assert.ok(!phoneEl.classList.contains("hunter-fill-pending"), "已手填文本不应着橙");
+  assert.ok(!degreeEl.classList.contains("hunter-fill-pending"), "已手填下拉不应着橙");
+  assert.ok(!maleEl.classList.contains("hunter-fill-pending"), "已勾选 radio 不应着橙");
+  const emailEl = doc.querySelector("input[name='email']");
+  assert.ok(emailEl.classList.contains("hunter-fill-pending"), "未填可见字段应着橙");
+  dom.window.close();
+});
+
+test("着色：已手填 custom 下拉不着橙", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const container = doc.getElementById("arrival");
+  const input = container && container.querySelector("input");
+  assert.ok(container && input, "应识别到岗时间 custom 控件");
+  input.value = "随时到岗"; // 模拟用户已手选（element-ui 风格内部 input 有值）
+  const name = fields.find(f => f.label.includes("姓名"));
+  assert.ok(name, "应识别姓名字段");
+  const applied = await engine.apply([{ id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(applied[0].ok, true);
+  assert.ok(!container.classList.contains("hunter-fill-pending"), "已手填 custom 下拉不应着橙");
+  dom.window.close();
+});
+
+test("着色：单字段填充路径不触发全页染橙", async () => {
+  const dom = loadFixture("zhilian.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  assert.ok(name, "应识别姓名字段");
+  const filled = await engine.fillField({ id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint }, { scanId, documentFingerprint, formFingerprint });
+  assert.equal(filled.ok, true);
+  const nameEl = doc.querySelector("input[name='name']");
+  assert.ok(nameEl.classList.contains("hunter-fill-done"), "单字段填充成功字段仍应有 done");
+  const emailEl = doc.querySelector("input[name='email']");
+  assert.ok(!emailEl.classList.contains("hunter-fill-pending"), "单字段路径不应整页染橙");
+  assert.equal(doc.querySelectorAll(".hunter-fill-pending").length, 0, "单字段路径不应产生任何 pending 着色");
+  dom.window.close();
+});
+
+test("着色：未勾选 checkbox 批量填充后着橙、已勾选 checkbox 不着橙", async () => {
+  // dayi：未勾选「我同意以上信息属实」，value="同意"（非空）不得被误判为已填
+  const dom = loadFixture("dayi.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  const agree = fields.find(f => f.type === "checkbox" && /同意/.test(f.label));
+  assert.ok(name && agree, "应识别姓名与同意复选框");
+  const agreeEl = doc.querySelector("input[name='agree']");
+  assert.equal(agreeEl.checked, false, "初始应未勾选");
+  await engine.apply([{ id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  assert.ok(agreeEl.classList.contains("hunter-fill-pending"), "未勾选 checkbox 应着橙");
+
+  // antd：已勾选「技能」复选框不着橙
+  const dom2 = loadFixture("antd-generic.html");
+  const doc2 = dom2.window.document;
+  const eng2 = dom2.window.__hunterFill;
+  const { fields: f2, scanId: s2, documentFingerprint: df2, formFingerprint: ff2 } = eng2.scan(doc2);
+  const skill = f2.find(f => f.type === "checkbox" && /技能/.test(f.label));
+  const name2 = f2.find(f => f.label.includes("姓名"));
+  assert.ok(skill && name2, "应识别技能复选框与姓名字段");
+  const skillEl = doc2.getElementById("skill");
+  skillEl.checked = true;
+  await eng2.apply([{ id: name2.id, value: "张三", type: "text", fingerprint: name2.fingerprint }], { scanId: s2, documentFingerprint: df2, formFingerprint: ff2 });
+  assert.ok(!skillEl.classList.contains("hunter-fill-pending"), "已勾选 checkbox 不应着橙");
+  dom.window.close();
+});
+
+test("撤销本次填充：未填字段的橙色 pending 一并清除", async () => {
+  const dom = loadFixture("zhilian.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  const emailEl = doc.querySelector("input[name='email']");
+  assert.ok(emailEl, "应存在未填字段 email");
+  const applied = await engine.apply([{ id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(applied[0].ok, true);
+  assert.ok(emailEl.classList.contains("hunter-fill-pending"), "批量填充后未填字段应着橙");
+  const undoResult = await engine.undo({ scanId, documentFingerprint, formFingerprint });
+  assert.equal(undoResult.ok, true);
+  assert.equal(
+    doc.querySelectorAll(".hunter-fill-pending, .hunter-fill-done, .hunter-fill-highlight").length,
+    0,
+    "撤销后全页绿/橙/高亮着色应全部清除（含未填字段的 pending）"
+  );
+  dom.window.close();
+});
+
+test("撤销本次填充：custom 下拉展示文本恢复且未完全恢复项上报", async () => {
+  const dom = new JSDOM(`<form>
+    <div class="ant-form-item"><div class="ant-form-item-label"><label for="arrival">到岗时间</label></div><div class="ant-form-item-control"><div class="ant-select" id="arrival">
+      <div class="ant-select-selection-item">请选择</div>
+      <input class="ant-select-selection-search-input" type="text">
+    </div></div></div>
+    <div class="ant-select-dropdown"><div class="ant-select-item-option" data-value="随时到岗">随时到岗</div><div class="ant-select-item-option" data-value="一个月内">一个月内</div></div>
+  </form>`, { url: "https://x.com/undo-custom", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const arrival = fields.find(f => f.type === "custom-select");
+  assert.ok(arrival, "应识别 custom-select 字段");
+  const container = doc.getElementById("arrival");
+  const item = container.querySelector(".ant-select-selection-item");
+  const input = container.querySelector("input");
+  // 模拟受控 antd：点击选项时同步更新展示项与内部 input
+  doc.querySelectorAll(".ant-select-item-option").forEach(option => {
+    option.addEventListener("click", () => {
+      item.textContent = option.textContent;
+      input.value = option.textContent;
+    });
+  });
+  const applied = await engine.apply([{ id: arrival.id, value: "随时到岗", type: "custom-select", fingerprint: arrival.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(applied[0].ok, true, JSON.stringify(applied[0]));
+  assert.equal(item.textContent, "随时到岗", "填充后展示项应为选中值");
+  assert.equal(input.value, "随时到岗");
+  const undoResult = await engine.undo({ scanId, documentFingerprint, formFingerprint });
+  assert.equal(undoResult.ok, true);
+  assert.equal(undoResult.count, 1);
+  assert.equal(undoResult.unRestored, 0, "可恢复的自定义组件不应上报未恢复");
+  assert.equal(item.textContent, "请选择", "撤销后展示项应恢复原占位文本");
+  assert.equal(input.value, "", "撤销后内部 input 应恢复原值");
+  assert.ok(!container.classList.contains("hunter-fill-done") && !container.classList.contains("hunter-fill-pending"), "容器着色应清除");
+  assert.ok(!input.classList.contains("hunter-fill-done"), "input 着色应清除");
+  dom.window.close();
+});
+
+test("撤销本次填充：custom 展示存在无法还原节点时上报 unRestored", async () => {
+  const dom = new JSDOM(`<form>
+    <div class="ant-form-item"><div class="ant-form-item-label"><label for="arrival">到岗时间</label></div><div class="ant-form-item-control"><div class="ant-select" id="arrival">
+      <div class="ant-select-selection-item">请选择</div>
+      <div class="extra-display"></div>
+      <input class="ant-select-selection-search-input" type="text">
+    </div></div></div>
+    <div class="ant-select-dropdown"><div class="ant-select-item-option" data-value="随时到岗">随时到岗</div></div>
+  </form>`, { url: "https://x.com/undo-custom-partial", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const arrival = fields.find(f => f.type === "custom-select");
+  assert.ok(arrival, "应识别 custom-select 字段");
+  const container = doc.getElementById("arrival");
+  const item = container.querySelector(".ant-select-selection-item");
+  const input = container.querySelector("input");
+  const extra = container.querySelector(".extra-display");
+  doc.querySelectorAll(".ant-select-item-option").forEach(option => {
+    option.addEventListener("click", () => {
+      item.textContent = option.textContent;
+      extra.textContent = option.textContent; // 额外展示节点不受还原路径覆盖
+      input.value = option.textContent;
+    });
+  });
+  const applied = await engine.apply([{ id: arrival.id, value: "随时到岗", type: "custom-select", fingerprint: arrival.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(applied[0].ok, true, JSON.stringify(applied[0]));
+  const undoResult = await engine.undo({ scanId, documentFingerprint, formFingerprint });
+  assert.equal(undoResult.ok, true);
+  assert.equal(undoResult.count, 1);
+  assert.equal(undoResult.unRestored, 1, "存在无法还原的展示节点时应上报未恢复数");
   dom.window.close();
 });
