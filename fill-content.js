@@ -6,6 +6,8 @@
 
   const ENGINE_VERSION = 3;
   const HIGHLIGHT_CLASS = "hunter-fill-highlight";
+  const DONE_CLASS = "hunter-fill-done";
+  const PENDING_CLASS = "hunter-fill-pending";
   const IS_JSDOM = typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent || "");
   const SECTION_DEFINITIONS = [
     { key: "education", arrayKey: "education", title: "教育经历", pattern: /教育背景|教育经历|education/i, idPattern: /educations?|resume[-_]?form[-_]?edu/i },
@@ -982,7 +984,11 @@
     if (doc.getElementById("hunter-fill-style")) return;
     const style = doc.createElement("style");
     style.id = "hunter-fill-style";
-    style.textContent = `.${HIGHLIGHT_CLASS}{outline:2px solid #1d4ed8 !important;outline-offset:2px;box-shadow:0 0 0 2px rgba(29,78,216,.35)!important;}`;
+    style.textContent = [
+      `.${HIGHLIGHT_CLASS}{outline:2px solid #1d4ed8 !important;outline-offset:2px;box-shadow:0 0 0 2px rgba(29,78,216,.35)!important;}`,
+      `.${DONE_CLASS}{outline:2px solid #16a34a !important;outline-offset:1px;}`,
+      `.${PENDING_CLASS}{outline:2px solid #f59e0b !important;outline-offset:1px;}`,
+    ].join("");
     (doc.head || doc.documentElement).appendChild(style);
   }
 
@@ -1002,7 +1008,14 @@
 
   function reset(doc) {
     const root = doc || (typeof document !== "undefined" ? document : null);
-    if (root) for (const entry of elementRegistry.values()) entry.el.classList.remove(HIGHLIGHT_CLASS);
+    if (root) {
+      // 统一清除高亮与绿/橙状态着色（含 custom 容器等非 entry.el 目标，按类名全量清理最稳）。
+      try {
+        for (const el of root.querySelectorAll(`.${HIGHLIGHT_CLASS}, .${DONE_CLASS}, .${PENDING_CLASS}`)) {
+          el.classList.remove(HIGHLIGHT_CLASS, DONE_CLASS, PENDING_CLASS);
+        }
+      } catch (_) {}
+    }
     elementRegistry = new Map();
     repeaterRegistry = new Map();
     cancelSignal = null;
@@ -1573,6 +1586,61 @@
     return fillTextWithRetry(entry, el, type, value);
   }
 
+  // —— 页面绿/橙双色状态着色 ——
+  // 目标解析与 fillOne 保持一致：radio 整组、custom 含容器（ant-select 等）、其余为唯一目标元素。
+  // fallbackEl 为填充前已确认的 target：受控组件回填后可能重渲染/替换内部 input，
+  // 此时按指纹无法再确认，退回填充前的目标继续着色。
+  function colorTargetsForEntry(entry, fallbackEl) {
+    if (!entry) return [];
+    const el = resolveEntryTarget(entry) || fallbackEl;
+    if (!el) return [];
+    if (entry.kind === "radio") {
+      const group = resolveRadioGroup(el, entry.group).filter(item => item && item.isConnected);
+      return group.length ? group
+        : (Array.isArray(entry.group) ? entry.group.filter(item => item && item.isConnected) : []);
+    }
+    if (entry.kind === "custom") {
+      // 自定义组件优先着容器（重渲染后容器仍存活），内部 input 仍在时一并着色。
+      const container = (entry.container && entry.container.isConnected && entry.container)
+        || (typeof el.closest === "function" ? el.closest(".ant-select, .el-select, .ant-picker, .el-date-editor") : null)
+        || (fallbackEl && fallbackEl !== el && typeof fallbackEl.closest === "function"
+          ? fallbackEl.closest(".ant-select, .el-select, .ant-picker, .el-date-editor") : null);
+      const targets = [];
+      if (container) targets.push(container);
+      if (el.isConnected && targets.indexOf(el) === -1) targets.push(el);
+      if (fallbackEl && fallbackEl.isConnected && targets.indexOf(fallbackEl) === -1) targets.push(fallbackEl);
+      return targets;
+    }
+    const targets = [el];
+    if (fallbackEl && fallbackEl.isConnected && targets.indexOf(fallbackEl) === -1) targets.push(fallbackEl);
+    return targets;
+  }
+
+  // 成功 done（绿）/ 失败 pending（橙），并清除另一状态与拾取高亮。
+  function colorEntry(entry, status, fallbackEl) {
+    const cls = status === "done" ? DONE_CLASS : PENDING_CLASS;
+    const other = cls === DONE_CLASS ? PENDING_CLASS : DONE_CLASS;
+    for (const el of colorTargetsForEntry(entry, fallbackEl)) {
+      if (!el || typeof el.classList === "undefined") continue;
+      el.classList.remove(HIGHLIGHT_CLASS, other);
+      el.classList.add(cls);
+    }
+  }
+
+  // 本次未填、仍需人工的字段统一着 pending：对未着色的可见字段加橙。
+  // 已着色字段（成功 done / 失败 pending）保持既有状态，避免覆盖此前结果。
+  function markUnfilledPending() {
+    for (const entry of elementRegistry.values()) {
+      if (entry.kind === "none") continue; // 密码/上传等不支持字段不参与着色
+      for (const el of colorTargetsForEntry(entry)) {
+        if (!el || typeof el.classList === "undefined") continue;
+        if (el.classList.contains(DONE_CLASS) || el.classList.contains(PENDING_CLASS)) continue;
+        if (!isVisible(el)) continue;
+        el.classList.add(PENDING_CLASS);
+      }
+    }
+  }
+
   async function apply(fills, options = {}) {
     const list = Array.isArray(fills) ? fills : [];
     const delayMs = Number.isFinite(options.delayMs) ? options.delayMs : 100;
@@ -1581,6 +1649,9 @@
     const signal = options.signal || cancelSignal;
     if (signal.cancelled) return results;
     const prepared = preflightFills(list, options);
+    const doc = prepared[0]?.entry?.el?.ownerDocument
+      || elementRegistry.values().next().value?.el?.ownerDocument;
+    if (doc) ensureStyle(doc);
     for (let index = 0; index < prepared.length; index++) {
       if (signal.cancelled) break;
       const { fill, entry, target } = prepared[index];
@@ -1602,11 +1673,15 @@
         item.errorCode = error.code || "FILL_FAILED";
       }
       results.push(item);
+      // 状态着色：成功 done（绿）/ 失败 pending（橙）。
+      colorEntry(entry, item.ok ? "done" : "pending", target);
       if (typeof options.onProgress === "function") {
         options.onProgress({ index: index + 1, total: prepared.length, id: fill.id, ok: item.ok, error: item.error, errorCode: item.errorCode });
       }
       if (index < prepared.length - 1 && delayMs > 0) await sleep(delayMs);
     }
+    // 本次未填、仍需人工的字段统一着 pending（已着色的保持既有状态）。
+    markUnfilledPending();
     return results;
   }
 

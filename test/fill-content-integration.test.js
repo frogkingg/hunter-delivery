@@ -1137,3 +1137,28 @@ test("联想下拉：多候选时前缀优先于非前缀包含", async () => {
   assert.equal(doc.getElementById("school").value, "复旦大学", "前缀匹配应优先于非前缀包含");
   dom.window.close();
 });
+
+test("填充后页面着色：成功字段 done、失败字段 pending", async () => {
+  const dom = loadFixture("zhilian.html");
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = dom.window.__hunterFill.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  const degree = fields.find(f => f.label.includes("学历"));
+  assert.ok(name && degree, "应识别姓名与学历字段");
+  const results = await dom.window.__hunterFill.apply([
+    { id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint },
+    { id: degree.id, value: "博士", type: "select", fingerprint: degree.fingerprint },
+  ], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(results.find(r => r.id === name.id).ok, true);
+  assert.equal(results.find(r => r.id === degree.id).ok, false, "选项不在列表时应如实失败");
+  const el = doc.querySelector("input[name='name']");
+  assert.ok(el.classList.contains("hunter-fill-done"), "成功字段应有 done class");
+  assert.ok(!el.classList.contains("hunter-fill-pending"));
+  const degreeEl = doc.querySelector("select[name='degree']");
+  assert.ok(degreeEl.classList.contains("hunter-fill-pending"), "失败字段应有 pending class");
+  assert.ok(!degreeEl.classList.contains("hunter-fill-done"));
+  dom.window.__hunterFill.reset(doc);
+  assert.ok(!el.classList.contains("hunter-fill-done"), "reset 后应清除着色");
+  assert.ok(!degreeEl.classList.contains("hunter-fill-pending"), "reset 后应清除失败着色");
+  dom.window.close();
+});
