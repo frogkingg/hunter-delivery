@@ -212,6 +212,58 @@ test("选区填充：region 限定扫描范围", () => {
   dom.window.close();
 });
 
+test("选区填充：region 选择器未命中时不回退全页扫描", () => {
+  const dom = loadFixture("region-form.html");
+  const { fields } = dom.window.__hunterFill.scan(dom.window.document, { region: "#not-exists" });
+  assert.equal(fields.length, 0, "未命中选择器应返回空结果而非全页 4 个字段");
+  dom.window.close();
+});
+
+test("选区填充：拾取容器返回选区内字段且不覆盖全页会话（dryRun）", async () => {
+  const dom = loadFixture("region-form.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const full = engine.scan(doc);
+  const nameField = full.fields.find(f => f.label === "姓名");
+  const picking = engine.pickRegion();
+  doc.querySelector("#emergency").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  const result = await picking;
+  assert.equal(result.ok, true);
+  assert.equal(result.regionPath, "section#emergency");
+  assert.equal((result.fields || []).length, 2);
+  assert.ok(result.fields.every(f => /联系人/.test(f.label)));
+  // dryRun 选区扫描不得覆盖全局会话：旧 scanId 填充仍成功
+  const filled = await engine.fillField({ id: nameField.id, value: "李四" }, {
+    scanId: full.scanId, documentFingerprint: full.documentFingerprint, formFingerprint: full.formFingerprint,
+  });
+  assert.equal(filled.ok, true);
+  assert.equal(doc.getElementById("name").value, "李四");
+  dom.window.close();
+});
+
+test("选区填充：0 字段选区拾取不覆盖全局会话（避免 content/panel 脱同步）", async () => {
+  const dom = loadFixture("region-form.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const full = engine.scan(doc);
+  const nameField = full.fields.find(f => f.label === "姓名");
+  // 选区容器含控件但全部不可见：scan 输出 0 字段（拾取判定只看控件存在性）
+  const basic = doc.querySelector("#basic");
+  basic.setAttribute("hidden", "");
+  const picking = engine.pickRegion();
+  basic.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+  const result = await picking;
+  assert.equal(result.ok, true);
+  assert.equal((result.fields || []).length, 0, "隐藏控件选区内应 0 字段");
+  // 全局会话仍是全页会话：旧 scanId 填充成功，不会报「扫描会话已过期」
+  const filled = await engine.fillField({ id: nameField.id, value: "李四" }, {
+    scanId: full.scanId, documentFingerprint: full.documentFingerprint, formFingerprint: full.formFingerprint,
+  });
+  assert.equal(filled.ok, true);
+  assert.equal(doc.getElementById("name").value, "李四");
+  dom.window.close();
+});
+
 test("自定义下拉：关闭态展开后选择选项并通过回读校验", async () => {
   const dom = loadFixture("antd-generic.html");
   const engine = dom.window.__hunterFill;

@@ -986,21 +986,29 @@ export function handleFillRuntimeMessage(message) {
 }
 
 // 选区拾取结果：用选区内字段重建扫描会话与匹配列表（复用现有渲染管线）。
+// 引擎拾取时以 dryRun 扫描（不写全局会话），这里用 region 选择器经 SMART_FILL_SCAN 重扫一次，
+// 建立真实 content 会话后再渲染；0 字段或重扫失败时不改任何会话，避免 content/panel 脱同步。
 async function applyRegionFillResult(message) {
   try {
     if (pickRegionRequestId && message.requestId !== pickRegionRequestId) return;
     pickRegionRequestId = null;
     if (message.cancelled) { toast("已取消选区填充"); return; }
     if (!message.ok) { toast(`选区填充失败：${message.error || "未知错误"}`); return; }
-    const fields = message.fields || [];
-    if (!fields.length) { toast("选区内未识别到可填字段，请重新选择更完整的容器"); return; }
+    const previewFields = message.fields || [];
+    if (!previewFields.length) { toast("选区内未识别到可填字段，请重新选择更完整的容器"); return; }
     const session = state.fillScanSession;
     const tab = session?.tabId ? { id: session.tabId, url: session.url || "" } : await currentTab();
     if (!tab?.id || !/^https?:/i.test(tab.url || "")) throw new Error("找不到目标页面，请重新扫描");
+    const regionPath = message.regionPath || "";
+    if (!regionPath) throw new Error("选区路径缺失，请重新选择");
+    const response = await fillMessagePage(tab, { type: "SMART_FILL_SCAN", region: regionPath });
+    if (!response?.ok) throw new Error(response?.error || "重建选区扫描失败");
+    const fields = response.fields || [];
+    if (!fields.length) { toast("选区内未识别到可填字段，请重新选择更完整的容器"); return; }
     stopIncrementalWatch();
     fillResultMode = "list";
-    applyScanResponse(message, tab);
-    const regionName = message.regionLabel || message.regionPath || "已选区域";
+    applyScanResponse(response, tab);
+    const regionName = message.regionLabel || regionPath || "已选区域";
     $("fillCurrentSite").textContent = "";
     $("fillCurrentSiteText").textContent = `选区「${regionName}」：识别到 ${fields.length} 个表单项`;
     $("clearFill").hidden = false;

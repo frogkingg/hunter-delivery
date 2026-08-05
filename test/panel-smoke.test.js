@@ -503,6 +503,75 @@ test("选区填充：点击「选区填充」按钮后发送 SMART_FILL_PICK_REG
   } finally { close(); }
 });
 
+// —— 选区填充：非空结果重建会话（Wave 2 任务3 质量修复） ——
+test("选区填充：非空选区结果经 SMART_FILL_SCAN(region) 重建会话并渲染", async () => {
+  const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  const sentMessages = [];
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
+  window.confirm = () => true;
+  window.prompt = () => null;
+  globalThis.window = window;
+  globalThis.document = window.document;
+  const tab = { id: 7, url: "https://jobs.example.com/apply" };
+  const REGION_FIELDS = [
+    { id: "r-contact-name", type: "text", label: "联系人姓名", rawLabel: "联系人姓名", labelSource: "label", skipped: false, options: [], fingerprint: "fp-cn", path: "#contact-name", evidence: [{ source: "label", text: "联系人姓名" }], context: {}, attributes: {} },
+    { id: "r-contact-phone", type: "tel", label: "联系人电话", rawLabel: "联系人电话", labelSource: "label", skipped: false, options: [], fingerprint: "fp-cp", path: "#contact-phone", evidence: [{ source: "label", text: "联系人电话" }], context: {}, attributes: {} },
+  ];
+  globalThis.chrome = {
+    storage: { local: { get: async keys => {
+      const list = typeof keys === "string" ? [keys] : keys;
+      const out = {};
+      for (const k of list) { if (k === "smartFillTemplates") out[k] = {}; else if (k === "smartFillLogs") out[k] = []; else if (k === "smartFillSettings") out[k] = {}; else out[k] = undefined; }
+      return out;
+    }, set: async () => {} } },
+    runtime: { sendMessage: (_m, cb) => cb && cb({ ok: true }), onMessage: { addListener() {} }, connect: () => ({ onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }), getURL: p => p },
+    tabs: {
+      query: async () => [tab],
+      sendMessage: async (_id, message) => {
+        sentMessages.push(message);
+        if (message.type === "SMART_FILL_SCAN" && message.region === "#emergency") {
+          return { ok: true, engineVersion: 3, fields: REGION_FIELDS, repeaters: [], page: { title: "apply", url: tab.url, host: "jobs.example.com" }, scanId: "s-region", documentFingerprint: "d-region", formFingerprint: "f-region" };
+        }
+        return { ok: true };
+      },
+    },
+  };
+  const { state, setProfiles, setActiveProfileIndex, setFillScanSession } = await import("../src/state.js");
+  const { handleFillRuntimeMessage, startPickRegion } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000" } }]);
+    setActiveProfileIndex(0);
+    setFillScanSession({ tabId: 7, scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1", url: "https://jobs.example.com/apply" });
+    // 走真实流程：先进入选区拾取态，再回传与请求同 requestId 的结果
+    await startPickRegion();
+    const pickMsg = sentMessages.find(m => m.type === "SMART_FILL_PICK_REGION");
+    assert.ok(pickMsg, "应已发送选区拾取请求");
+    handleFillRuntimeMessage({
+      type: "SMART_FILL_PICK_REGION_RESULT", requestId: pickMsg.requestId, ok: true,
+      regionPath: "#emergency", regionLabel: "emergency", fields: REGION_FIELDS,
+    });
+    // 等待异步重建：applyRegionFillResult → SMART_FILL_SCAN(region) → buildMatches → renderFillTemplate
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      if (sentMessages.some(m => m.type === "SMART_FILL_SCAN") && window.document.getElementById("fillResultList").textContent.includes("联系人姓名")) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.ok(sentMessages.some(m => m.type === "SMART_FILL_SCAN" && m.region === "#emergency"), "非空选区应发起 region 重扫建立真实会话");
+    assert.equal(state.fillScanSession.scanId, "s-region", "选区重扫后会话应指向选区内扫描");
+    assert.match(window.document.getElementById("fillCurrentSiteText").textContent, /选区「emergency」：识别到 2 个表单项/);
+    assert.ok(window.document.getElementById("fillResultList").textContent.includes("联系人姓名"), "匹配列表应渲染选区内字段");
+    assert.match(window.document.getElementById("toast").textContent, /已识别选区内 2 个字段/);
+    // 恢复会话，避免影响后续依赖 s1 会话的用例（既有测试间的隐式顺序依赖）
+    setFillScanSession({ tabId: 7, scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1", url: "https://jobs.example.com/apply" });
+  } finally {
+    delete globalThis.window;
+    delete globalThis.document;
+    delete globalThis.chrome;
+    dom.window.close();
+  }
+});
+
 // —— 增量续填（P1 任务6） ——
 test("增量续填：收到新字段通知后显示继续填写提示（3 轮内）", async () => {
   const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });

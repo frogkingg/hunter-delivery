@@ -584,7 +584,11 @@
       const region = typeof scanOptions.region === "string"
         ? (base.querySelector ? base.querySelector(scanOptions.region) : null)
         : scanOptions.region;
-      if (region && region.nodeType === 1 && typeof region.querySelector === "function") root = region;
+      // 选择器未命中或 region 非法：返回空结果，绝不静默回退全页扫描。
+      if (!region || region.nodeType !== 1 || typeof region.querySelector !== "function") {
+        return { engineVersion: ENGINE_VERSION, fields: [], repeaters: [], page: null, scanId: null, documentFingerprint: null, formFingerprint: null };
+      }
+      root = region;
     }
     prepareDocumentIndexes(root);
     const registry = new Map();
@@ -1904,18 +1908,21 @@
     if (!target || target.nodeType !== 1) return null;
     if (target.closest && target.closest("#hunter-pick-overlay")) return null;
     const containsControls = node => !!(node && node.querySelectorAll && node.querySelectorAll(PICKABLE_CONTROL_SELECTOR).length);
+    const isPageRoot = node => node === document.body || node === document.documentElement;
     // 点击的元素自身包含控件（如 section/fieldset/表单容器）直接用；否则上溯最近的含控件祖先。
-    if (containsControls(target)) return target;
+    // 不把 html/body 作为选区：整页填充由「一键智能填充」承担，hover 也不整页虚线高亮。
+    if (containsControls(target) && !isPageRoot(target)) return target;
     let node = target.parentElement;
-    while (node && node.nodeType === 1 && node !== document.body && node !== document.documentElement) {
+    while (node && node.nodeType === 1 && !isPageRoot(node)) {
       if (containsControls(node)) return node;
       node = node.parentElement;
     }
-    return document.body || document.documentElement;
+    return null;
   }
 
   function regionLabelOf(el) {
     if (!el) return "";
+    if (el === document.body || el === document.documentElement) return "整个页面";
     if (el.id) return el.id;
     const heading = el.querySelector && el.querySelector("h1, h2, h3, h4, legend, summary, [class*='title'], [class*='header']");
     const text = cleanText(heading);
@@ -1947,6 +1954,7 @@
       (document.body || document.documentElement).appendChild(overlay);
 
       const setHighlight = el => {
+        if (el === document.body || el === document.documentElement) el = null;
         if (highlight === el) return;
         if (highlight && highlight.style) highlight.style.outline = "";
         highlight = el;
@@ -1982,7 +1990,10 @@
         event.stopPropagation();
         finish();
         try {
-          const result = scan(document, { region });
+          // dryRun：只计算选区内字段，不写全局 elementRegistry/scanSession；
+          // 面板在结果非空时经 SMART_FILL_SCAN(region) 重建真实会话，避免 0 字段选区把
+          // content 会话换成空会话导致后续「填充勾选项」报「扫描会话已过期」。
+          const result = scan(document, { region, dryRun: true });
           resolve({
             ok: true,
             regionPath: regionPathOf(region),
