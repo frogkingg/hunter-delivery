@@ -142,6 +142,7 @@ test("填充执行：6 个夹具原生/下拉/单选/多选/日期全部成功",
     if (byLabel["姓名"]) {
       const nameInput = doc.getElementById("name") || doc.querySelector("[name=name]") || doc.querySelector(byLabel["姓名"].path);
       assert.equal(nameInput.value, "张三");
+      assert.equal(applied.find(r => r.id === byLabel["姓名"].id).retried, false, "非受控表单应走标准路径 retried:false");
     }
     if (byLabel["手机号码"] || byLabel["手机号"]) {
       const phone = doc.querySelector("[name=phone], #mobile, .index-phoneInput-a1");
