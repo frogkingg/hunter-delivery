@@ -25,6 +25,9 @@ export const SENSITIVE_FIELD_KEYS = new Set([
   "guardian", "guarantor", "referrer", "referral", "workAuthorization", "politicalStatus",
 ]);
 
+// 敏感字段被强制人工时统一使用的 reason，避免多处硬编码漂移。
+const SENSITIVE_REASON = "敏感字段，需人工确认";
+
 function bestKeywordHit(label, keywords) {
   let best = { length: 0, keyword: "" };
   for (const normalized of keywords) {
@@ -382,7 +385,14 @@ export function validateBinding(field, fieldKey, resumeFields, options = {}) {
   if (base.skipped) return { ...base, confidence, reason: "该控件不支持自动填充（密码/文件/隐藏）" };
   if (!FIELD_BY_KEY[key]) return { ...base, confidence, reason: "未返回有效字段 key" };
   if (SENSITIVE_FIELD_KEYS.has(key) && !options.userConfirmed) {
-    return { ...base, fieldKey: key, confidence: null, reason: "敏感字段，需人工确认" };
+    return {
+      ...base,
+      fieldKey: key,
+      confidence: null,
+      lockedManual: true,
+      userConfirmed: false,
+      reason: SENSITIVE_REASON,
+    };
   }
   const evidence = fieldEvidence(field);
   if (contextBlocked(field, key, evidence)) {
@@ -566,7 +576,7 @@ export function matchRules(fields, resumeFields) {
       result.confidence = null;
       result.lockedManual = true;
       result.userConfirmed = false;
-      result.reason = "敏感字段，需人工确认";
+      result.reason = SENSITIVE_REASON;
     }
   }
   return results;

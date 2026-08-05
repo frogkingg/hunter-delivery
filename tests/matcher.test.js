@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { MATCHER_DATASET } from "./data/matcher-dataset.js";
-import { matchRules, applyAiResults, buildAiMatchPrompt, matchFields, validateBinding } from "../src/matcher.js";
+import { matchRules, applyAiResults, buildAiMatchPrompt, matchFields, validateBinding, SENSITIVE_FIELD_KEYS } from "../src/matcher.js";
 import { RESUME_FIELD_LABELS } from "../src/form-fields.js";
 
 const FULL_RESUME = {
@@ -44,7 +44,10 @@ test("matchRules: 总体命中率 ≥85%（含噪音与复杂字段）", () => {
   const results = matchRules(toFields(cases.map(c => c.label)), FULL_RESUME);
   const correct = results.filter((r, index) => {
     const expected = cases[index];
-    return expected.key ? (r.fieldKey === expected.key && r.status === "match") : (r.fieldKey === "" && r.status === "manual");
+    if (!expected.key) return r.fieldKey === "" && r.status === "manual";
+    if (r.fieldKey === expected.key && r.status === "match") return true;
+    // 敏感字段按策略强制人工：识别正确即算正确处理（填充需用户显式确认），口径与集成测试一致。
+    return r.fieldKey === expected.key && r.status === "manual" && SENSITIVE_FIELD_KEYS.has(expected.key);
   }).length;
   assert.ok(correct / cases.length >= 0.85, `总体命中率 ${correct}/${cases.length}`);
 });
@@ -509,4 +512,10 @@ test("敏感字段集合：AI 也不能绕过，且不暴露简历值", () => {
   );
   assert.equal(merged[0].status, "manual", "AI 不能绕过敏感字段守卫");
   assert.equal(merged[0].value, "", "敏感字段不暴露简历值");
+});
+
+test("敏感字段集合：规范敏感 key 必须存在于集合中（防误删）", () => {
+  const required = ["idCard", "expectedSalary", "referral", "politicalStatus"];
+  const missing = required.filter(key => !SENSITIVE_FIELD_KEYS.has(key));
+  assert.deepEqual(missing, [], `规范敏感 key 缺失：${missing.join("、")}`);
 });
