@@ -569,7 +569,7 @@ function matchRowHtml(match) {
     match.status === "manual" ? `<span class="fill-badge status-manual">需手动</span>` : "",
   ].filter(Boolean).join("");
   const evidence = (match.evidence || []).slice(0, 2).map(item => `${item.source}:${item.text}`).join(" · ");
-  return `<div class="fill-row${match.status === "manual" ? " manual" : ""}">
+  return `<div class="fill-row${match.status === "manual" ? " manual" : ""}" data-fill-id="${match.fieldId}">
     <input type="checkbox" data-fill-id="${match.fieldId}" ${selected ? "checked" : ""} ${editable ? "" : "disabled"}>
     <div class="fill-row-main">
       <div class="fill-row-label">${escapeHtml(match.label || "（未识别标签）")}${match.required ? `<span class="req">*</span>` : ""}${badges}</div>
@@ -593,17 +593,34 @@ export function renderFillMatches() {
     .map(choice => `<option value="${escapeHtml(choice.value)}">${escapeHtml(choice.label)}</option>`)
     .join("");
   const datalist = `<datalist id="fillFieldKeyOptions">${fieldKeyOptions}</datalist>`;
+  // 绿/橙图例：与页面 DONE_CLASS/PENDING_CLASS 着色语义一致（已填=绿、待人工=橙）。
+  const legend = `<div class="fill-legend"><span class="dot done"></span>已填<span class="dot pending"></span>待人工</div>`;
   if (fillResultMode === "summary") {
     const manual = matches.filter(m => m.status === "manual" || state.fillFailedIds.includes(m.fieldId));
     const filled = matches.filter(m => m.status === "match" && !state.fillFailedIds.includes(m.fieldId));
-    target.innerHTML = datalist + (manual.length
+    target.innerHTML = legend + datalist + (manual.length
       ? `<details class="fill-summary-manual" open><summary>需人工处理（${manual.length}）</summary>${manual.map(matchRowHtml).join("")}</details>`
       : `<p class="hint fill-done-tip">🎉 全部 ${filled.length} 项已填充</p>`)
       + `<details class="fill-summary-done"><summary>已自动填充（${filled.length}）</summary>${filled.map(matchRowHtml).join("")}</details>`;
   } else {
-    target.innerHTML = datalist + matches.map(matchRowHtml).join("");
+    target.innerHTML = legend + datalist + matches.map(matchRowHtml).join("");
+  }
+  // 结果行点击：向 content 发 SMART_FILL_HIGHLIGHT 高亮页面字段便于定位。
+  // 现有 highlight 仅加描边不滚动，此处保持最小改动只发高亮（不改 fill-content.js）。
+  for (const row of target.querySelectorAll(".fill-row")) {
+    const match = matches.find(item => item.fieldId === row.dataset.fillId);
+    if (match) bindFillRowClick(row, match);
   }
   updateFillButtons();
+}
+
+function bindFillRowClick(row, match) {
+  row.onclick = () => {
+    const session = state.fillScanSession;
+    const tab = session?.tabId ? { id: session.tabId, url: session.url || "" } : null;
+    if (!tab?.id || !/^https?:/i.test(tab.url || "")) return;
+    fillMessagePage(tab, { type: "SMART_FILL_HIGHLIGHT", ids: [match.fieldId], on: true }).catch(() => {});
+  };
 }
 
 // —— 填充执行 ——

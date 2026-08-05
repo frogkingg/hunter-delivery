@@ -170,3 +170,10 @@ body.dark .queue-delivered { background: #1a2e24; border-color: #12b76a; }
 .resume-field-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .resume-field-filters button { font-size: 12px; padding: 3px 10px; border: 1px solid #d0d5dd; border-radius: 999px; background: #fff; color: #374151; cursor: pointer; }
 .resume-field-filters button.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+
+/* —— 匹配列表图例与结果行点击定位（Wave 3 任务3） —— */
+.fill-legend { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #6b7280; margin: 0 0 8px; }
+.fill-legend .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 2px; }
+.fill-legend .dot.done { background: #16a34a; }
+.fill-legend .dot.pending { background: #f59e0b; }
+.fill-row { cursor: pointer; }

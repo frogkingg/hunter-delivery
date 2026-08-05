@@ -254,6 +254,7 @@ function setupOneClickDom(options = {}) {
   const { window } = dom;
   const appliedFills = [];
   const sentTypes = [];
+  const sentMessages = [];
   const preparedPlans = [];
   window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
   globalThis.window = window;
@@ -284,6 +285,7 @@ function setupOneClickDom(options = {}) {
       query: async () => [tab],
       sendMessage: async (_id, message) => {
         sentTypes.push(message.type);
+        sentMessages.push(message);
         if (message.type === "SMART_FILL_SCAN") {
           return { ok: true, engineVersion: 3, fields: ONECLICK_SCAN_FIELDS, repeaters, page: { title: "apply", url: tab.url, host: "jobs.example.com" }, scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1" };
         }
@@ -320,7 +322,7 @@ function setupOneClickDom(options = {}) {
     permissions: { contains: async () => true, request: async () => true },
     scripting: { executeScript: async () => [] },
   };
-  return { dom, appliedFills, sentTypes, preparedPlans, close: () => { delete globalThis.window; delete globalThis.document; delete globalThis.chrome; dom.window.close(); } };
+  return { dom, appliedFills, sentTypes, sentMessages, preparedPlans, close: () => { delete globalThis.window; delete globalThis.document; delete globalThis.chrome; dom.window.close(); } };
 }
 
 test("一键智能填充：自动模式下扫描后自动填充高置信项，需手动项不填", async () => {
@@ -412,6 +414,47 @@ test("一键智能填充：成功后列表折叠为需人工处理+已自动填�
     assert.equal(done.querySelectorAll(".fill-row").length, 2, "姓名/手机号应为已自动填充项");
     assert.match(done.textContent, /已自动填充（2）/);
     assert.equal(window.document.getElementById("fillSelected").hidden, true, "自动填充完成后工具条按钮应隐藏");
+  } finally { close(); }
+});
+
+// —— 匹配列表图例与结果行点击定位（Wave 3 任务3） ——
+test("匹配列表图例：有结果时渲染绿/橙图例（已填/待人工）", async () => {
+  const { close } = setupOneClickDom();
+  const { setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { runSmartFillOnce } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(true);
+    await runSmartFillOnce();
+    const legend = window.document.querySelector(".fill-legend");
+    assert.ok(legend, "渲染结果后应存在 .fill-legend 图例");
+    assert.match(legend.textContent, /已填/, "图例应含「已填」项");
+    assert.match(legend.textContent, /待人工/, "图例应含「待人工」项");
+    assert.equal(legend.querySelectorAll(".dot.done").length, 1, "图例应含绿色「已填」圆点");
+    assert.equal(legend.querySelectorAll(".dot.pending").length, 1, "图例应含橙色「待人工」圆点");
+  } finally { close(); }
+});
+
+test("点击结果行：发送 SMART_FILL_HIGHLIGHT 定位对应字段", async () => {
+  const { sentMessages, close } = setupOneClickDom();
+  const { setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { runSmartFillOnce } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(true);
+    await runSmartFillOnce();
+    const rows = window.document.querySelectorAll(".fill-row");
+    assert.ok(rows.length >= 1, "应有结果行");
+    const nameRow = [...rows].find(row => row.textContent.includes("姓名"));
+    assert.ok(nameRow, "应找到姓名结果行");
+    nameRow.click();
+    await new Promise(resolve => setTimeout(resolve, 0)); // 等待异步 sendMessage 链路
+    const hl = sentMessages.find(m => m.type === "SMART_FILL_HIGHLIGHT");
+    assert.ok(hl, "点击结果行应发送 SMART_FILL_HIGHLIGHT");
+    assert.deepEqual(hl.ids, ["f-name"], "应高亮对应字段 id");
+    assert.equal(hl.on, true, "应为开启高亮");
   } finally { close(); }
 });
 
