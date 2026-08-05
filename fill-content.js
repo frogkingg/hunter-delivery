@@ -949,6 +949,44 @@
     el.dispatchEvent(new Event("blur", { bubbles: true }));
   }
 
+  // 逐字符模拟真实输入：keydown→beforeinput→input→keyup，提交时 change→blur。
+  // 用于受控组件（如 React）——直接写 value 会被其内部状态回滚，必须走真实事件链。
+  async function typeText(el, value, stepMs = 30) {
+    const KeyEventCtor = typeof window.KeyboardEvent === "function" ? window.KeyboardEvent : Event;
+    const typeChars = Array.from(String(value || ""));
+    el.focus();
+    el.select();
+    if (typeof el.setRangeText === "function") {
+      el.setRangeText("");
+    } else {
+      el.value = "";
+    }
+    for (const char of typeChars) {
+      el.value += char;
+      const opts = { key: char, bubbles: true, cancelable: true };
+      el.dispatchEvent(new KeyEventCtor("keydown", opts));
+      el.dispatchEvent(new Event("beforeinput", { bubbles: true, cancelable: true }));
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new KeyEventCtor("keyup", opts));
+      await sleep(stepMs);
+    }
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
+    return el.value;
+  }
+
+  // 标准填充 → 回读校验 → 失败则打字重填 → 再次回读。
+  async function fillTextWithRetry(entry, el, type, value) {
+    const finalValue = type === "date" ? valueForNativeDate(el, value) : value;
+    if (type === "date" && !finalValue) throw new Error("日期精度与页面控件不匹配，请手动选择");
+    setNativeValue(el, finalValue);
+    dispatchInput(el);
+    if (verifyValue(el, type, finalValue)) return { ok: true, retried: false };
+    await typeText(el, finalValue);
+    if (!verifyValue(el, type, finalValue)) throw new Error("模拟输入后仍失败");
+    return { ok: true, retried: true };
+  }
+
   function scrollIntoView(el) {
     if (el && typeof el.scrollIntoView === "function") {
       try { el.scrollIntoView({ block: "center" }); } catch (_) {}
@@ -1446,14 +1484,8 @@
       if (String(el.value || "") !== String(target.value)) throw new Error("选项未找到");
       return { ok: true };
     }
-    const finalValue = type === "date" ? valueForNativeDate(el, value) : value;
-    if (type === "date" && !finalValue) {
-      throw new Error("日期精度与页面控件不匹配，请手动选择");
-    }
-    setNativeValue(el, finalValue);
-    dispatchInput(el);
-    if (!verifyValue(el, type, finalValue)) throw new Error("回读校验失败");
-    return { ok: true };
+    // 文本类（含 date）：标准填充后回读校验，失败则逐字符打字重填（受控组件兜底）。
+    return fillTextWithRetry(entry, el, type, value);
   }
 
   async function apply(fills, options = {}) {
@@ -1470,6 +1502,7 @@
       const item = { id: fill.id, ok: false };
       try {
         Object.assign(item, await fillOne(fill, entry, target));
+        item.retried = item.retried || false;
         const verifiedTarget = resolveEntryTarget(entry);
         const adapterVerified = ["antd-select", "element-select", "phone-country-code", "compound-prefix"].includes(entry.adapter);
         if (!verifiedTarget && !adapterVerified) {
