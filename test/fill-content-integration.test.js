@@ -1049,3 +1049,23 @@ test("点击填充：重复进入拾取态后旧监听器不残留（Esc 后点�
   assert.equal(pageClickFired, true, "取消后页面点击不应被吞掉");
   dom.window.close();
 });
+
+test("受控输入（React 式）：verify 失败后打字重填成功", async () => {
+  const dom = loadFixture("controlled-input.html");
+  const doc = dom.window.document;
+  // loadFixture 使用 runScripts:"outside-only"，夹具内联 <script> 不会自动执行；
+  // 这里按夹具语义手动 eval 其受控校验逻辑（否则夹具形同普通输入框，红灯无法复现）。
+  const inlineScript = /<script>([\s\S]*?)<\/script>/.exec(fixture("controlled-input.html"));
+  assert.ok(inlineScript, "夹具应包含内联受控校验脚本");
+  dom.window.eval(inlineScript[1]);
+  const { fields, scanId, documentFingerprint, formFingerprint } = dom.window.__hunterFill.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  assert.ok(name, "应识别姓名字段");
+  // 说明：apply 实际直接返回结果数组（非 { ok, results }），按真实 API 形状断言。
+  const results = await dom.window.__hunterFill.apply([{ id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  const r = results.find(x => x.id === name.id);
+  assert.equal(r.ok, true, `姓名应填入：${r.error || ""}`);
+  assert.equal(doc.getElementById("name").value, "张三");
+  assert.equal(r.retried, true, "应走打字重填路径");
+  dom.window.close();
+});

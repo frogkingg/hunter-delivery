@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>受控输入夹具</title></head>
+<body>
+  <form id="app">
+    <label for="name">姓名</label><input id="name" name="name" type="text">
+    <label for="phone">手机号</label><input id="phone" name="phone" type="tel">
+    <button type="submit">提交</button>
+  </form>
+  <script>
+    // 模拟 React 受控组件：只接受经由真实键盘事件链写入的值。
+    (function () {
+      const accepts = new WeakMap();
+      for (const input of document.querySelectorAll("input")) {
+        input.addEventListener("keydown", function () { accepts.set(this, true); });
+        input.addEventListener("input", function () {
+          if (!accepts.get(this)) { this.value = ""; }
+        });
+        input.addEventListener("change", function () {
+          if (!accepts.get(this)) { this.value = ""; }
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
