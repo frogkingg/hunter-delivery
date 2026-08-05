@@ -906,8 +906,9 @@
     const b = normalizeCompare(value);
     if (!a || !b) return 0;
     if (a === b) return 100;
-    if (a.includes(b) || b.includes(a)) return 80 - Math.abs(a.length - b.length);
+    // 前缀优先于包含：前缀蕴含包含，需在包含分支之前判定，保证「前缀 60」保底语义。
     if (a.startsWith(b) || b.startsWith(a)) return 60;
+    if (a.includes(b) || b.includes(a)) return 80 - Math.abs(a.length - b.length);
     let common = 0;
     const max = Math.max(a.length, b.length);
     for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] === b[i]) common++;
@@ -1502,7 +1503,9 @@
     // 联想下拉增强：text/tel/email/textarea 先尝试 focus 弹层并从候选列表选中匹配项；
     // 无候选或未生效时返回 null，继续走标准填充路径（不得因联想失败导致字段报错）。
     if (type === "text" || type === "tel" || type === "email" || type === "textarea") {
-      const suggestResult = await applySuggestEntry({ ...entry, el, type }, value);
+      // 防御：页面 focus 处理器等意外抛错不得冒泡导致字段报错，一律回退标准填充路径。
+      let suggestResult = null;
+      try { suggestResult = await applySuggestEntry({ ...entry, el, type }, value); } catch (_) { suggestResult = null; }
       if (suggestResult) return suggestResult;
     }
     if (entry.kind === "custom") {
