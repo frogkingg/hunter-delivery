@@ -1096,6 +1096,44 @@ test("联想下拉：候选打分并选中匹配项", async () => {
   const results = await dom.window.__hunterFill.apply([{ id: school.id, value: "复旦大学", type: "text", fingerprint: school.fingerprint }], { scanId, documentFingerprint, formFingerprint });
   const r = results.find(x => x.id === school.id);
   assert.equal(r.ok, true, `联想下拉应选中：${r.error || ""}`);
+  assert.equal(r.via, "suggest", "应真实走联想选中路径而非回退打字路径");
   assert.equal(doc.getElementById("school").value, "复旦大学");
+  dom.window.close();
+});
+
+test("联想下拉：无匹配候选时回退打字路径且不误选", async () => {
+  const dom = loadFixture("suggest-dropdown.html");
+  const doc = dom.window.document;
+  const inline = fixture("suggest-dropdown.html").match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  if (inline) dom.window.eval(inline);
+  const { fields, scanId, documentFingerprint, formFingerprint } = dom.window.__hunterFill.scan(doc);
+  const school = fields.find(f => f.label.includes("毕业院校"));
+  assert.ok(school, "应识别毕业院校字段");
+  // 值不在候选列表内：联想无匹配必须回退标准打字路径。
+  // 夹具为受控联想（未选中候选的值会被清空），回退写入同样会被夹具拒绝，故如实失败。
+  const results = await dom.window.__hunterFill.apply([{ id: school.id, value: "北京大学", type: "text", fingerprint: school.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  const r = results.find(x => x.id === school.id);
+  assert.equal(r.ok, false, "联想无匹配且夹具拒绝直接写入时应如实失败");
+  assert.match(r.error || "", /模拟输入后仍失败/);
+  assert.equal(doc.getElementById("school").value, "", "回退失败后输入框不得残留部分输入");
+  dom.window.close();
+});
+
+test("联想下拉：多候选时前缀优先于非前缀包含", async () => {
+  const dom = loadFixture("suggest-dropdown.html");
+  const doc = dom.window.document;
+  const inline = fixture("suggest-dropdown.html").match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  if (inline) dom.window.eval(inline);
+  // 注入「上海复旦大学」作为非前缀包含竞争项：旧打分（前缀 60 < 包含 76）会误选它，用于拦截 I1 回归。
+  // 夹具脚本对 li[role='option'] 的 mousedown 委派是通用的，注入项可正常被选中。
+  doc.getElementById("suggest").insertAdjacentHTML("beforeend", '<li role="option" data-value="上海复旦大学">上海复旦大学</li>');
+  const { fields, scanId, documentFingerprint, formFingerprint } = dom.window.__hunterFill.scan(doc);
+  const school = fields.find(f => f.label.includes("毕业院校"));
+  assert.ok(school, "应识别毕业院校字段");
+  const results = await dom.window.__hunterFill.apply([{ id: school.id, value: "复旦", type: "text", fingerprint: school.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  const r = results.find(x => x.id === school.id);
+  assert.equal(r.ok, true, `前缀候选应选中：${r.error || ""}`);
+  assert.equal(r.via, "suggest");
+  assert.equal(doc.getElementById("school").value, "复旦大学", "前缀匹配应优先于非前缀包含");
   dom.window.close();
 });

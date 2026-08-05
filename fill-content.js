@@ -918,31 +918,57 @@
     const b = normalizeCompare(value);
     if (!a || !b) return 0;
     if (a === b) return 100;
-    // 前缀优先于包含：前缀蕴含包含，需在包含分支之前判定，保证「前缀 60」保底语义。
-    if (a.startsWith(b) || b.startsWith(a)) return 60;
+    // 前缀优先于包含：前缀匹配分值取 max(60, 80−长度差)，保证前缀 ≥ 非前缀包含，
+    // 避免「复旦」误选「上海复旦大学」（前缀 78 > 包含 76）。
+    if (a.startsWith(b) || b.startsWith(a)) return Math.max(60, 80 - Math.abs(a.length - b.length));
     if (a.includes(b) || b.includes(a)) return 80 - Math.abs(a.length - b.length);
+    // 逐字符公共前缀档（≤40）恒低于选中阈值 50，不参与选中，仅作预留打分。
     let common = 0;
     const max = Math.max(a.length, b.length);
     for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] === b[i]) common++;
     return Math.round((common / max) * 40);
   }
 
+  // 廉价前置预检：仅当输入具备联想特征（aria-controls/aria-owns/role=combobox）或页面/容器存在联想列表
+  // （[role='listbox'] / antd / element 下拉，允许 hidden——联想层常初始隐藏、focus 后才显示）时才进入联想路径，
+  // 避免普通文本字段为无谓的 focus + sleep + 全文档扫描付出延迟（10 字段 ≈ +800ms）。
+  // 弹层归属边界（M4）：customOptionRoots 已实现「优先 aria 关联弹层，无 aria 时仅退化唯一可见弹层」，
+  // 此处不再额外收窄，避免破坏无 aria 但页面仅一个 listbox 的联想控件。
+  function hasSuggestPopup(entry) {
+    const el = entry.el;
+    if (el.getAttribute?.("aria-controls") || el.getAttribute?.("aria-owns")) return true;
+    if (String(el.getAttribute?.("role") || "") === "combobox") return true;
+    const doc = el.ownerDocument;
+    const scope = entry.container && entry.container.querySelector ? entry.container : doc;
+    return !!scope.querySelector("[role='listbox'], .ant-select-dropdown, .el-select-dropdown");
+  }
+
   // 输入型联想控件（如学校/公司/城市联想）适配：focus 弹层 → 候选打分 → 点击选中。
   // 无候选或未生效时返回 null，由调用方回退标准填充路径，不得因联想失败导致字段报错。
   async function applySuggestEntry(entry, value) {
+    if (!hasSuggestPopup(entry)) return null;
     const input = entry.el;
     input.focus();
     await sleep(80);
-    const roots = customOptionRoots(entry.container || entry.el);
-    const candidates = [];
-    for (const root of roots) {
-      const nodes = root.querySelectorAll("[role='option'], li, .ant-select-item, .el-select-dropdown__item");
-      nodes.forEach(node => {
-        const text = cleanString(node.textContent);
-        if (text) candidates.push({ node, text, score: scoreSuggestion(text, value) });
-      });
+    const findBest = () => {
+      const roots = customOptionRoots(entry.container || entry.el);
+      const candidates = [];
+      for (const root of roots) {
+        const nodes = root.querySelectorAll("[role='option'], li, .ant-select-item, .el-select-dropdown__item");
+        nodes.forEach(node => {
+          if (!isVisible(node)) return; // 弹层内被过滤项常 display:none，直接排除
+          const text = cleanString(node.textContent);
+          if (text) candidates.push({ node, text, score: scoreSuggestion(text, value) });
+        });
+      }
+      return candidates.filter(c => c.score >= 50).sort((a, b) => b.score - a.score)[0] || null;
+    };
+    let best = findBest();
+    // 弹层可能异步挂载候选：最多再轮询 2 次（各 100ms），避免 80ms 内错过异步加载的弹层。
+    for (let poll = 0; !best && poll < 2; poll++) {
+      await sleep(100);
+      best = findBest();
     }
-    const best = candidates.filter(c => c.score >= 50).sort((a, b) => b.score - a.score)[0];
     if (!best) return null;
     scrollIntoView(best.node);
     triggerAction(best.node);
