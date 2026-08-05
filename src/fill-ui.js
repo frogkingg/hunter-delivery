@@ -1119,9 +1119,14 @@ export async function undoLastFill() {
   });
   if (!response?.ok) throw new Error(response?.error || "撤销失败");
   const count = Number(response.count) || 0;
+  const unRestored = Number(response.unRestored) || 0;
   await clearFill();
   setSmartFillUndoEnabled(false);
-  toast(count > 0 ? `已撤销本次填充（${count} 项）` : "已撤销本次填充");
+  if (unRestored > 0) {
+    toast(`已撤销本次填充：${unRestored} 项自定义组件未能完全恢复，请手动确认`);
+  } else {
+    toast(count > 0 ? `已撤销本次填充（${count} 项）` : "已撤销本次填充");
+  }
 }
 
 // 智能填充结果工具条：动态创建「撤销本次填充」按钮（不依赖 panel.html 静态骨架）。

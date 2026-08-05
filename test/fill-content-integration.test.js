@@ -1362,3 +1362,98 @@ test("着色：未勾选 checkbox 批量填充后着橙、已勾选 checkbox 不
   assert.ok(!skillEl.classList.contains("hunter-fill-pending"), "已勾选 checkbox 不应着橙");
   dom.window.close();
 });
+
+test("撤销本次填充：未填字段的橙色 pending 一并清除", async () => {
+  const dom = loadFixture("zhilian.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  const emailEl = doc.querySelector("input[name='email']");
+  assert.ok(emailEl, "应存在未填字段 email");
+  const applied = await engine.apply([{ id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(applied[0].ok, true);
+  assert.ok(emailEl.classList.contains("hunter-fill-pending"), "批量填充后未填字段应着橙");
+  const undoResult = await engine.undo({ scanId, documentFingerprint, formFingerprint });
+  assert.equal(undoResult.ok, true);
+  assert.equal(
+    doc.querySelectorAll(".hunter-fill-pending, .hunter-fill-done, .hunter-fill-highlight").length,
+    0,
+    "撤销后全页绿/橙/高亮着色应全部清除（含未填字段的 pending）"
+  );
+  dom.window.close();
+});
+
+test("撤销本次填充：custom 下拉展示文本恢复且未完全恢复项上报", async () => {
+  const dom = new JSDOM(`<form>
+    <div class="ant-form-item"><div class="ant-form-item-label"><label for="arrival">到岗时间</label></div><div class="ant-form-item-control"><div class="ant-select" id="arrival">
+      <div class="ant-select-selection-item">请选择</div>
+      <input class="ant-select-selection-search-input" type="text">
+    </div></div></div>
+    <div class="ant-select-dropdown"><div class="ant-select-item-option" data-value="随时到岗">随时到岗</div><div class="ant-select-item-option" data-value="一个月内">一个月内</div></div>
+  </form>`, { url: "https://x.com/undo-custom", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const arrival = fields.find(f => f.type === "custom-select");
+  assert.ok(arrival, "应识别 custom-select 字段");
+  const container = doc.getElementById("arrival");
+  const item = container.querySelector(".ant-select-selection-item");
+  const input = container.querySelector("input");
+  // 模拟受控 antd：点击选项时同步更新展示项与内部 input
+  doc.querySelectorAll(".ant-select-item-option").forEach(option => {
+    option.addEventListener("click", () => {
+      item.textContent = option.textContent;
+      input.value = option.textContent;
+    });
+  });
+  const applied = await engine.apply([{ id: arrival.id, value: "随时到岗", type: "custom-select", fingerprint: arrival.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(applied[0].ok, true, JSON.stringify(applied[0]));
+  assert.equal(item.textContent, "随时到岗", "填充后展示项应为选中值");
+  assert.equal(input.value, "随时到岗");
+  const undoResult = await engine.undo({ scanId, documentFingerprint, formFingerprint });
+  assert.equal(undoResult.ok, true);
+  assert.equal(undoResult.count, 1);
+  assert.equal(undoResult.unRestored, 0, "可恢复的自定义组件不应上报未恢复");
+  assert.equal(item.textContent, "请选择", "撤销后展示项应恢复原占位文本");
+  assert.equal(input.value, "", "撤销后内部 input 应恢复原值");
+  assert.ok(!container.classList.contains("hunter-fill-done") && !container.classList.contains("hunter-fill-pending"), "容器着色应清除");
+  assert.ok(!input.classList.contains("hunter-fill-done"), "input 着色应清除");
+  dom.window.close();
+});
+
+test("撤销本次填充：custom 展示存在无法还原节点时上报 unRestored", async () => {
+  const dom = new JSDOM(`<form>
+    <div class="ant-form-item"><div class="ant-form-item-label"><label for="arrival">到岗时间</label></div><div class="ant-form-item-control"><div class="ant-select" id="arrival">
+      <div class="ant-select-selection-item">请选择</div>
+      <div class="extra-display"></div>
+      <input class="ant-select-selection-search-input" type="text">
+    </div></div></div>
+    <div class="ant-select-dropdown"><div class="ant-select-item-option" data-value="随时到岗">随时到岗</div></div>
+  </form>`, { url: "https://x.com/undo-custom-partial", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const arrival = fields.find(f => f.type === "custom-select");
+  assert.ok(arrival, "应识别 custom-select 字段");
+  const container = doc.getElementById("arrival");
+  const item = container.querySelector(".ant-select-selection-item");
+  const input = container.querySelector("input");
+  const extra = container.querySelector(".extra-display");
+  doc.querySelectorAll(".ant-select-item-option").forEach(option => {
+    option.addEventListener("click", () => {
+      item.textContent = option.textContent;
+      extra.textContent = option.textContent; // 额外展示节点不受还原路径覆盖
+      input.value = option.textContent;
+    });
+  });
+  const applied = await engine.apply([{ id: arrival.id, value: "随时到岗", type: "custom-select", fingerprint: arrival.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(applied[0].ok, true, JSON.stringify(applied[0]));
+  const undoResult = await engine.undo({ scanId, documentFingerprint, formFingerprint });
+  assert.equal(undoResult.ok, true);
+  assert.equal(undoResult.count, 1);
+  assert.equal(undoResult.unRestored, 1, "存在无法还原的展示节点时应上报未恢复数");
+  dom.window.close();
+});

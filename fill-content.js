@@ -1010,16 +1010,19 @@
     }
   }
 
+  // 统一清除高亮与绿/橙状态着色（含 custom 容器等非 entry.el 目标，按类名全量清理最稳）。
+  // reset 与 undo 共用：撤销后未填字段的 pending 橙也一并清掉，避免页面残留着色。
+  function clearFillColoring(root) {
+    if (!root) return;
+    try {
+      for (const el of root.querySelectorAll(`.${HIGHLIGHT_CLASS}, .${DONE_CLASS}, .${PENDING_CLASS}`)) {
+        el.classList.remove(HIGHLIGHT_CLASS, DONE_CLASS, PENDING_CLASS);
+      }
+    } catch (_) {}
+  }
+
   function reset(doc) {
-    const root = doc || (typeof document !== "undefined" ? document : null);
-    if (root) {
-      // 统一清除高亮与绿/橙状态着色（含 custom 容器等非 entry.el 目标，按类名全量清理最稳）。
-      try {
-        for (const el of root.querySelectorAll(`.${HIGHLIGHT_CLASS}, .${DONE_CLASS}, .${PENDING_CLASS}`)) {
-          el.classList.remove(HIGHLIGHT_CLASS, DONE_CLASS, PENDING_CLASS);
-        }
-      } catch (_) {}
-    }
+    clearFillColoring(doc || (typeof document !== "undefined" ? document : null));
     elementRegistry = new Map();
     repeaterRegistry = new Map();
     cancelSignal = null;
@@ -1715,6 +1718,8 @@
         radioGroup: entry.type === "radio"
           ? resolveRadioGroup(target, entry.group).map(radio => ({ el: radio, checked: radio.checked }))
           : null,
+        // custom 组件：快照容器展示状态，撤销时尽力恢复（受控组件内部 input 置空不回退显示值）。
+        customDisplay: entry.kind === "custom" && entry.container ? snapshotCustomDisplay(entry.container) : null,
       });
     }
     for (let index = 0; index < prepared.length; index++) {
@@ -1750,18 +1755,52 @@
     return results;
   }
 
-  // 撤销本次填充：恢复 apply 记录的每个目标原值并清除着色（done/pending/highlight）。
+  // custom 组件展示快照：独立展示节点（antd/el select 选中项）文本 + 容器整体展示文本。
+  // 撤销时据此尽力恢复受控组件不回退的显示值。
+  function snapshotCustomDisplay(container) {
+    if (!container) return null;
+    const item = container.querySelector(".ant-select-selection-item, .el-select__selected-item, .el-select__selection-item");
+    return {
+      selectionText: item ? item.textContent || "" : null,
+      text: cleanString(container.textContent),
+    };
+  }
+
+  // 尽力恢复 custom 容器展示文本，返回是否已与记录快照一致（可验证性回读）。
+  function restoreCustomDisplay(container, display) {
+    if (!container || !display) return false;
+    const item = container.querySelector(".ant-select-selection-item, .el-select__selected-item, .el-select__selection-item");
+    if (item) {
+      item.textContent = display.selectionText || "";
+    } else if (!container.querySelector("input, select, textarea, button") && display.text != null) {
+      // 无独立展示节点且容器不含表单控件（避免误删 input/select 结构）：直接还原容器文本。
+      if (cleanString(container.textContent) !== display.text) {
+        try { container.textContent = display.text; } catch (_) { return false; }
+      }
+    }
+    // 回读验证：容器展示文本与记录快照一致即视为已恢复（含 ant-picker 等展示即内部 input 的情况）。
+    return cleanString(container.textContent) === display.text;
+  }
+
+  // 撤销本次填充：恢复 apply 记录的每个目标原值并清除全页着色（done/pending/highlight，
+  // 含 markUnfilledPending 染过、不在 prevValues 中的未填字段，避免撤销后残留橙色框）。
   // 仅基于当前会话的 prevValues；会话失效（assertScanSession）则不执行并返回错误。
   // 完成后清空 prevValues，避免重复撤销或撤销到更早的状态。
   async function undo(options = {}) {
     assertScanSession(options);
+    const doc = scanSession.formRoots?.[0]?.ownerDocument
+      || elementRegistry.values().next().value?.el?.ownerDocument
+      || (typeof document !== "undefined" ? document : null);
+    // 先清全页着色（与 reset 同思路，按类名全量清理最稳），再恢复原值。
+    clearFillColoring(doc);
     const prevValues = scanSession.prevValues;
-    if (!prevValues || !prevValues.size) return { ok: true, count: 0 };
+    if (!prevValues || !prevValues.size) return { ok: true, count: 0, unRestored: 0 };
     const clearClasses = el => {
       if (!el || typeof el.classList === "undefined") return;
       el.classList.remove(DONE_CLASS, PENDING_CLASS, HIGHLIGHT_CLASS);
     };
     let count = 0;
+    let unRestored = 0;
     for (const [target, record] of prevValues) {
       // radio：按记录时整组勾选状态恢复（避免只复位组内单个节点导致组状态不一致）。
       if (record.type === "radio" && Array.isArray(record.radioGroup)) {
@@ -1773,6 +1812,18 @@
           }
           clearClasses(item.el);
         }
+        count += 1;
+        continue;
+      }
+      // custom：容器展示优先尽力恢复（内部 input 可能已随重渲染断开），回读不一致上报未恢复。
+      if (record.kind === "custom" && record.container && record.container.isConnected) {
+        if (target && target.isConnected) {
+          setNativeValue(target, record.before);
+          dispatchInput(target);
+        }
+        if (!restoreCustomDisplay(record.container, record.customDisplay)) unRestored += 1;
+        clearClasses(record.container);
+        if (target && target.isConnected) clearClasses(target);
         count += 1;
         continue;
       }
@@ -1791,7 +1842,7 @@
       count += 1;
     }
     prevValues.clear();
-    return { ok: true, count };
+    return { ok: true, count, unRestored };
   }
 
   function triggerAction(action) {
@@ -2287,9 +2338,9 @@
                 documentFingerprint: message.documentFingerprint,
                 formFingerprint: message.formFingerprint,
               });
-              sendResponse({ ok: true, count: result.count });
+              sendResponse({ ok: true, count: result.count, unRestored: result.unRestored || 0 });
             } catch (error) {
-              sendResponse({ ok: false, error: error.message || String(error), errorCode: error.code || "UNDO_FAILED", count: 0 });
+              sendResponse({ ok: false, error: error.message || String(error), errorCode: error.code || "UNDO_FAILED", count: 0, unRestored: 0 });
             }
           })();
           return true;
