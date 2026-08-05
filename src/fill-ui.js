@@ -345,7 +345,7 @@ export async function scanFillPage() {
     await ensureOriginPermission(tab);
     const response = await fillMessagePage(tab, { type: "SMART_FILL_SCAN" });
     if (!response?.ok) throw new Error(response?.error || "扫描失败");
-    if (response.engineVersion !== 3) throw new Error("页面仍在运行旧版填充引擎，请刷新网申页面后重新扫描。");
+    if (response.engineVersion !== FILL_ENGINE_VERSION) throw new Error("页面仍在运行旧版填充引擎，请刷新网申页面后重新扫描。");
     const fields = response.fields || [];
     if (!fields.length) throw new Error("未检测到可填写的表单项。");
     fillResultMode = "list";
@@ -488,14 +488,15 @@ function findPlaybookMapping(playbook, match) {
   ) || null;
 }
 
-// playbook 只作为规则之上的优先覆盖层：站点内置映射命中且中央校验通过、原 match 非 manual 时应用，
-// 否则保持原状（敏感/人工字段不被 playbook 覆盖，校验不过也不改 value）。
+// playbook 只作为规则之上的优先覆盖层：站点内置映射命中且中央校验通过、原 match 非 manual 且
+// 非 userConfirmed 时应用；否则保持原状。模板 userConfirmed 匹配优先于 playbook（不降级、不丢确认标记），
+// 敏感/人工字段不被 playbook 覆盖，playbook 映射校验失败也不改写原 match 的 reason/状态。
 function applyPlaybookOverlay(matches, resumeFields) {
   const url = state.fillScanPage?.url || state.fillScanSession?.url || "";
   const playbook = findPlaybook(PLAYBOOKS, url);
   if (!playbook || !validatePlaybook(playbook).ok) return matches;
   return (matches || []).map(match => {
-    if (match.status === "manual") return match;
+    if (match.status === "manual" || match.userConfirmed) return match;
     const mapping = findPlaybookMapping(playbook, match);
     if (!mapping?.fieldKey) return match;
     const validated = validateBinding(match, mapping.fieldKey, resumeFields || {}, {
@@ -504,7 +505,7 @@ function applyPlaybookOverlay(matches, resumeFields) {
       userConfirmed: false,
       reason: `站点 playbook 映射（${mapping.fieldKey}）`,
     });
-    if (validated.status !== "match") return { ...match, reason: validated.reason };
+    if (validated.status !== "match") return match;
     return { ...match, ...validated, source: "playbook" };
   });
 }

@@ -977,3 +977,102 @@ test("playbook 覆盖层：moka 站点规则之上的字段应用站点映射，
     dom.window.close();
   }
 });
+
+// —— playbook 质量修复（Wave 4 任务 4 复审） ——
+// moka 站点扫描 DOM：可注入 smartFillTemplates，用于验证 playbook 与模板的并存语义。
+function setupMokaDom({ templates = {} } = {}) {
+  const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
+  window.confirm = () => true;
+  globalThis.window = window;
+  globalThis.document = window.document;
+  const tab = { id: 7, url: "https://app.mokahr.com/campus_apply/123" };
+  const scanFields = [
+    { id: "m-name", type: "text", label: "姓名", rawLabel: "姓名", labelSource: "label", skipped: false, options: [], fingerprint: "fp-name", path: "#m-name", evidence: [{ source: "label", text: "姓名" }], context: {}, attributes: {} },
+  ];
+  globalThis.chrome = {
+    storage: { local: {
+      get: async keys => {
+        const list = typeof keys === "string" ? [keys] : keys;
+        const out = {};
+        for (const k of list) {
+          if (k === "smartFillTemplates") out[k] = templates;
+          else if (k === "smartFillLogs") out[k] = [];
+          else if (k === "smartFillSettings") out[k] = {};
+          else out[k] = undefined;
+        }
+        return out;
+      },
+      set: async () => {},
+    } },
+    runtime: { sendMessage: (_m, cb) => { if (cb) cb({ ok: true }); }, onMessage: { addListener() {} }, connect: () => ({ onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }), getURL: p => p },
+    tabs: {
+      query: async () => [tab],
+      sendMessage: async (_id, message) => {
+        if (message.type === "SMART_FILL_SCAN") {
+          return { ok: true, engineVersion: 3, fields: scanFields, repeaters: [], page: { title: "apply", url: tab.url, host: "app.mokahr.com" }, scanId: "s-moka", documentFingerprint: "dm", formFingerprint: "fm" };
+        }
+        return { ok: true };
+      },
+    },
+    permissions: { contains: async () => true, request: async () => true },
+    scripting: { executeScript: async () => [] },
+  };
+  return { dom, close: () => { delete globalThis.window; delete globalThis.document; delete globalThis.chrome; dom.window.close(); } };
+}
+
+test("playbook 覆盖层：模板 userConfirmed 匹配优先于 playbook，不被覆盖", async () => {
+  const { close } = setupMokaDom({
+    templates: {
+      "app.mokahr.com::fm": {
+        schemaVersion: 2, host: "app.mokahr.com",
+        scope: { formFingerprint: "fm" },
+        mappings: [{ fieldFingerprint: "fp-name", siteLabel: "姓名", controlType: "text", slot: "single", fieldKey: "name", valueRef: { source: "resume", path: "name" }, userConfirmed: true, updatedAt: "2026-08-05T00:00:00.000Z" }],
+      },
+    },
+  });
+  const { state, setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { scanFillPage } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(false);
+    await scanFillPage();
+    const nameMatch = state.fillMatches.find(m => m.fieldId === "m-name");
+    assert.ok(nameMatch, "应包含姓名匹配");
+    assert.equal(nameMatch.source, "template", "模板 userConfirmed 匹配不应被 playbook 覆盖");
+    assert.equal(nameMatch.userConfirmed, true, "模板 userConfirmed 标记应保留（影响 saveTemplateFromResults 的 confirmed 记录）");
+    assert.equal(nameMatch.fieldKey, "name");
+    assert.equal(nameMatch.status, "match");
+  } finally { close(); }
+});
+
+test("playbook 覆盖层：映射校验失败保持原 match 不变，不覆盖 reason", async () => {
+  const { close } = setupMokaDom({
+    templates: {
+      "app.mokahr.com::fm": {
+        schemaVersion: 2, host: "app.mokahr.com",
+        scope: { formFingerprint: "fm" },
+        mappings: [{ fieldFingerprint: "fp-name", siteLabel: "姓名", controlType: "text", slot: "single", fieldKey: "email", valueRef: { source: "resume", path: "email" }, userConfirmed: false, updatedAt: "2026-08-05T00:00:00.000Z" }],
+      },
+    },
+  });
+  const { state, setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { scanFillPage } = await import("../src/fill-ui.js");
+  try {
+    // 简历有 email 无 name：模板映射成功（email），playbook 的 name 映射校验失败（缺 name）。
+    setProfiles([{ name: "测试简历", resumeFields: { email: "a@b.com" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(false);
+    await scanFillPage();
+    const nameMatch = state.fillMatches.find(m => m.fieldId === "m-name");
+    assert.ok(nameMatch, "应包含姓名匹配");
+    assert.equal(nameMatch.status, "match", "playbook 校验失败不应改变原 match 状态");
+    assert.equal(nameMatch.source, "template", "playbook 校验失败应保持原模板来源");
+    assert.equal(nameMatch.fieldKey, "email", "playbook 校验失败不应改写 fieldKey");
+    assert.equal(nameMatch.value, "a@b.com", "playbook 校验失败不应清空已解析值");
+    assert.doesNotMatch(nameMatch.reason, /姓名/, "playbook 失败 reason 不得覆盖原匹配 reason");
+    assert.match(nameMatch.reason, /站点模板语义映射/, "应保留模板阶段的 reason");
+  } finally { close(); }
+});
