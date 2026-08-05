@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { structureSignature, readCache, writeCache, AI_CACHE_MAX } from "../src/ai-cache.js";
+import { structureSignature, readCache, writeCache, AI_CACHE_MAX, AI_CACHE_TTL_MS } from "../src/ai-cache.js";
 
 const fields = [
   { id: "input-1", label: "姓名", type: "text", slot: "single", options: [], context: { sectionKey: "basic" } },
@@ -21,6 +21,7 @@ test("缓存：命中需签名+引擎版本+模型一致，TTL 过期即失效",
   assert.ok(readCache(store, "sig1", 3, "deepseek-chat"));
   assert.equal(readCache(store, "sig1", 4, "deepseek-chat"), null, "引擎升级失效");
   assert.equal(readCache(store, "sig1", 3, "gpt-4o"), null, "换模型失效");
+  assert.equal(readCache(store, "sig1", 3, "deepseek-chat", Date.now() + AI_CACHE_TTL_MS + 1), null, "TTL 过期失效");
 });
 
 test("缓存容量：超过 AI_CACHE_MAX 淘汰最旧", () => {
