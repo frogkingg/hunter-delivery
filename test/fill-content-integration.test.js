@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
-import { matchRules } from "../src/matcher.js";
+import { matchRules, SENSITIVE_FIELD_KEYS } from "../src/matcher.js";
 
 const engineSource = readFileSync(new URL("../fill-content.js", import.meta.url), "utf8");
 const fixture = name => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
@@ -91,6 +91,9 @@ test("匹配：6 个夹具的常见字段与复杂字段", () => {
         manualExpected += 1;
         if (result.status === "manual") manualCorrect += 1;
       } else if (result.fieldKey === want && result.status === "match") {
+        correct += 1;
+      } else if (result.fieldKey === want && result.status === "manual" && SENSITIVE_FIELD_KEYS.has(want)) {
+        // 敏感字段按策略强制人工：识别正确即算正确处理（填充需用户显式确认）。
         correct += 1;
       }
     }

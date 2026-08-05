@@ -17,6 +17,14 @@ const NORMALIZED_KEYWORDS = new Map(CANONICAL_FIELDS.map(field => [
   field.keywords.map(normalizeKeyword).filter(Boolean),
 ]));
 
+// 敏感字段集合：默认强制人工，规则/模板/AI 均不可自动填为 match（除非 userConfirmed）。
+// 覆盖规范 key（idCard/expectedSalary/politicalStatus/referral）与预留别名
+// （salary/referrer/emergencyContact/guardian 等，防止未来新增规范字段时默认放开）。
+export const SENSITIVE_FIELD_KEYS = new Set([
+  "idCard", "salary", "expectedSalary", "emergencyContact", "emergencyPhone",
+  "guardian", "guarantor", "referrer", "referral", "workAuthorization", "politicalStatus",
+]);
+
 function bestKeywordHit(label, keywords) {
   let best = { length: 0, keyword: "" };
   for (const normalized of keywords) {
@@ -373,6 +381,9 @@ export function validateBinding(field, fieldKey, resumeFields, options = {}) {
   const confidence = options.confidence || null;
   if (base.skipped) return { ...base, confidence, reason: "该控件不支持自动填充（密码/文件/隐藏）" };
   if (!FIELD_BY_KEY[key]) return { ...base, confidence, reason: "未返回有效字段 key" };
+  if (SENSITIVE_FIELD_KEYS.has(key) && !options.userConfirmed) {
+    return { ...base, fieldKey: key, confidence: null, reason: "敏感字段，需人工确认" };
+  }
   const evidence = fieldEvidence(field);
   if (contextBlocked(field, key, evidence)) {
     return { ...base, fieldKey: key, confidence, reason: "字段上下文与候选人本人信息冲突，需人工确认" };
@@ -545,6 +556,17 @@ export function matchRules(fields, resumeFields) {
         result.lockedManual = true;
         result.reason = `页面存在多个「${RESUME_FIELD_LABELS[fieldKey]}」字段，请选择对应经历条目`;
       }
+    }
+  }
+  // 敏感字段兜底：即使规则层后续新增绕过 validateBinding 的路径，也强制 manual。
+  for (const result of results) {
+    if (result.status === "match" && SENSITIVE_FIELD_KEYS.has(result.fieldKey)) {
+      result.status = "manual";
+      result.value = "";
+      result.confidence = null;
+      result.lockedManual = true;
+      result.userConfirmed = false;
+      result.reason = "敏感字段，需人工确认";
     }
   }
   return results;
