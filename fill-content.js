@@ -1639,14 +1639,18 @@
   }
 
   // 判断字段当前是否已有值（用户手填或页面预填）：
-  // 文本类判 el.value；select 判选中项非空且非占位项；radio 判组内任一勾选；checkbox 判 checked；
-  // custom 判内部 input 有值或容器展示值非占位。
+  // 文本类判 el.value；select 判选中项非空且非占位项；radio/checkbox 判勾选态（checkbox 的 el.value 默认
+  // "on" 或选项文案，未勾选也为 truthy，不能当已填）；custom 判内部 input 有值或容器展示值非占位。
   function entryHasValue(entry, el) {
     if (!entry || !el) return false;
     if (entry.kind === "radio") {
       return resolveRadioGroup(el, entry.group).some(item => item && item.checked);
     }
-    if (entry.kind === "checkbox") return !!el.checked;
+    // 扫描注册 checkbox 时 kind 为 "native"（registry 无 kind==="checkbox" 条目），
+    // 故同时按 entry.type 与 DOM el.type 判定，覆盖 kind/type 缺失的兜底场景。
+    if (entry.kind === "checkbox" || entry.type === "checkbox" || String(el.type || "").toLowerCase() === "checkbox") {
+      return !!el.checked;
+    }
     if (entry.kind === "custom") {
       const container = (entry.container && entry.container.isConnected && entry.container)
         || (typeof el.closest === "function" ? el.closest(".ant-select, .el-select, .ant-picker, .el-date-editor") : null);

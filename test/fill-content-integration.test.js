@@ -1333,3 +1333,32 @@ test("着色：单字段填充路径不触发全页染橙", async () => {
   assert.equal(doc.querySelectorAll(".hunter-fill-pending").length, 0, "单字段路径不应产生任何 pending 着色");
   dom.window.close();
 });
+
+test("着色：未勾选 checkbox 批量填充后着橙、已勾选 checkbox 不着橙", async () => {
+  // dayi：未勾选「我同意以上信息属实」，value="同意"（非空）不得被误判为已填
+  const dom = loadFixture("dayi.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  const agree = fields.find(f => f.type === "checkbox" && /同意/.test(f.label));
+  assert.ok(name && agree, "应识别姓名与同意复选框");
+  const agreeEl = doc.querySelector("input[name='agree']");
+  assert.equal(agreeEl.checked, false, "初始应未勾选");
+  await engine.apply([{ id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  assert.ok(agreeEl.classList.contains("hunter-fill-pending"), "未勾选 checkbox 应着橙");
+
+  // antd：已勾选「技能」复选框不着橙
+  const dom2 = loadFixture("antd-generic.html");
+  const doc2 = dom2.window.document;
+  const eng2 = dom2.window.__hunterFill;
+  const { fields: f2, scanId: s2, documentFingerprint: df2, formFingerprint: ff2 } = eng2.scan(doc2);
+  const skill = f2.find(f => f.type === "checkbox" && /技能/.test(f.label));
+  const name2 = f2.find(f => f.label.includes("姓名"));
+  assert.ok(skill && name2, "应识别技能复选框与姓名字段");
+  const skillEl = doc2.getElementById("skill");
+  skillEl.checked = true;
+  await eng2.apply([{ id: name2.id, value: "张三", type: "text", fingerprint: name2.fingerprint }], { scanId: s2, documentFingerprint: df2, formFingerprint: ff2 });
+  assert.ok(!skillEl.classList.contains("hunter-fill-pending"), "已勾选 checkbox 不应着橙");
+  dom.window.close();
+});
