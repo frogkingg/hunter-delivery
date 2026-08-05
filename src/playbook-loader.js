@@ -19,7 +19,13 @@ export function validatePlaybook(pb) {
 }
 
 export function parseRoutePattern(pattern) {
-  const escaped = String(pattern || "/**").replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*\*/g, ".*").replace(/\*/g, "[^/]*");
+  // 先转义正则特殊字符，再用占位符保护 **，最后处理单 * 并还原 **：
+  // ** → .*（跨 / 匹配），单 * → [^/]*（不跨 /）。
+  const escaped = String(pattern || "/**")
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "\u0000")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\u0000/g, ".*");
   return new RegExp(`^${escaped}$`);
 }
 

@@ -24,3 +24,14 @@ test("findPlaybook：按 host + 路由匹配；parseRoutePattern 通配", () => 
   assert.equal(findPlaybook(playbooks, "https://other.example.com/x"), null);
   assert.ok(parseRoutePattern("/campus_apply/**").test("/campus_apply/123"));
 });
+
+test("parseRoutePattern：** 跨 / 匹配，单 * 不跨 /", () => {
+  const multi = parseRoutePattern("/campus_apply/**");
+  assert.equal(multi.source, "^\\/campus_apply\\/.*$", "** 应编译为 .* 以跨 / 匹配");
+  assert.equal(multi.test("/campus_apply/123/step2"), true, "** 应匹配多段路径");
+  assert.equal(multi.test("/campus_apply/123"), true, "** 也应匹配单段路径");
+  assert.equal(parseRoutePattern("/**").test("/a/b/c"), true, "根 /** 应匹配任意深度");
+  const single = parseRoutePattern("/campus_apply/*");
+  assert.equal(single.test("/campus_apply/123/step2"), false, "单 * 不应跨 /");
+  assert.equal(single.test("/campus_apply/123"), true, "单 * 应匹配单段");
+});
