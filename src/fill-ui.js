@@ -544,6 +544,12 @@ function resumeBindingChoices() {
   return choices;
 }
 
+// 失败行原因文案：打字重填（模拟输入后仍失败）明确引导手动填写，其余失败保持匹配阶段原文案。
+function fillFailureReason(match) {
+  if (match.fillError && match.fillError.includes("模拟输入后仍失败")) return "已尝试模拟输入仍失败，请手动填写";
+  return match.reason || "";
+}
+
 function matchRowHtml(match) {
   const selected = state.fillSelected.has(match.fieldId);
   const value = state.fillValues[match.fieldId] ?? match.value ?? "";
@@ -565,7 +571,7 @@ function matchRowHtml(match) {
       <div class="fill-row-label">${escapeHtml(match.label || "（未识别标签）")}${match.required ? `<span class="req">*</span>` : ""}${badges}</div>
       <input type="text" list="fillFieldKeyOptions" data-fill-key-id="${match.fieldId}" value="${escapeHtml(bindingChoice)}" ${keyEditable ? "" : "disabled"} placeholder="搜索并选择简历字段">
       <input type="text" data-fill-value-id="${match.fieldId}" value="${escapeHtml(value)}" ${editable ? "" : "disabled"} placeholder="${editable ? (match.status === "match" ? "可手动修改" : "可手动填写，完成后确认") : "选择正确的简历字段后启用"}">
-      <div class="fill-meta">${escapeHtml(match.reason || "")}${evidence ? ` · ${escapeHtml(evidence)}` : ""}</div>
+      <div class="fill-meta">${escapeHtml(fillFailureReason(match))}${evidence ? ` · ${escapeHtml(evidence)}` : ""}</div>
     </div>
   </div>`;
 }
@@ -646,6 +652,12 @@ export async function runFill(all = false) {
     const summary = summarizeResults(results);
     const failedIds = results.filter(r => !r.ok).map(r => r.id);
     setFillFailedIds(failedIds);
+    // 记录失败原因到对应 match，供失败行渲染区分「打字重填仍失败」等路径
+    for (const result of results) {
+      const match = state.fillMatches.find(item => item.fieldId === result.id);
+      if (!match) continue;
+      match.fillError = result.ok ? "" : (result.error || "");
+    }
     if (failedIds.length) {
       fillMessagePage(tab, { type: "SMART_FILL_HIGHLIGHT", ids: failedIds, on: true }).catch(() => {});
     }

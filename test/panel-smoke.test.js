@@ -249,7 +249,7 @@ const ONECLICK_SCAN_FIELDS = [
 ];
 
 function setupOneClickDom(options = {}) {
-  const { repeaters = [], prepareOk = true } = options;
+  const { repeaters = [], prepareOk = true, applyResults } = options;
   const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
   const { window } = dom;
   const appliedFills = [];
@@ -309,6 +309,9 @@ function setupOneClickDom(options = {}) {
         }
         if (message.type === "SMART_FILL_APPLY") {
           appliedFills.push(...message.fills);
+          if (applyResults) {
+            return { ok: true, results: typeof applyResults === "function" ? applyResults(message.fills) : applyResults };
+          }
           return { ok: true, results: message.fills.map(f => ({ id: f.id, ok: true, resolvedFingerprint: f.fingerprint })) };
         }
         return { ok: true };
@@ -409,6 +412,29 @@ test("一键智能填充：成功后列表折叠为需人工处理+已自动填�
     assert.equal(done.querySelectorAll(".fill-row").length, 2, "姓名/手机号应为已自动填充项");
     assert.match(done.textContent, /已自动填充（2）/);
     assert.equal(window.document.getElementById("fillSelected").hidden, true, "自动填充完成后工具条按钮应隐藏");
+  } finally { close(); }
+});
+
+test("填充失败：模拟输入后仍失败显示手动填写引导，其他失败保持原文案", async () => {
+  const { close } = setupOneClickDom({
+    applyResults: fills => fills.map(f => {
+      if (f.id === "f-name") return { id: f.id, ok: false, error: "模拟输入后仍失败", resolvedFingerprint: f.fingerprint };
+      if (f.id === "f-phone") return { id: f.id, ok: false, error: "回读校验失败", resolvedFingerprint: f.fingerprint };
+      return { id: f.id, ok: true, resolvedFingerprint: f.fingerprint };
+    }),
+  });
+  const { setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { runSmartFillOnce } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(true);
+    await runSmartFillOnce();
+    const manual = window.document.querySelector(".fill-summary-manual");
+    assert.ok(manual, "失败字段应进入「需人工处理」折叠组");
+    assert.match(manual.textContent, /已尝试模拟输入仍失败，请手动填写/, "打字重填失败的字段应显示手动填写引导");
+    assert.match(manual.textContent, /规则命中「手机号」/, "其他失败应保持匹配阶段原文案");
+    assert.doesNotMatch(manual.textContent, /回读校验失败/, "其他失败的引擎原始错误不应直接展示");
   } finally { close(); }
 });
 

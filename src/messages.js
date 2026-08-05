@@ -116,7 +116,7 @@ export const MESSAGE_TYPES = {
   SMART_FILL_APPLY: {
     direction: "panel→content",
     payload: { scanId: "string", documentFingerprint: "string", formFingerprint: "string", fills: "[{ id, value, type, fingerprint }]" },
-    response: { ok: "boolean", results: "[{ id, ok, resolvedFingerprint?, verification?, error?, errorCode? }]", error: "string?", errorCode: "string?" },
+    response: { ok: "boolean", results: "[{ id, ok, resolvedFingerprint?, verification?, error?, errorCode?, retried: \"boolean?\" }]", error: "string?", errorCode: "string?" },
   },
   SMART_FILL_HIGHLIGHT: {
     direction: "panel→content",
