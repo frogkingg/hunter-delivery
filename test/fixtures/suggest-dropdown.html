@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>联想下拉夹具</title></head>
+<body>
+  <form id="app">
+    <label for="school">毕业院校</label>
+    <input id="school" name="school" type="text" autocomplete="off">
+    <ul id="suggest" role="listbox" hidden>
+      <li role="option" data-value="复旦大学">复旦大学</li>
+      <li role="option" data-value="上海交通大学">上海交通大学</li>
+      <li role="option" data-value="同济大学">同济大学</li>
+    </ul>
+  </form>
+  <script>
+    // 模拟受控联想控件：只接受从候选列表选中的值，直接写入/输入的值会被还原清空。
+    let selected = false;
+    const input = document.getElementById("school");
+    const list = document.getElementById("suggest");
+    input.addEventListener("focus", function () { list.hidden = false; });
+    input.addEventListener("blur", function () {
+      setTimeout(function () { if (!selected) { input.value = ""; } list.hidden = true; }, 200);
+    });
+    input.addEventListener("change", function () {
+      if (!selected) { input.value = ""; }
+    });
+    list.addEventListener("mousedown", function (event) {
+      const li = event.target.closest("li[role='option']");
+      if (li) { input.value = li.dataset.value; selected = true; list.hidden = true; }
+    });
+  </script>
+</body>
+</html>

@@ -1070,3 +1070,19 @@ test("受控输入（React 式）：verify 失败后打字重填成功", async (
   assert.equal(r.retried, true, "应走打字重填路径");
   dom.window.close();
 });
+
+test("联想下拉：候选打分并选中匹配项", async () => {
+  const dom = loadFixture("suggest-dropdown.html");
+  const doc = dom.window.document;
+  // 注意：loadFixture 用 runScripts:"outside-only"，夹具内联脚本需手动 eval（参考 W1T1 受控输入用例的 eval 方式）
+  const inline = fixture("suggest-dropdown.html").match(/<script>([\s\S]*?)<\/script>/)?.[1];
+  if (inline) dom.window.eval(inline);
+  const { fields, scanId, documentFingerprint, formFingerprint } = dom.window.__hunterFill.scan(doc);
+  const school = fields.find(f => f.label.includes("毕业院校"));
+  assert.ok(school, "应识别毕业院校字段");
+  const results = await dom.window.__hunterFill.apply([{ id: school.id, value: "复旦大学", type: "text", fingerprint: school.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  const r = results.find(x => x.id === school.id);
+  assert.equal(r.ok, true, `联想下拉应选中：${r.error || ""}`);
+  assert.equal(doc.getElementById("school").value, "复旦大学");
+  dom.window.close();
+});

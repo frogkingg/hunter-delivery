@@ -900,6 +900,44 @@
     return [...new Set(options)];
   }
 
+  // 候选项文本与期望值的相似度打分：归一化包含 + 前缀 + 逐字符公共前缀。
+  function scoreSuggestion(text, value) {
+    const a = normalizeCompare(text);
+    const b = normalizeCompare(value);
+    if (!a || !b) return 0;
+    if (a === b) return 100;
+    if (a.includes(b) || b.includes(a)) return 80 - Math.abs(a.length - b.length);
+    if (a.startsWith(b) || b.startsWith(a)) return 60;
+    let common = 0;
+    const max = Math.max(a.length, b.length);
+    for (let i = 0; i < Math.min(a.length, b.length); i++) if (a[i] === b[i]) common++;
+    return Math.round((common / max) * 40);
+  }
+
+  // 输入型联想控件（如学校/公司/城市联想）适配：focus 弹层 → 候选打分 → 点击选中。
+  // 无候选或未生效时返回 null，由调用方回退标准填充路径，不得因联想失败导致字段报错。
+  async function applySuggestEntry(entry, value) {
+    const input = entry.el;
+    input.focus();
+    await sleep(80);
+    const roots = customOptionRoots(entry.container || entry.el);
+    const candidates = [];
+    for (const root of roots) {
+      const nodes = root.querySelectorAll("[role='option'], li, .ant-select-item, .el-select-dropdown__item");
+      nodes.forEach(node => {
+        const text = cleanString(node.textContent);
+        if (text) candidates.push({ node, text, score: scoreSuggestion(text, value) });
+      });
+    }
+    const best = candidates.filter(c => c.score >= 50).sort((a, b) => b.score - a.score)[0];
+    if (!best) return null;
+    scrollIntoView(best.node);
+    triggerAction(best.node);
+    await sleep(120);
+    if (!verifyValue(entry, entry.type, value)) return null;
+    return { ok: true, via: "suggest" };
+  }
+
   // —— 高亮 / 重置 ——
   function ensureStyle(doc) {
     if (doc.getElementById("hunter-fill-style")) return;
@@ -1460,6 +1498,12 @@
       const target = applyRadio(group, value);
       if (!target.checked) throw new Error("回读校验失败");
       return { ok: true };
+    }
+    // 联想下拉增强：text/tel/email/textarea 先尝试 focus 弹层并从候选列表选中匹配项；
+    // 无候选或未生效时返回 null，继续走标准填充路径（不得因联想失败导致字段报错）。
+    if (type === "text" || type === "tel" || type === "email" || type === "textarea") {
+      const suggestResult = await applySuggestEntry({ ...entry, el, type }, value);
+      if (suggestResult) return suggestResult;
     }
     if (entry.kind === "custom") {
       const container = (entry.container?.isConnected && entry.container)
