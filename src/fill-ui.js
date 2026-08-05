@@ -49,6 +49,7 @@ const EDITOR_OPTIONS = {
   acceptAdjustment: ["是", "否"],
 };
 let fillResultMode = "list"; // "list" = 预览/全量平铺；"summary" = 一键填充后的折叠视图
+let pickRegionRequestId = null; // 选区拾取（Wave 2 任务3）请求标识
 let resumeFieldFilter = "all";
 let resumeFieldSearch = "";
 let expandedEntryId = "";
@@ -901,6 +902,19 @@ export async function startPickFill(fieldKey) {
   toast("请在页面点击要填入的位置（Esc 取消）");
 }
 
+// 选区填充：进入选区拾取态，用户点击页面容器后按选区内字段渲染匹配。
+// content 拾取到容器后直接回传该容器的 scan 结果（SMART_FILL_PICK_REGION_RESULT）。
+export async function startPickRegion() {
+  const session = state.fillScanSession;
+  const tab = session?.tabId ? { id: session.tabId, url: session.url || "" } : await currentTab();
+  if (!tab?.id || !/^https?:/i.test(tab.url || "")) throw new Error("请先打开目标网申页面。");
+  const requestId = `region-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  pickRegionRequestId = requestId;
+  const response = await fillMessagePage(tab, { type: "SMART_FILL_PICK_REGION", requestId });
+  if (!response?.ok) throw new Error(response?.error || "进入选区拾取失败");
+  toast("请在页面点击要填充的容器（Esc 取消）");
+}
+
 // —— 增量续填（P1 任务6） ——
 function startIncrementalWatch() {
   const session = state.fillScanSession;
@@ -961,13 +975,60 @@ export function handleFillRuntimeMessage(message) {
     else toast(`已填入「${message.value ?? ""}」`);
     return;
   }
+  if (message.type === "SMART_FILL_PICK_REGION_RESULT") {
+    applyRegionFillResult(message);
+    return;
+  }
   if (message.type === "SMART_FILL_PROGRESS") {
     const progress = $("fillProgress");
     if (progress) progress.textContent = `正在填充 ${message.index}/${message.total}…${message.error ? `（${message.error}）` : ""}`;
   }
 }
 
+// 选区拾取结果：用选区内字段重建扫描会话与匹配列表（复用现有渲染管线）。
+async function applyRegionFillResult(message) {
+  try {
+    if (pickRegionRequestId && message.requestId !== pickRegionRequestId) return;
+    pickRegionRequestId = null;
+    if (message.cancelled) { toast("已取消选区填充"); return; }
+    if (!message.ok) { toast(`选区填充失败：${message.error || "未知错误"}`); return; }
+    const fields = message.fields || [];
+    if (!fields.length) { toast("选区内未识别到可填字段，请重新选择更完整的容器"); return; }
+    const session = state.fillScanSession;
+    const tab = session?.tabId ? { id: session.tabId, url: session.url || "" } : await currentTab();
+    if (!tab?.id || !/^https?:/i.test(tab.url || "")) throw new Error("找不到目标页面，请重新扫描");
+    stopIncrementalWatch();
+    fillResultMode = "list";
+    applyScanResponse(message, tab);
+    const regionName = message.regionLabel || message.regionPath || "已选区域";
+    $("fillCurrentSite").textContent = "";
+    $("fillCurrentSiteText").textContent = `选区「${regionName}」：识别到 ${fields.length} 个表单项`;
+    $("clearFill").hidden = false;
+    await buildMatches();
+    await renderFillTemplate();
+    toast(`已识别选区内 ${fields.length} 个字段`);
+  } catch (error) {
+    toast(`选区填充失败：${error.message || String(error)}`);
+  }
+}
+
+// 智能填充工具条：动态创建「选区填充」按钮（不依赖 panel.html 静态骨架）。
+// 点击后进入选区拾取态，用户点选页面容器，仅识别并填充该容器内的字段。
+function ensureRegionFillButton() {
+  const actions = document.querySelector(".fill-actions");
+  if (!actions || document.getElementById("regionFill")) return;
+  const button = document.createElement("button");
+  button.id = "regionFill";
+  button.type = "button";
+  button.className = "secondary";
+  button.textContent = "选区填充";
+  button.title = "点选页面某个容器（如紧急联系人区块），只识别并填充该容器内的字段";
+  button.onclick = () => startPickRegion().catch(error => toast(error.message));
+  actions.appendChild(button);
+}
+
 function bindFillEvents() {
+  ensureRegionFillButton();
   $("smartFillOnce").onclick = () => runSmartFillOnce().catch(error => toast(error.message));
   $("fillSelected").onclick = () => runFill(false).catch(error => toast(error.message));
   $("stopFill").onclick = () => stopFill().catch(error => toast(error.message));

@@ -202,6 +202,16 @@ test("hidden 输入不进入扫描结果", () => {
   dom.window.close();
 });
 
+test("选区填充：region 限定扫描范围", () => {
+  const dom = loadFixture("region-form.html");
+  const doc = dom.window.document;
+  const region = doc.querySelector("#emergency");
+  const { fields } = dom.window.__hunterFill.scan(doc, { region });
+  assert.ok(fields.length === 2, `应只识别选区内字段：${fields.length}`);
+  assert.ok(fields.every(f => /紧急联系人|联系人/.test(f.label)));
+  dom.window.close();
+});
+
 test("自定义下拉：关闭态展开后选择选项并通过回读校验", async () => {
   const dom = loadFixture("antd-generic.html");
   const engine = dom.window.__hunterFill;

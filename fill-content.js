@@ -489,7 +489,10 @@
   function installStructureObserver(root) {
     if (structureObserver) structureObserver.disconnect();
     structureObserver = null;
-    if (typeof MutationObserver === "undefined" || !root?.documentElement) return;
+    if (typeof MutationObserver === "undefined") return;
+    // 选区扫描的根是容器元素：观察该元素自身；全页扫描仍观察 documentElement。
+    const observeTarget = root?.documentElement || (root && root.nodeType === 1 && root.isConnected ? root : null);
+    if (!observeTarget) return;
     structureObserver = new MutationObserver(records => {
       if (!scanSession) return;
       const changed = records.some(record => {
@@ -498,7 +501,7 @@
       });
       if (changed) scanSession.dirty = true;
     });
-    structureObserver.observe(root.documentElement, {
+    structureObserver.observe(observeTarget, {
       subtree: true,
       childList: true,
       attributes: true,
@@ -571,8 +574,16 @@
 
   // —— 扫描 ——
   function scan(doc, scanOptions = {}) {
-    const root = doc || (typeof document !== "undefined" ? document : null);
-    if (!root) return { fields: [], page: null };
+    const base = doc || (typeof document !== "undefined" ? document : null);
+    if (!base) return { fields: [], page: null };
+    let root = base;
+    // 选区扫描：scanOptions.region 可为元素或 CSS 选择器，把扫描根限定到该容器。
+    if (scanOptions.region) {
+      const region = typeof scanOptions.region === "string"
+        ? (base.querySelector ? base.querySelector(scanOptions.region) : null)
+        : scanOptions.region;
+      if (region && region.nodeType === 1 && typeof region.querySelector === "function") root = region;
+    }
     prepareDocumentIndexes(root);
     const registry = new Map();
     const fields = [];
@@ -810,8 +821,9 @@
 
     let page = null;
     try {
-      const url = String(root.URL || (root.location && root.location.href) || "");
-      page = { title: root.title || "", url, host: url ? new URL(url).hostname : "" };
+      const pageRef = root.nodeType === 9 ? root : (root.ownerDocument || null);
+      const url = String(pageRef?.URL || (pageRef?.location && pageRef.location.href) || "");
+      page = { title: pageRef?.title || "", url, host: url ? new URL(url).hostname : "" };
     } catch (_) {}
     const repeaters = scanRepeaters(root, fields);
     const formFingerprint = stableHash([
@@ -935,7 +947,7 @@
     scrollIntoView(best.node);
     triggerAction(best.node);
     await sleep(120);
-    if (!verifyValue(entry, entry.type, value)) return null;
+    if (!verifyValue(input, entry.type, value)) return null;
     return { ok: true, via: "suggest" };
   }
 
@@ -1782,6 +1794,122 @@
     });
   }
 
+  // —— 选区拾取（Wave 2 任务3） ——
+  // 与 pickFill 共用 overlay/拾取骨架；区别是点击任意「含控件的容器」作为 region，
+  // 命中后直接执行选区扫描并返回结果（含 regionPath/regionLabel）。
+  const PICKABLE_CONTROL_SELECTOR = 'input:not([type="hidden"]):not([type="file"]):not([type="submit"]):not([type="button"]):not([type="reset"]), textarea, select, .ant-select, .el-select, .ant-picker, .el-date-editor';
+
+  function findRegionFor(target) {
+    if (!target || target.nodeType !== 1) return null;
+    if (target.closest && target.closest("#hunter-pick-overlay")) return null;
+    const containsControls = node => !!(node && node.querySelectorAll && node.querySelectorAll(PICKABLE_CONTROL_SELECTOR).length);
+    // 点击的元素自身包含控件（如 section/fieldset/表单容器）直接用；否则上溯最近的含控件祖先。
+    if (containsControls(target)) return target;
+    let node = target.parentElement;
+    while (node && node.nodeType === 1 && node !== document.body && node !== document.documentElement) {
+      if (containsControls(node)) return node;
+      node = node.parentElement;
+    }
+    return document.body || document.documentElement;
+  }
+
+  function regionLabelOf(el) {
+    if (!el) return "";
+    if (el.id) return el.id;
+    const heading = el.querySelector && el.querySelector("h1, h2, h3, h4, legend, summary, [class*='title'], [class*='header']");
+    const text = cleanText(heading);
+    if (text) return text.slice(0, 40);
+    return el.tagName ? el.tagName.toLowerCase() : "";
+  }
+
+  function regionPathOf(el) {
+    if (!el) return "";
+    if (el === document.body) return "body";
+    if (el === document.documentElement) return "html";
+    return uniquePath(el) || (el.id ? `#${escapeCss(el.id)}` : "");
+  }
+
+  function pickRegion() {
+    return new Promise(resolve => {
+      if (pickController) {
+        const old = pickController;
+        old.cleanup();
+        pickController = null;
+        old.resolve({ ok: false, cancelled: true, error: "已有进行中的点击填充" });
+      }
+      let controller = null;
+      let highlight = null;
+      const overlay = document.createElement("div");
+      overlay.id = "hunter-pick-overlay";
+      overlay.setAttribute("aria-hidden", "true");
+      overlay.style.cssText = "position:fixed;left:0;top:0;width:100vw;height:100vh;z-index:2147483646;pointer-events:none;font:14px/1.6 sans-serif;color:#2563eb;display:flex;align-items:flex-start;justify-content:center;padding-top:72px;text-align:center;";
+      (document.body || document.documentElement).appendChild(overlay);
+
+      const setHighlight = el => {
+        if (highlight === el) return;
+        if (highlight && highlight.style) highlight.style.outline = "";
+        highlight = el;
+        if (el && el.style) el.style.outline = "2px dashed #2563eb";
+      };
+
+      const hintTimer = { id: null };
+      const showHint = text => {
+        overlay.textContent = text;
+        if (hintTimer.id) clearTimeout(hintTimer.id);
+        hintTimer.id = setTimeout(() => { overlay.textContent = ""; }, 1200);
+      };
+
+      const finish = () => {
+        if (pickController !== controller) return;
+        pickController = null;
+        document.removeEventListener("mousemove", onMouseMove, true);
+        document.removeEventListener("click", onClick, true);
+        document.removeEventListener("keydown", onKeyDown, true);
+        setHighlight(null);
+        overlay.remove();
+      };
+
+      const onMouseMove = event => setHighlight(findRegionFor(event.target));
+
+      const onClick = async event => {
+        const region = findRegionFor(event.target);
+        if (!region) {
+          showHint("请点击要填充的容器（Esc 取消）");
+          return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        finish();
+        try {
+          const result = scan(document, { region });
+          resolve({
+            ok: true,
+            regionPath: regionPathOf(region),
+            regionLabel: regionLabelOf(region) || "已选区域",
+            ...result,
+          });
+        } catch (error) {
+          resolve({ ok: false, error: error.message || String(error), errorCode: error.code || "REGION_PICK_FAILED" });
+        }
+      };
+
+      const onKeyDown = event => {
+        if (event.key === "Escape" || event.key === "Esc") {
+          event.preventDefault();
+          finish();
+          resolve({ ok: false, cancelled: true });
+        }
+      };
+
+      controller = { cleanup: finish, resolve };
+      pickController = controller;
+      overlay.textContent = "点击要填充的容器（如紧急联系人区块，Esc 取消）";
+      document.addEventListener("mousemove", onMouseMove, true);
+      document.addEventListener("click", onClick, true);
+      document.addEventListener("keydown", onKeyDown, true);
+    });
+  }
+
   // —— 增量续填（P1 任务6） ——
   let newFieldsWatch = null;
   function startNewFieldsWatch(options = {}) {
@@ -1831,7 +1959,7 @@
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       try {
         if (message.type === "SMART_FILL_SCAN") {
-          const result = scan(undefined, { onlyUnprocessed: !!message.onlyNew });
+          const result = scan(undefined, { onlyUnprocessed: !!message.onlyNew, region: message.region || undefined });
           sendResponse({ ok: true, ...result });
         } else if (message.type === "SMART_FILL_FILL_FIELD") {
           (async () => {
@@ -1860,6 +1988,20 @@
               }
             } catch (error) {
               sendResponse({ ok: false, error: error.message || String(error), errorCode: error.code || "PICK_FAILED" });
+            }
+          })();
+          return true;
+        } else if (message.type === "SMART_FILL_PICK_REGION") {
+          (async () => {
+            try {
+              const requestId = String(message.requestId || "");
+              sendResponse({ ok: true });
+              const result = await pickRegion();
+              if (typeof chrome !== "undefined" && chrome.runtime?.sendMessage) {
+                chrome.runtime.sendMessage({ type: "SMART_FILL_PICK_REGION_RESULT", requestId, ...result }).catch(() => {});
+              }
+            } catch (error) {
+              sendResponse({ ok: false, error: error.message || String(error), errorCode: error.code || "REGION_PICK_FAILED" });
             }
           })();
           return true;
@@ -1932,6 +2074,6 @@
 
   // —— 测试 / 面板直连入口 ——
   if (typeof globalThis !== "undefined") {
-    globalThis.__hunterFill = { scan, apply, prepareRepeaters, highlight, reset, fillField: fillFieldById, pickFill, startWatch: startNewFieldsWatch, stopWatch: stopNewFieldsWatch };
+    globalThis.__hunterFill = { scan, apply, prepareRepeaters, highlight, reset, fillField: fillFieldById, pickFill, pickRegion, startWatch: startNewFieldsWatch, stopWatch: stopNewFieldsWatch };
   }
 })();

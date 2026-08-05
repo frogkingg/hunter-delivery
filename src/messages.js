@@ -105,7 +105,7 @@ export const MESSAGE_TYPES = {
   // 智能填充：panel → content（经 fillMessagePage 直连并按需注入 fill-content.js）
   SMART_FILL_SCAN: {
     direction: "panel→content",
-    payload: {},
+    payload: { onlyNew: "boolean?", region: "string?" },
     response: { ok: "boolean", engineVersion: "number", fields: "FieldDescriptor[]", repeaters: "RepeaterDescriptor[]", page: "{ title, url, host }?", scanId: "string", documentFingerprint: "string", formFingerprint: "string" },
   },
   SMART_FILL_PREPARE: {
@@ -127,6 +127,15 @@ export const MESSAGE_TYPES = {
     direction: "panel→content",
     payload: {},
     response: { ok: "boolean" },
+  },
+  SMART_FILL_PICK_REGION: {
+    direction: "panel→content",
+    payload: { requestId: "string" },
+    response: { ok: "boolean" },
+  },
+  SMART_FILL_PICK_REGION_RESULT: {
+    direction: "content→panel（事件，非应答）",
+    payload: { requestId: "string", ok: "boolean", cancelled: "boolean?", error: "string?", errorCode: "string?", regionPath: "string?", regionLabel: "string?", engineVersion: "number", fields: "FieldDescriptor[]", repeaters: "RepeaterDescriptor[]", page: "{ title, url, host }?", scanId: "string", documentFingerprint: "string", formFingerprint: "string" },
   },
   SMART_FILL_PROGRESS: {
     direction: "content→panel（事件，非应答）",

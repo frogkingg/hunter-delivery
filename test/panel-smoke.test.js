@@ -45,7 +45,7 @@ test("面板初始化：所有关键按钮绑定事件且无未捕获异常", as
       if (scan && typeof scan.onclick === "function") break;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "smartFillOnce", "fillSelected", "deleteFillTemplate", "darkToggle"];
+    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "smartFillOnce", "regionFill", "fillSelected", "deleteFillTemplate", "darkToggle"];
     for (const id of ids) {
       const el = window.document.getElementById(id);
       assert.ok(el, `元素 #${id} 应存在`);
@@ -482,6 +482,24 @@ test("点击字段填充：简历字段为空时不发送拾取请求", async ()
     setFillScanSession({ tabId: 7, scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1", url: "https://jobs.example.com/apply" });
     await assert.rejects(() => startPickFill("email"), /暂无内容/);
     assert.ok(!sentTypes.includes("SMART_FILL_PICK_START"), "空字段不得发起拾取");
+  } finally { close(); }
+});
+
+// —— 选区填充（Wave 2 任务3） ——
+test("选区填充：点击「选区填充」按钮后发送 SMART_FILL_PICK_REGION 消息", async () => {
+  const { sentTypes, close } = setupOneClickDom();
+  const { setFillScanSession } = await import("../src/state.js");
+  const { initFillUi } = await import("../src/fill-ui.js");
+  try {
+    setFillScanSession({ tabId: 7, scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1", url: "https://jobs.example.com/apply" });
+    await initFillUi();
+    const button = window.document.getElementById("regionFill");
+    assert.ok(button, "「选区填充」按钮应动态创建于智能填充工具条");
+    assert.equal(typeof button.onclick, "function", "「选区填充」按钮应绑定点击事件");
+    button.click();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(sentTypes.includes("SMART_FILL_PICK_REGION"), "点击后应向页面发送选区拾取请求");
+    assert.match(window.document.getElementById("toast").textContent, /容器/, "应提示用户点击页面容器");
   } finally { close(); }
 });
 
