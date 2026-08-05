@@ -45,7 +45,7 @@ test("面板初始化：所有关键按钮绑定事件且无未捕获异常", as
       if (scan && typeof scan.onclick === "function") break;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "smartFillOnce", "regionFill", "fillSelected", "deleteFillTemplate", "darkToggle"];
+    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "smartFillOnce", "regionFill", "smartFillUndo", "fillSelected", "deleteFillTemplate", "darkToggle"];
     for (const id of ids) {
       const el = window.document.getElementById(id);
       assert.ok(el, `元素 #${id} 应存在`);
@@ -665,6 +665,78 @@ test("一键智能填充：未授权时不填充并提示授权", async () => {
     await runSmartFillOnce();
     assert.deepEqual(appliedFills, [], "未授权时不得填充");
     assert.match(window.document.getElementById("toast").textContent, /需要授权/);
+  } finally {
+    delete globalThis.window;
+    delete globalThis.document;
+    delete globalThis.chrome;
+    dom.window.close();
+  }
+});
+
+// —— 撤销本次填充（Wave 3 任务2） ——
+test("撤销本次填充：按钮存在、初始禁用、填充后启用且点击发送 SMART_FILL_UNDO", async () => {
+  const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  const sentTypes = [];
+  const tab = { id: 7, url: "https://jobs.example.com/apply" };
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
+  window.confirm = () => true;
+  window.prompt = () => null;
+  globalThis.window = window;
+  globalThis.document = window.document;
+  globalThis.chrome = {
+    storage: { local: {
+      get: async keys => {
+        const list = typeof keys === "string" ? [keys] : keys;
+        const out = {};
+        for (const k of list) {
+          if (k === "smartFillTemplates") out[k] = {};
+          else if (k === "smartFillLogs") out[k] = [];
+          else if (k === "smartFillSettings") out[k] = {};
+          else out[k] = undefined;
+        }
+        return out;
+      },
+      set: async () => {},
+    } },
+    runtime: { sendMessage: (_m, cb) => { if (cb) cb({ ok: true }); }, onMessage: { addListener() {} }, connect: () => ({ onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }), getURL: p => p },
+    tabs: {
+      query: async () => [tab],
+      sendMessage: async (_id, message) => {
+        sentTypes.push(message.type);
+        if (message.type === "SMART_FILL_SCAN") {
+          return { ok: true, engineVersion: 3, fields: ONECLICK_SCAN_FIELDS, repeaters: [], page: { title: "apply", url: tab.url, host: "jobs.example.com" }, scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1" };
+        }
+        if (message.type === "SMART_FILL_APPLY") {
+          return { ok: true, results: message.fills.map(f => ({ id: f.id, ok: true, resolvedFingerprint: f.fingerprint })) };
+        }
+        if (message.type === "SMART_FILL_UNDO") {
+          return { ok: true, count: 2 };
+        }
+        return { ok: true };
+      },
+    },
+    permissions: { contains: async () => true, request: async () => true },
+    scripting: { executeScript: async () => [] },
+  };
+  const { setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { runSmartFillOnce, initFillUi } = await import("../src/fill-ui.js");
+  try {
+    await initFillUi();
+    await new Promise(resolve => setTimeout(resolve, 0)); // 等 initFillUi 内未 await 的异步渲染完成
+    const btn = window.document.getElementById("smartFillUndo");
+    assert.ok(btn, "「撤销本次填充」按钮应动态创建");
+    assert.equal(btn.disabled, true, "初始应禁用");
+    assert.match(btn.textContent, /撤销本次填充/);
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", phone: "13800138000" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(true);
+    await runSmartFillOnce();
+    assert.equal(btn.disabled, false, "填充成功后应启用");
+    btn.click();
+    await new Promise(resolve => setTimeout(resolve, 0)); // 等 undoLastFill 的异步链路完成
+    assert.ok(sentTypes.includes("SMART_FILL_UNDO"), "点击后应向 content 发送 SMART_FILL_UNDO");
+    assert.equal(btn.disabled, true, "撤销成功后应再次禁用");
   } finally {
     delete globalThis.window;
     delete globalThis.document;

@@ -1656,6 +1656,22 @@
     const doc = prepared[0]?.entry?.el?.ownerDocument
       || elementRegistry.values().next().value?.el?.ownerDocument;
     if (doc) ensureStyle(doc);
+    // 撤销本次填充：逐字段填充前记录每个目标原值（同 session 多次填充不覆盖首次原值，
+    // 保证「撤销本次填充」始终恢复填充前的值）。
+    scanSession.prevValues = scanSession.prevValues || new Map();
+    for (const { entry, target } of prepared) {
+      if (scanSession.prevValues.has(target)) continue;
+      const isBinary = entry.type === "radio" || entry.type === "checkbox";
+      scanSession.prevValues.set(target, {
+        kind: entry.kind,
+        type: entry.type,
+        before: isBinary ? target.checked : target.value,
+        container: entry.container || null,
+        radioGroup: entry.type === "radio"
+          ? resolveRadioGroup(target, entry.group).map(radio => ({ el: radio, checked: radio.checked }))
+          : null,
+      });
+    }
     for (let index = 0; index < prepared.length; index++) {
       if (signal.cancelled) break;
       const { fill, entry, target } = prepared[index];
@@ -1687,6 +1703,50 @@
     // 本次未填、仍需人工的字段统一着 pending（已着色的保持既有状态）。
     markUnfilledPending();
     return results;
+  }
+
+  // 撤销本次填充：恢复 apply 记录的每个目标原值并清除着色（done/pending/highlight）。
+  // 仅基于当前会话的 prevValues；会话失效（assertScanSession）则不执行并返回错误。
+  // 完成后清空 prevValues，避免重复撤销或撤销到更早的状态。
+  async function undo(options = {}) {
+    assertScanSession(options);
+    const prevValues = scanSession.prevValues;
+    if (!prevValues || !prevValues.size) return { ok: true, count: 0 };
+    const clearClasses = el => {
+      if (!el || typeof el.classList === "undefined") return;
+      el.classList.remove(DONE_CLASS, PENDING_CLASS, HIGHLIGHT_CLASS);
+    };
+    let count = 0;
+    for (const [target, record] of prevValues) {
+      // radio：按记录时整组勾选状态恢复（避免只复位组内单个节点导致组状态不一致）。
+      if (record.type === "radio" && Array.isArray(record.radioGroup)) {
+        for (const item of record.radioGroup) {
+          if (!item.el || !item.el.isConnected) continue;
+          if (item.el.checked !== item.checked) {
+            item.el.checked = item.checked;
+            dispatchInput(item.el);
+          }
+          clearClasses(item.el);
+        }
+        count += 1;
+        continue;
+      }
+      if (!target || !target.isConnected) continue;
+      if (record.type === "radio" || record.type === "checkbox") {
+        if (target.checked !== record.before) {
+          target.checked = record.before;
+          dispatchInput(target);
+        }
+      } else {
+        setNativeValue(target, record.before);
+        dispatchInput(target);
+      }
+      clearClasses(target);
+      if (record.container && record.container.isConnected) clearClasses(record.container);
+      count += 1;
+    }
+    prevValues.clear();
+    return { ok: true, count };
   }
 
   function triggerAction(action) {
@@ -2174,6 +2234,20 @@
         } else if (message.type === "SMART_FILL_HIGHLIGHT") {
           highlight(message.ids || [], !!message.on);
           sendResponse({ ok: true });
+        } else if (message.type === "SMART_FILL_UNDO") {
+          (async () => {
+            try {
+              const result = await undo({
+                scanId: message.scanId,
+                documentFingerprint: message.documentFingerprint,
+                formFingerprint: message.formFingerprint,
+              });
+              sendResponse({ ok: true, count: result.count });
+            } catch (error) {
+              sendResponse({ ok: false, error: error.message || String(error), errorCode: error.code || "UNDO_FAILED", count: 0 });
+            }
+          })();
+          return true;
         } else if (message.type === "SMART_FILL_CANCEL") {
           if (cancelSignal) cancelSignal.cancelled = true;
           sendResponse({ ok: true });
@@ -2186,6 +2260,6 @@
 
   // —— 测试 / 面板直连入口 ——
   if (typeof globalThis !== "undefined") {
-    globalThis.__hunterFill = { scan, apply, prepareRepeaters, highlight, reset, fillField: fillFieldById, pickFill, pickRegion, startWatch: startNewFieldsWatch, stopWatch: stopNewFieldsWatch };
+    globalThis.__hunterFill = { scan, apply, undo, prepareRepeaters, highlight, reset, fillField: fillFieldById, pickFill, pickRegion, startWatch: startNewFieldsWatch, stopWatch: stopNewFieldsWatch };
   }
 })();

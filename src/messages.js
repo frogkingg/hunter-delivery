@@ -128,6 +128,11 @@ export const MESSAGE_TYPES = {
     payload: {},
     response: { ok: "boolean" },
   },
+  SMART_FILL_UNDO: {
+    direction: "panel→content",
+    payload: { scanId: "string", documentFingerprint: "string", formFingerprint: "string" },
+    response: { ok: "boolean", count: "number", error: "string?", errorCode: "string?" },
+  },
   SMART_FILL_PICK_REGION: {
     direction: "panel→content",
     payload: { requestId: "string" },

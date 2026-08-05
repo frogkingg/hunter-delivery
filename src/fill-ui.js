@@ -49,6 +49,7 @@ const EDITOR_OPTIONS = {
   acceptAdjustment: ["是", "否"],
 };
 let fillResultMode = "list"; // "list" = 预览/全量平铺；"summary" = 一键填充后的折叠视图
+let fillUndoAvailable = false; // 本次填充是否可撤销（成功填充后启用，清空/重扫/撤销成功后禁用）
 let pickRegionRequestId = null; // 选区拾取（Wave 2 任务3）请求标识
 let resumeFieldFilter = "all";
 let resumeFieldSearch = "";
@@ -328,6 +329,7 @@ async function ensureOriginPermission(tab) {
 
 export async function scanFillPage() {
   stopIncrementalWatch();
+  setSmartFillUndoEnabled(false);
   try {
     const tab = await currentTab();
     if (!tab?.url || !/^https?:/i.test(tab.url)) throw new Error("请先打开目标公司的网申页面。");
@@ -410,6 +412,7 @@ function computeRepeaterAdditions() {
 }
 
 function applyScanResponse(response, tab) {
+  setSmartFillUndoEnabled(false);
   setFillScanFields(response.fields || []);
   setFillRepeaters(response.repeaters || []);
   setFillScanPage(response.page || state.fillScanPage);
@@ -668,7 +671,12 @@ export async function runFill(all = false) {
       fillResultMode = "summary";
       renderFillMatches();
     }
-    if (summary.ok > 0) startIncrementalWatch();
+    if (summary.ok > 0) {
+      setSmartFillUndoEnabled(true);
+      startIncrementalWatch();
+    } else {
+      setSmartFillUndoEnabled(false);
+    }
     return { summary, failedIds };
   } finally {
     fillRunning = false;
@@ -691,6 +699,7 @@ export async function stopFill() {
 
 export async function clearFill() {
   stopIncrementalWatch();
+  setSmartFillUndoEnabled(false);
   const session = state.fillScanSession;
   const tab = session?.tabId ? { id: session.tabId, url: session.url } : await currentTab();
   if (tab?.id && tab?.url && /^https?:/i.test(tab.url) && state.fillFailedIds.length) {
@@ -1020,6 +1029,48 @@ async function applyRegionFillResult(message) {
   }
 }
 
+// 撤销本次填充：向 content 发送 SMART_FILL_UNDO，恢复本次 session 记录的原值并清除着色；
+// 成功后清空面板结果并提示。会话校验不绕过（scanId/指纹随消息下发，引擎侧 assertScanSession）。
+export async function undoLastFill() {
+  const session = state.fillScanSession;
+  if (!session?.scanId || !session?.tabId) throw new Error("扫描会话已失效，请重新扫描页面。");
+  const tab = await currentTab();
+  if (!tab || tab.id !== session.tabId) throw new Error("当前标签页不是刚才扫描的页面，请切回后重新扫描。");
+  const response = await fillMessagePage(tab, {
+    type: "SMART_FILL_UNDO",
+    scanId: session.scanId,
+    documentFingerprint: session.documentFingerprint,
+    formFingerprint: session.formFingerprint,
+  });
+  if (!response?.ok) throw new Error(response?.error || "撤销失败");
+  const count = Number(response.count) || 0;
+  await clearFill();
+  setSmartFillUndoEnabled(false);
+  toast(count > 0 ? `已撤销本次填充（${count} 项）` : "已撤销本次填充");
+}
+
+// 智能填充结果工具条：动态创建「撤销本次填充」按钮（不依赖 panel.html 静态骨架）。
+// 初始禁用；填充成功后启用；清空/重新扫描/撤销成功后禁用。
+function ensureSmartFillUndoButton() {
+  const actions = document.querySelector(".fill-actions");
+  if (!actions || document.getElementById("smartFillUndo")) return;
+  const button = document.createElement("button");
+  button.id = "smartFillUndo";
+  button.type = "button";
+  button.className = "secondary";
+  button.textContent = "撤销本次填充";
+  button.title = "恢复本次填充的所有字段原值并清除页面着色";
+  button.disabled = true;
+  button.onclick = () => undoLastFill().catch(error => toast(error.message));
+  actions.appendChild(button);
+}
+
+function setSmartFillUndoEnabled(enabled) {
+  fillUndoAvailable = !!enabled;
+  const button = document.getElementById("smartFillUndo");
+  if (button) button.disabled = !fillUndoAvailable;
+}
+
 // 智能填充工具条：动态创建「选区填充」按钮（不依赖 panel.html 静态骨架）。
 // 点击后进入选区拾取态，用户点选页面容器，仅识别并填充该容器内的字段。
 function ensureRegionFillButton() {
@@ -1037,6 +1088,7 @@ function ensureRegionFillButton() {
 
 function bindFillEvents() {
   ensureRegionFillButton();
+  ensureSmartFillUndoButton();
   $("smartFillOnce").onclick = () => runSmartFillOnce().catch(error => toast(error.message));
   $("fillSelected").onclick = () => runFill(false).catch(error => toast(error.message));
   $("stopFill").onclick = () => stopFill().catch(error => toast(error.message));

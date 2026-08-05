@@ -1214,3 +1214,62 @@ test("填充后页面着色：成功字段 done、失败字段 pending", async (
   assert.ok(!degreeEl.classList.contains("hunter-fill-pending"), "reset 后应清除失败着色");
   dom.window.close();
 });
+
+// —— 撤销本次填充（Wave 3 任务2） ——
+test("撤销本次填充：恢复原值并清除着色（引擎 undo 入口）", async () => {
+  const dom = loadFixture("zhilian.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  const nameInput = doc.querySelector("input[name='name']");
+  assert.equal(nameInput.value, "", "姓名原值应为空");
+  const applied = await engine.apply([
+    { id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint },
+  ], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(applied[0].ok, true);
+  assert.equal(nameInput.value, "张三");
+  assert.ok(nameInput.classList.contains("hunter-fill-done"), "填充成功应有 done 着色");
+  const undoResult = await engine.undo({ scanId, documentFingerprint, formFingerprint });
+  assert.equal(undoResult.ok, true);
+  assert.equal(undoResult.count, 1);
+  assert.equal(nameInput.value, "", "撤销后应恢复原值");
+  assert.ok(!nameInput.classList.contains("hunter-fill-done"), "撤销后应清除 done 着色");
+  assert.ok(!nameInput.classList.contains("hunter-fill-pending"), "撤销后应清除 pending 着色");
+  assert.ok(!nameInput.classList.contains("hunter-fill-highlight"), "撤销后应清除高亮");
+  dom.window.close();
+});
+
+test("撤销本次填充：非空原值、radio 勾选状态与 checkbox 均恢复", async () => {
+  const dom = new JSDOM(`<form>
+    <label>姓名<input id="name" name="name" type="text" value="旧名字"></label>
+    <label>性别<input type="radio" name="gender" value="男"><input type="radio" name="gender" value="女" checked></label>
+    <label>同意<input type="checkbox" name="agree" checked></label>
+  </form>`, { url: "https://x.com/undo-binary", runScripts: "outside-only", pretendToBeVisual: true });
+  dom.window.eval(engineSource);
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const nameField = fields.find(f => f.type === "text");
+  const genderField = fields.find(f => f.type === "radio");
+  const agreeField = fields.find(f => f.type === "checkbox");
+  assert.ok(nameField && genderField && agreeField, "应识别文本/radio/checkbox 三个字段");
+  const male = doc.querySelector("input[type=radio][value=男]");
+  const agree = doc.querySelector("input[type=checkbox][name=agree]");
+  const applied = await engine.apply([
+    { id: nameField.id, value: "张三", type: "text", fingerprint: nameField.fingerprint },
+    { id: genderField.id, value: "男", type: "radio", fingerprint: genderField.fingerprint },
+    { id: agreeField.id, value: "否", type: "checkbox", fingerprint: agreeField.fingerprint },
+  ], { scanId, documentFingerprint, formFingerprint });
+  assert.ok(applied.every(r => r.ok), JSON.stringify(applied));
+  assert.equal(doc.getElementById("name").value, "张三");
+  assert.equal(male.checked, true, "填充后男应选中");
+  assert.equal(agree.checked, false, "填充后同意应取消勾选");
+  const undoResult = await engine.undo({ scanId, documentFingerprint, formFingerprint });
+  assert.equal(undoResult.ok, true);
+  assert.equal(undoResult.count, 3);
+  assert.equal(doc.getElementById("name").value, "旧名字", "应恢复非空原值");
+  assert.equal(male.checked, false, "撤销后男应恢复未选中");
+  assert.equal(agree.checked, true, "撤销后同意应恢复勾选");
+  dom.window.close();
+});
