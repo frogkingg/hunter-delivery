@@ -6,13 +6,17 @@ import {
 } from "./state.js";
 import { $, toast, fillMessagePage } from "./chrome-helpers.js";
 import { escapeHtml } from "./pure-utils.js";
-import { RESUME_FIELD_LABELS, GROUP_LABELS } from "./form-fields.js";
+import { RESUME_FIELD_LABELS, GROUP_LABELS, normalizeLabel } from "./form-fields.js";
 import { matchRules, applyAiResults, buildAiMatchPrompt, validateBinding } from "./matcher.js";
 import { applyTemplate, saveTemplateFromResults, capTemplates, templateKey } from "./site-templates.js";
 import { appendFillLog, summarizeResults } from "./fill-log.js";
 import { RESUME_FIELDS_SCHEMA, ENTRY_GROUPS, extractResumeFieldsLocal, buildResumeExtractPrompt, mergeResumeFields, aggregateResumeFields } from "./resume-fields.js";
 import { switchProfile, saveProfiles } from "./config.js";
 import { ai, parseAiJson } from "./ai-client.js";
+import { structureSignature, readCache, writeCache } from "./ai-cache.js";
+import { buildDiagnostics } from "./diagnostics.js";
+import { findPlaybook, validatePlaybook } from "./playbook-loader.js";
+import { PLAYBOOKS } from "./playbooks-index.js";
 
 // —— 存储工具 ——
 async function getTemplates() {
@@ -51,6 +55,9 @@ const EDITOR_OPTIONS = {
 let fillResultMode = "list"; // "list" = 预览/全量平铺；"summary" = 一键填充后的折叠视图
 let fillUndoAvailable = false; // 本次填充是否可撤销（成功填充后启用，清空/重扫/撤销成功后禁用）
 let pickRegionRequestId = null; // 选区拾取（Wave 2 任务3）请求标识
+let aiCacheStore = {}; // AI 映射缓存（内存，Wave 4 任务4）
+let aiRequestSummary = null; // 最近一次 AI 匹配请求摘要（诊断导出用）
+const FILL_ENGINE_VERSION = 3; // 与扫描响应的 engineVersion 校验一致
 let resumeFieldFilter = "all";
 let resumeFieldSearch = "";
 let expandedEntryId = "";
@@ -351,6 +358,7 @@ export async function scanFillPage() {
       documentFingerprint: response.documentFingerprint,
       formFingerprint: response.formFingerprint,
       url: response.page?.url || tab.url,
+      engineVersion: response.engineVersion,
     });
     $("fillCurrentSite").textContent = "";
     $("fillCurrentSiteText").textContent = `当前站点：${pageUrl.hostname}（识别到 ${fields.length} 个表单项）`;
@@ -422,6 +430,7 @@ function applyScanResponse(response, tab) {
     documentFingerprint: response.documentFingerprint,
     formFingerprint: response.formFingerprint,
     url: response.page?.url || tab.url,
+    engineVersion: response.engineVersion,
   });
 }
 
@@ -469,6 +478,37 @@ function currentTemplateStorageKey() {
   return templateKey(url, state.fillScanSession?.formFingerprint || "");
 }
 
+// 在 pb.mappings 中按 siteLabel/controlType/slot 定位 match 对应的语义映射。
+function findPlaybookMapping(playbook, match) {
+  const label = normalizeLabel(match.label ?? match.rawLabel ?? "");
+  return (playbook?.mappings || []).find(mapping =>
+    normalizeLabel(mapping.siteLabel) === label
+    && String(mapping.controlType || "text") === String(match.type || "text")
+    && String(mapping.slot || "single") === String(match.slot || "single")
+  ) || null;
+}
+
+// playbook 只作为规则之上的优先覆盖层：站点内置映射命中且中央校验通过、原 match 非 manual 时应用，
+// 否则保持原状（敏感/人工字段不被 playbook 覆盖，校验不过也不改 value）。
+function applyPlaybookOverlay(matches, resumeFields) {
+  const url = state.fillScanPage?.url || state.fillScanSession?.url || "";
+  const playbook = findPlaybook(PLAYBOOKS, url);
+  if (!playbook || !validatePlaybook(playbook).ok) return matches;
+  return (matches || []).map(match => {
+    if (match.status === "manual") return match;
+    const mapping = findPlaybookMapping(playbook, match);
+    if (!mapping?.fieldKey) return match;
+    const validated = validateBinding(match, mapping.fieldKey, resumeFields || {}, {
+      source: "playbook",
+      confidence: "high",
+      userConfirmed: false,
+      reason: `站点 playbook 映射（${mapping.fieldKey}）`,
+    });
+    if (validated.status !== "match") return { ...match, reason: validated.reason };
+    return { ...match, ...validated, source: "playbook" };
+  });
+}
+
 async function buildMatches() {
   const resume = activeProfile()?.resumeFields || {};
   let matches = matchRules(state.fillScanFields, resume);
@@ -477,16 +517,34 @@ async function buildMatches() {
   matches = applyTemplate(matches, templates[storageKey] || null, resume, {
     formFingerprint: state.fillScanSession?.formFingerprint || "",
   });
+  // playbook 优先覆盖层：位于模板之后、AI 之前，覆盖既有非 manual 匹配。
+  matches = applyPlaybookOverlay(matches, resume);
   if (state.fillAiEnabled && state.config.apiKey) {
     const needs = matches.filter(m => m.status === "manual" || m.confidence === "low");
     if (needs.length) {
-      try {
-        const messages = buildAiMatchPrompt(needs, resume);
-        const response = await ai(messages, 1200, true);
-        const data = await parseAiJson(response.text);
-        matches = applyAiResults(matches, data, state.fillScanFields, resume);
-      } catch (_error) {
-        // AI 失败不阻塞：未识别字段保持「需手动」
+      const signature = structureSignature(state.fillScanFields, { extra: state.fillScanSession?.formFingerprint || "" });
+      const engineVersion = state.fillScanSession?.engineVersion || FILL_ENGINE_VERSION;
+      const model = state.config.model || "default";
+      const cached = readCache(aiCacheStore, signature, engineVersion, model);
+      if (cached !== null) {
+        // 空结果 [] 也是合法缓存（cached !== null 判断，勿用 if(cached)）。
+        aiRequestSummary = { requested: false, cached: true, model, fieldsSent: needs.map(m => m.fieldId) };
+        matches = applyAiResults(matches, cached, state.fillScanFields, resume);
+      } else {
+        const fieldsSent = needs.map(m => m.fieldId);
+        try {
+          const startedAt = Date.now();
+          const messages = buildAiMatchPrompt(needs, resume);
+          const response = await ai(messages, 1200, true);
+          const data = await parseAiJson(response.text);
+          matches = applyAiResults(matches, data, state.fillScanFields, resume);
+          // 仅成功才写缓存（entries 为 AI 返回的 fieldKey 建议列表）；失败不写，下次可重试。
+          writeCache(aiCacheStore, { signature, engineVersion, model, entries: data });
+          aiRequestSummary = { requested: true, cached: false, model, fieldsSent, durationMs: Date.now() - startedAt };
+        } catch (_error) {
+          // AI 失败不阻塞：未识别字段保持「需手动」。
+          aiRequestSummary = { requested: true, cached: false, model, fieldsSent, failed: true };
+        }
       }
     }
   }
@@ -498,7 +556,7 @@ async function buildMatches() {
 
 // —— 匹配列表渲染 ——
 const CONF_LABEL = { high: "高", medium: "中", low: "低" };
-const SRC_LABEL = { template: "模板", rule: "规则", ai: "AI", manual: "手动" };
+const SRC_LABEL = { template: "模板", rule: "规则", playbook: "站点", ai: "AI", manual: "手动" };
 
 function updateFillButtons() {
   const matches = state.fillMatches;
@@ -1103,9 +1161,75 @@ function ensureRegionFillButton() {
   actions.appendChild(button);
 }
 
+// —— 诊断导出（Wave 4 任务4） ——
+// 收集「收集→buildDiagnostics→返回 JSON 字符串」，与按钮解耦便于测试。
+export function exportDiagnosticsJson() {
+  const session = state.fillScanSession || {};
+  const matches = state.fillMatches || [];
+  const matchedBy = { rule: 0, template: 0, playbook: 0, ai: 0, manual: 0 };
+  for (const match of matches) {
+    const key = Object.prototype.hasOwnProperty.call(matchedBy, match.source) ? match.source : "rule";
+    matchedBy[key] += 1;
+  }
+  const failures = matches
+    .filter(match => match.fillError)
+    .map(match => ({ fieldId: match.fieldId, siteLabel: match.label ?? match.rawLabel ?? "", type: match.type, reason: match.fillError }));
+  const ai = aiRequestSummary
+    ? { requested: !!aiRequestSummary.requested, model: aiRequestSummary.model || state.config.model || "", fieldsSent: aiRequestSummary.fieldsSent || [] }
+    : { requested: false, model: state.config.model || "", fieldsSent: [] };
+  const diag = buildDiagnostics({
+    engineVersion: session.engineVersion,
+    scanId: session.scanId,
+    url: session.url,
+    fields: state.fillScanFields || [],
+    matchedBy,
+    failures,
+    ai,
+    timings: {},
+    durationMs: 0,
+  });
+  return JSON.stringify(diag, null, 2);
+}
+
+// 导出诊断包：拿到 JSON 后触发 Blob 下载；下载 API 不可用时仅提示，不阻塞面板。
+export async function exportDiagnostics() {
+  const json = exportDiagnosticsJson();
+  try {
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `hunter-diagnostics-${state.fillScanSession?.scanId || "unknown"}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  } catch (_error) {
+    // 受限环境（如 jsdom）无 URL.createObjectURL 时降级为仅提示
+  }
+  toast("诊断包已导出（已脱敏）");
+  return json;
+}
+
+// 智能填充工具条：动态创建「导出诊断包」按钮（不依赖 panel.html 静态骨架）。
+// 点击后导出当前扫描/填充会话的诊断 JSON（已脱敏）。
+function ensureExportDiagnosticsButton() {
+  const actions = document.querySelector(".fill-actions");
+  if (!actions || document.getElementById("exportDiagnostics")) return;
+  const button = document.createElement("button");
+  button.id = "exportDiagnostics";
+  button.type = "button";
+  button.className = "secondary";
+  button.textContent = "导出诊断包";
+  button.title = "导出本次扫描/填充的诊断信息（已脱敏）";
+  button.onclick = () => exportDiagnostics().catch(error => toast(error.message));
+  actions.appendChild(button);
+}
+
 function bindFillEvents() {
   ensureRegionFillButton();
   ensureSmartFillUndoButton();
+  ensureExportDiagnosticsButton();
   $("smartFillOnce").onclick = () => runSmartFillOnce().catch(error => toast(error.message));
   $("fillSelected").onclick = () => runFill(false).catch(error => toast(error.message));
   $("stopFill").onclick = () => stopFill().catch(error => toast(error.message));

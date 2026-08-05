@@ -45,7 +45,7 @@ test("面板初始化：所有关键按钮绑定事件且无未捕获异常", as
       if (scan && typeof scan.onclick === "function") break;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "smartFillOnce", "regionFill", "smartFillUndo", "fillSelected", "deleteFillTemplate", "darkToggle"];
+    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "smartFillOnce", "regionFill", "smartFillUndo", "exportDiagnostics", "fillSelected", "deleteFillTemplate", "darkToggle"];
     for (const id of ids) {
       const el = window.document.getElementById(id);
       assert.ok(el, `元素 #${id} 应存在`);
@@ -780,6 +780,196 @@ test("撤销本次填充：按钮存在、初始禁用、填充后启用且点�
     await new Promise(resolve => setTimeout(resolve, 0)); // 等 undoLastFill 的异步链路完成
     assert.ok(sentTypes.includes("SMART_FILL_UNDO"), "点击后应向 content 发送 SMART_FILL_UNDO");
     assert.equal(btn.disabled, true, "撤销成功后应再次禁用");
+  } finally {
+    delete globalThis.window;
+    delete globalThis.document;
+    delete globalThis.chrome;
+    dom.window.close();
+  }
+});
+
+// —— 诊断导出 + AI 缓存 + playbook 覆盖层（Wave 4 任务4） ——
+test("诊断导出：按钮存在且 exportDiagnosticsJson 返回含 scanId、matchedBy 且脱敏的 JSON", async () => {
+  const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
+  window.confirm = () => true;
+  globalThis.window = window;
+  globalThis.document = window.document;
+  globalThis.chrome = {
+    storage: { local: { get: async () => ({}), set: async () => {} } },
+    runtime: { sendMessage: (_m, cb) => cb && cb({ ok: true }), onMessage: { addListener() {} }, connect: () => ({ onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }), getURL: p => p },
+    tabs: { query: async () => [] },
+  };
+  const { state, setFillScanSession, setFillScanFields, setFillMatches } = await import("../src/state.js");
+  const { initFillUi, exportDiagnosticsJson } = await import("../src/fill-ui.js");
+  try {
+    await initFillUi();
+    await new Promise(resolve => setTimeout(resolve, 0)); // 等动态按钮创建完成
+    const btn = window.document.getElementById("exportDiagnostics");
+    assert.ok(btn, "「导出诊断包」按钮应动态创建");
+    assert.match(btn.textContent, /导出诊断包/);
+    assert.equal(typeof btn.onclick, "function", "导出按钮应绑定 onclick");
+    setFillScanSession({ tabId: 7, scanId: "diag-s1", engineVersion: 3, url: "https://jobs.example.com/apply?token=abc", documentFingerprint: "d1", formFingerprint: "f1" });
+    setFillScanFields([
+      { id: "f-name", type: "text", label: "姓名", skipped: false },
+      { id: "f-phone", type: "tel", label: "手机号", skipped: false },
+    ]);
+    setFillMatches([
+      { fieldId: "f-name", fieldKey: "name", value: "张三", status: "match", source: "rule", type: "text", label: "姓名" },
+      { fieldId: "f-phone", fieldKey: "phone", value: "13800138000", status: "match", source: "playbook", type: "tel", label: "手机号" },
+    ]);
+    state.fillMatches[1].fillError = "回读校验失败";
+    const json = exportDiagnosticsJson();
+    const parsed = JSON.parse(json);
+    assert.equal(parsed.scanId, "diag-s1", "诊断 JSON 应包含 scanId");
+    assert.equal(parsed.engineVersion, 3, "诊断 JSON 应包含 engineVersion");
+    assert.equal(parsed.matchedBy.rule, 1, "matchedBy 应统计 rule 来源");
+    assert.equal(parsed.matchedBy.playbook, 1, "matchedBy 应统计 playbook 来源");
+    assert.equal(parsed.failures.length, 1, "fillError 非空的 match 应进入失败列表");
+    assert.ok(!json.includes("13800138000"), "诊断 JSON 不得包含手机号等敏感值");
+    assert.ok(!json.includes("token=abc"), "诊断 JSON 的 URL 应去除 query");
+    assert.ok(json.includes("jobs.example.com/apply"), "诊断 JSON 应保留脱敏后的 URL");
+  } finally {
+    delete globalThis.window;
+    delete globalThis.document;
+    delete globalThis.chrome;
+    dom.window.close();
+  }
+});
+
+test("AI 映射缓存：相同结构第二次 buildMatches 命中缓存不再调用 AI", async () => {
+  const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
+  window.confirm = () => true;
+  globalThis.window = window;
+  globalThis.document = window.document;
+  let aiCalls = 0;
+  const tab = { id: 7, url: "https://jobs.example.com/apply" };
+  const scanFields = [
+    { id: "f-unknown", type: "text", label: "神秘字段ZZZ", rawLabel: "神秘字段ZZZ", labelSource: "label", skipped: false, options: [], fingerprint: "fp-zzz", path: "#f-unknown", evidence: [{ source: "label", text: "神秘字段ZZZ" }], context: {}, attributes: {} },
+  ];
+  globalThis.chrome = {
+    storage: { local: {
+      get: async keys => {
+        const list = typeof keys === "string" ? [keys] : keys;
+        const out = {};
+        for (const k of list) {
+          if (k === "smartFillTemplates") out[k] = {};
+          else if (k === "smartFillLogs") out[k] = [];
+          else if (k === "smartFillSettings") out[k] = { aiEnabled: true };
+          else if (k === "aiConsented") out[k] = true;
+          else out[k] = undefined;
+        }
+        return out;
+      },
+      set: async () => {},
+    } },
+    runtime: {
+      sendMessage: (message, callback) => {
+        if (message.type === "PARSE_JSON") {
+          if (callback) callback({ ok: true, data: [{ fieldId: "f-unknown", fieldKey: "name", confidence: "medium", reason: "测试" }] });
+          return;
+        }
+        if (message.type === "AI_CALL") aiCalls++;
+        if (callback) callback({ ok: true });
+      },
+      onMessage: { addListener() {} },
+      connect: () => ({ onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }),
+      getURL: p => p,
+    },
+    tabs: {
+      query: async () => [tab],
+      sendMessage: async (_id, message) => {
+        if (message.type === "SMART_FILL_SCAN") {
+          return { ok: true, engineVersion: 3, fields: scanFields, repeaters: [], page: { title: "apply", url: tab.url, host: "jobs.example.com" }, scanId: "s1", documentFingerprint: "d1", formFingerprint: "f1" };
+        }
+        return { ok: true };
+      },
+    },
+    permissions: { contains: async () => true, request: async () => true },
+    scripting: { executeScript: async () => [] },
+  };
+  const { state, setProfiles, setActiveProfileIndex, setFillAutoMode, setConfig } = await import("../src/state.js");
+  const { scanFillPage } = await import("../src/fill-ui.js");
+  try {
+    setConfig({ apiKey: "test-key", model: "test-model" });
+    window.document.getElementById("apiKey").value = "test-key";
+    window.document.getElementById("model").value = "test-model";
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(false);
+    await scanFillPage();
+    assert.equal(state.fillScanSession.engineVersion, 3, "扫描会话应记录 engineVersion");
+    assert.equal(aiCalls, 1, "首次匹配应调用 AI");
+    await scanFillPage();
+    assert.equal(aiCalls, 1, "第二次相同结构匹配应命中 AI 缓存，不再调用 AI");
+  } finally {
+    setConfig({});
+    delete globalThis.window;
+    delete globalThis.document;
+    delete globalThis.chrome;
+    dom.window.close();
+  }
+});
+
+test("playbook 覆盖层：moka 站点规则之上的字段应用站点映射，敏感 manual 字段不被覆盖", async () => {
+  const dom = new JSDOM(html, { url: "chrome-extension://hunter/panel.html", runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+  window.matchMedia = () => ({ matches: false, addEventListener() {}, addListener() {} });
+  window.confirm = () => true;
+  globalThis.window = window;
+  globalThis.document = window.document;
+  const tab = { id: 7, url: "https://app.mokahr.com/campus_apply/123" };
+  const scanFields = [
+    { id: "m-name", type: "text", label: "姓名", rawLabel: "姓名", labelSource: "label", skipped: false, options: [], fingerprint: "fp-name", path: "#m-name", evidence: [{ source: "label", text: "姓名" }], context: {}, attributes: {} },
+    { id: "m-idcard", type: "text", label: "身份证号", rawLabel: "身份证号", labelSource: "label", skipped: false, options: [], fingerprint: "fp-id", path: "#m-id", evidence: [{ source: "label", text: "身份证号" }], context: {}, attributes: {} },
+  ];
+  globalThis.chrome = {
+    storage: { local: {
+      get: async keys => {
+        const list = typeof keys === "string" ? [keys] : keys;
+        const out = {};
+        for (const k of list) {
+          if (k === "smartFillTemplates") out[k] = {};
+          else if (k === "smartFillLogs") out[k] = [];
+          else if (k === "smartFillSettings") out[k] = {};
+          else out[k] = undefined;
+        }
+        return out;
+      },
+      set: async () => {},
+    } },
+    runtime: { sendMessage: (_m, cb) => { if (cb) cb({ ok: true }); }, onMessage: { addListener() {} }, connect: () => ({ onMessage: { addListener() {} }, onDisconnect: { addListener() {} }, postMessage() {} }), getURL: p => p },
+    tabs: {
+      query: async () => [tab],
+      sendMessage: async (_id, message) => {
+        if (message.type === "SMART_FILL_SCAN") {
+          return { ok: true, engineVersion: 3, fields: scanFields, repeaters: [], page: { title: "apply", url: tab.url, host: "app.mokahr.com" }, scanId: "s-moka", documentFingerprint: "dm", formFingerprint: "fm" };
+        }
+        return { ok: true };
+      },
+    },
+    permissions: { contains: async () => true, request: async () => true },
+    scripting: { executeScript: async () => [] },
+  };
+  const { state, setProfiles, setActiveProfileIndex, setFillAutoMode } = await import("../src/state.js");
+  const { scanFillPage } = await import("../src/fill-ui.js");
+  try {
+    setProfiles([{ name: "测试简历", resumeFields: { name: "张三", idCard: "110101199806010011" } }]);
+    setActiveProfileIndex(0);
+    setFillAutoMode(false);
+    await scanFillPage();
+    const nameMatch = state.fillMatches.find(m => m.fieldId === "m-name");
+    assert.ok(nameMatch, "应包含姓名匹配");
+    assert.equal(nameMatch.source, "playbook", "规则之上的 playbook 覆盖层应应用站点映射");
+    assert.equal(nameMatch.fieldKey, "name", "playbook 应映射到 name");
+    assert.equal(nameMatch.status, "match");
+    const idMatch = state.fillMatches.find(m => m.fieldId === "m-idcard");
+    assert.ok(idMatch, "应包含身份证号匹配");
+    assert.notEqual(idMatch.source, "playbook", "敏感 manual 字段不应被 playbook 覆盖");
+    assert.equal(idMatch.status, "manual", "敏感字段应保持需人工确认");
   } finally {
     delete globalThis.window;
     delete globalThis.document;
