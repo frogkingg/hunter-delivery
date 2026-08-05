@@ -1273,3 +1273,63 @@ test("撤销本次填充：非空原值、radio 勾选状态与 checkbox 均恢�
   assert.equal(agree.checked, true, "撤销后同意应恢复勾选");
   dom.window.close();
 });
+
+test("着色：批量填充后未填字段着橙、已手填字段不着橙", async () => {
+  const dom = loadFixture("zhilian.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  assert.ok(name, "应识别姓名字段");
+  // 手动预填三类控件：文本 phone、下拉 degree、radio gender
+  const phoneEl = doc.querySelector("input[name='phone']");
+  const degreeEl = doc.querySelector("select[name='degree']");
+  const maleEl = doc.querySelector("input[name='gender'][value='男']");
+  phoneEl.value = "13800138000";
+  degreeEl.value = "本科";
+  maleEl.checked = true;
+  const results = await engine.apply([{ id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(results[0].ok, true);
+  const nameEl = doc.querySelector("input[name='name']");
+  assert.ok(nameEl.classList.contains("hunter-fill-done"), "成功字段应有 done");
+  assert.ok(!phoneEl.classList.contains("hunter-fill-pending"), "已手填文本不应着橙");
+  assert.ok(!degreeEl.classList.contains("hunter-fill-pending"), "已手填下拉不应着橙");
+  assert.ok(!maleEl.classList.contains("hunter-fill-pending"), "已勾选 radio 不应着橙");
+  const emailEl = doc.querySelector("input[name='email']");
+  assert.ok(emailEl.classList.contains("hunter-fill-pending"), "未填可见字段应着橙");
+  dom.window.close();
+});
+
+test("着色：已手填 custom 下拉不着橙", async () => {
+  const dom = loadFixture("antd-generic.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const container = doc.getElementById("arrival");
+  const input = container && container.querySelector("input");
+  assert.ok(container && input, "应识别到岗时间 custom 控件");
+  input.value = "随时到岗"; // 模拟用户已手选（element-ui 风格内部 input 有值）
+  const name = fields.find(f => f.label.includes("姓名"));
+  assert.ok(name, "应识别姓名字段");
+  const applied = await engine.apply([{ id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint }], { scanId, documentFingerprint, formFingerprint });
+  assert.equal(applied[0].ok, true);
+  assert.ok(!container.classList.contains("hunter-fill-pending"), "已手填 custom 下拉不应着橙");
+  dom.window.close();
+});
+
+test("着色：单字段填充路径不触发全页染橙", async () => {
+  const dom = loadFixture("zhilian.html");
+  const engine = dom.window.__hunterFill;
+  const doc = dom.window.document;
+  const { fields, scanId, documentFingerprint, formFingerprint } = engine.scan(doc);
+  const name = fields.find(f => f.label.includes("姓名"));
+  assert.ok(name, "应识别姓名字段");
+  const filled = await engine.fillField({ id: name.id, value: "张三", type: "text", fingerprint: name.fingerprint }, { scanId, documentFingerprint, formFingerprint });
+  assert.equal(filled.ok, true);
+  const nameEl = doc.querySelector("input[name='name']");
+  assert.ok(nameEl.classList.contains("hunter-fill-done"), "单字段填充成功字段仍应有 done");
+  const emailEl = doc.querySelector("input[name='email']");
+  assert.ok(!emailEl.classList.contains("hunter-fill-pending"), "单字段路径不应整页染橙");
+  assert.equal(doc.querySelectorAll(".hunter-fill-pending").length, 0, "单字段路径不应产生任何 pending 着色");
+  dom.window.close();
+});

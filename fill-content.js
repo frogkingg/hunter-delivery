@@ -1631,12 +1631,50 @@
     }
   }
 
-  // 本次未填、仍需人工的字段统一着 pending：对未着色的可见字段加橙。
-  // 已着色字段（成功 done / 失败 pending）保持既有状态，避免覆盖此前结果。
+  // 占位文案判定：用于「字段是否已有值」判断，避免把「请选择」等占位当真实值。
+  function isPlaceholderText(text) {
+    const t = String(text || "").trim();
+    if (!t) return true;
+    return /^(请选择|未选择|请填写|选择|--|暂无)/i.test(t);
+  }
+
+  // 判断字段当前是否已有值（用户手填或页面预填）：
+  // 文本类判 el.value；select 判选中项非空且非占位项；radio 判组内任一勾选；checkbox 判 checked；
+  // custom 判内部 input 有值或容器展示值非占位。
+  function entryHasValue(entry, el) {
+    if (!entry || !el) return false;
+    if (entry.kind === "radio") {
+      return resolveRadioGroup(el, entry.group).some(item => item && item.checked);
+    }
+    if (entry.kind === "checkbox") return !!el.checked;
+    if (entry.kind === "custom") {
+      const container = (entry.container && entry.container.isConnected && entry.container)
+        || (typeof el.closest === "function" ? el.closest(".ant-select, .el-select, .ant-picker, .el-date-editor") : null);
+      const input = container && container.querySelector ? container.querySelector("input") : null;
+      const inputValue = input ? cleanString(input.value) : "";
+      if (inputValue && !isPlaceholderText(inputValue)) return true;
+      const text = container ? cleanString(container.textContent) : "";
+      return !!text && !isPlaceholderText(text);
+    }
+    const tag = String(el.tagName || "").toLowerCase();
+    if (tag === "select") {
+      const selected = el.options && el.options[el.selectedIndex];
+      const text = selected ? cleanString(selected.text) : "";
+      const value = selected ? cleanString(selected.value) : "";
+      return (!!text && !isPlaceholderText(text)) || (!!value && !isPlaceholderText(value));
+    }
+    return !!cleanString(el.value);
+  }
+
+  // 本次未填、仍需人工的字段统一着 pending：对未着色、无值且可见的字段加橙。
+  // 已着色字段（成功 done / 失败 pending）与已含值字段（手填/预填）保持原状，避免覆盖或误标。
   function markUnfilledPending() {
     for (const entry of elementRegistry.values()) {
       if (entry.kind === "none") continue; // 密码/上传等不支持字段不参与着色
-      for (const el of colorTargetsForEntry(entry)) {
+      const targets = colorTargetsForEntry(entry);
+      if (!targets.length) continue;
+      if (entryHasValue(entry, targets[0])) continue; // 已含值字段不标橙
+      for (const el of targets) {
         if (!el || typeof el.classList === "undefined") continue;
         if (el.classList.contains(DONE_CLASS) || el.classList.contains(PENDING_CLASS)) continue;
         if (!isVisible(el)) continue;
@@ -1656,6 +1694,9 @@
     const doc = prepared[0]?.entry?.el?.ownerDocument
       || elementRegistry.values().next().value?.el?.ownerDocument;
     if (doc) ensureStyle(doc);
+    // 批量兜底着色开关：默认按批量语义开启（未填字段统一着橙供全表核对）；
+    // 单字段填充等逐字段路径传 false，避免整页染橙。
+    const markUnfilled = options.markUnfilledPending !== false;
     // 撤销本次填充：逐字段填充前记录每个目标原值（同 session 多次填充不覆盖首次原值，
     // 保证「撤销本次填充」始终恢复填充前的值）。
     scanSession.prevValues = scanSession.prevValues || new Map();
@@ -1700,8 +1741,8 @@
       }
       if (index < prepared.length - 1 && delayMs > 0) await sleep(delayMs);
     }
-    // 本次未填、仍需人工的字段统一着 pending（已着色的保持既有状态）。
-    markUnfilledPending();
+    // 本次未填、仍需人工的字段统一着 pending（批量路径；已着色/已含值保持原状）。
+    if (markUnfilled) markUnfilledPending();
     return results;
   }
 
@@ -1821,7 +1862,7 @@
     if (!entry) throw sessionError("字段未找到，请重新扫描", "STALE_FIELD");
     const results = await apply(
       [{ id, value: String(fill?.value ?? ""), type: entry.type, fingerprint: entry.fingerprint }],
-      { ...options, delayMs: 0 }
+      { ...options, delayMs: 0, markUnfilledPending: false }
     );
     return results[0] || { id, ok: false, error: "填充失败", errorCode: "FILL_FAILED" };
   }
