@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "rollup -c",
+    "build": "npm run clean && rollup -c",
     "dev": "rollup -c -w",
     "clean": "rm -rf dist",
     "test": "node --test \"test/**/*.test.js\" \"tests/**/*.test.js\"",
@@ -19,5 +19,8 @@
     "@rollup/plugin-terser": "^1.0.0",
     "jsdom": "^30.0.1",
     "rollup": "^4.62.3"
+  },
+  "engines": {
+    "node": ">=21"
   }
 }

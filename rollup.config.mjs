@@ -12,6 +12,7 @@ export default [
     output: {
       file: "dist/background.js",
       format: "es",
+      sourcemap: true,
     },
     plugins,
   },
@@ -21,6 +22,7 @@ export default [
     output: {
       file: "dist/panel.js",
       format: "es",
+      sourcemap: true,
     },
     plugins,
   },
@@ -31,6 +33,7 @@ export default [
       file: "dist/content.js",
       format: "iife",
       name: "tutuContent",
+      sourcemap: true,
     },
     plugins,
   },
@@ -41,6 +44,7 @@ export default [
      file: "dist/fill-content.js",
      format: "iife",
      name: "hunterFillContent",
+     sourcemap: true,
    },
    plugins,
  },

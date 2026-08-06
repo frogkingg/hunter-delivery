@@ -118,12 +118,21 @@ export async function analyze() {
 }
 
 export async function sendJob() {
+  const button = $("send");
+  if (state.sendJobInFlight) { toast("正在发送中，请勿重复点击。"); return; }
+  state.sendJobInFlight = true;
+  if (button) button.disabled = true;
+  let lockSend = false; // 消息已送达但本地归档失败时保持禁用，防止重复发送
   try {
     if (!state.currentJob) throw new Error("请先分析当前岗位。");
     const greeting = sanitizeGreeting($("greeting").value);
     const sourceTab = await activeTab();
     if (!sourceTab?.url) throw new Error("未找到当前岗位页。");
     const sourceUrl = sourceTab.url;
+    // 发送前硬核验目标岗位与当前分析一致（与批量链路 VERIFY_JOB 对齐），
+    // 避免用户分析完岗位 A、切到岗位 B 后把 A 的招呼语发进 B 的会话。
+    const verify = await messagePage(sourceTab, { type: "VERIFY_JOB", job: state.currentJob });
+    if (!verify?.ok) throw new Error(`岗位核验失败：${verify?.reason || "页面岗位与当前分析不一致，请重新分析后再发送。"}`);
     let result = await messagePage(sourceTab, { type: "OPEN_COMMUNICATION" });
     if (!result?.ok) throw new Error(result?.error || "无法打开 BOSS 沟通页");
     toast("正在处理 BOSS 沟通弹层并等待聊天输入框…");
@@ -140,6 +149,7 @@ export async function sendJob() {
     const record = { ...state.currentJob, greeting, status: "已沟通", sentAt: new Date().toLocaleString("zh-CN"), resumeStatus: result.resume?.sent ? "简历图片已确认送达" : (result.resume?.reason || "未发送") };
     const saved = await send({ type: "SAVE_JOB", job: record });
     if (!saved?.ok) {
+      lockSend = true;
       $("send").disabled = true;
       throw new Error(`消息已确认送达，但本地投递记录保存失败：${saved?.error || "未知错误"}。为避免重复发送，本页面已禁用再次发送。`);
     }
@@ -151,5 +161,8 @@ export async function sendJob() {
     loadLibrary();
   } catch (error) {
     handleError("确认沟通并发送", error, toast);
+  } finally {
+    state.sendJobInFlight = false;
+    if (button && !lockSend) button.disabled = false;
   }
 }

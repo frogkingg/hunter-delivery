@@ -32,3 +32,12 @@ test("上限：entries 超 DIAG_MAX_ENTRIES 截断", () => {
   const diag = buildDiagnostics({ fields });
   assert.ok(diag.fields.length <= DIAG_MAX_ENTRIES);
 });
+
+test("redactText：带 userinfo 的 URL 剥离凭据与 query/hash，带分隔符手机号打码", () => {
+  const out = redactText("联系 https://user:pass@example.com/path?token=abc#frag，手机 138 1234 5678 和 138-1234-5678");
+  assert.ok(!out.includes("pass@example.com"));
+  assert.ok(!out.includes("token=abc"));
+  assert.ok(!out.includes("138 1234 5678"));
+  assert.ok(!out.includes("138-1234-5678"));
+  assert.ok(out.includes("https://example.com/path"));
+});

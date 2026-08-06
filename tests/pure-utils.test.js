@@ -208,3 +208,10 @@ test("sanitizeGreeting: 招呼语中的 PUA 数字被解码、残留 PUA 被清�
   const out = sanitizeGreeting("您好，我对\uE034D 打印\uF000岗位很感兴趣。");
   assert.equal(out, "您好，我对3D 打印岗位很感兴趣。");
 });
+
+test("validateEndpoint: 拒绝 IPv6 内网变体（IPv4-mapped/ULA/link-local）", () => {
+  assert.throws(() => validateEndpoint("https://[::ffff:127.0.0.1]/v1"), /本地或内网/);
+  assert.throws(() => validateEndpoint("https://[::ffff:7f00:1]/v1"), /本地或内网/);
+  assert.throws(() => validateEndpoint("https://[fd00::1]/v1"), /本地或内网/);
+  assert.throws(() => validateEndpoint("https://[fe80::1]/v1"), /本地或内网/);
+});

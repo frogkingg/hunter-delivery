@@ -704,3 +704,61 @@ test("OPEN_COMMUNICATION 岗位仅支持投递简历时提示无即时沟通入�
     communicationButtons = [];
   }
 });
+
+test("SEND_MESSAGE 前 16 字相同但全文不同的招呼语不应误判已送达", async () => {
+  // 回归：旧实现取 normalize(greeting).slice(0,16) 作为指纹，同一 Boss 历史消息前缀雷同时
+  // 会把新岗位的招呼语误判为 alreadySent（假成功、真漏发）。
+  const oldGreeting = "您好，我对这个岗位很感兴趣，希望进一步沟通。";
+  const newGreeting = "您好，我对这个岗位很感兴趣，希望尽快回复我。";
+  const status = visibleElement({
+    className: "message-status status-delivery",
+    innerText: "已送达",
+    textContent: "已送达",
+  });
+  // 历史已送达消息：与 newGreeting 前 16 个归一化字符完全相同，但全文不同。
+  outgoing = [visibleElement({
+    innerText: oldGreeting,
+    textContent: oldGreeting,
+    querySelector: selector => selector === ".message-status" ? status : null,
+    querySelectorAll: () => [],
+  })];
+  const delivered = visibleElement({
+    innerText: newGreeting,
+    textContent: newGreeting,
+    querySelector: selector => selector === ".message-status" ? status : null,
+    querySelectorAll: () => [],
+  });
+  const scope = { querySelector: () => null, querySelectorAll: () => [] };
+  const testComposer = visibleElement({
+    tagName: "DIV",
+    className: "chat-input",
+    dataset: {},
+    textContent: "",
+    getAttribute: name => name === "contenteditable" ? "true" : null,
+    focus: () => { document.activeElement = testComposer; },
+    dispatchEvent: () => {},
+    closest: () => scope,
+  });
+  composer = testComposer;
+  sendButtons = [visibleElement({
+    tagName: "BUTTON",
+    disabled: false,
+    classList: { contains: () => false },
+    click: () => {
+      testComposer.textContent = "";
+      outgoing.push(delivered);
+    },
+    dispatchEvent: () => {},
+  })];
+  try {
+    const response = await dispatch({ type: "SEND_MESSAGE", greeting: newGreeting, images: [] });
+    assert.equal(response.ok, true);
+    assert.equal(response.messageSent, true);
+    assert.equal(response.delivery.alreadySent, undefined);
+    assert.equal(response.delivery.status, "已送达");
+  } finally {
+    composer = chatInput;
+    sendButtons = [];
+    outgoing = [];
+  }
+});

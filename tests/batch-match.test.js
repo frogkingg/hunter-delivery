@@ -89,3 +89,17 @@ test("buildBatchSummary: 无无沟通入口时保持原格式", () => {
   assert.ok(!out.includes("无沟通入口"));
   assert.match(out, /共扫描 10 个岗位：匹配 3、低分跳过 5、去重跳过 1、失败 1/);
 });
+
+test("sanitizeMatch: 布尔/null/空串/字符串数字视为非法分数", () => {
+  assert.throws(() => sanitizeMatch({ score: true }), /未返回有效匹配分/);
+  assert.throws(() => sanitizeMatch({ score: null }), /未返回有效匹配分/);
+  assert.throws(() => sanitizeMatch({ score: "" }), /未返回有效匹配分/);
+  assert.throws(() => sanitizeMatch({ score: "85" }), /未返回有效匹配分/);
+  assert.throws(() => sanitizeMatch({ score: Infinity }), /未返回有效匹配分/);
+  assert.equal(sanitizeMatch({ score: 85 }).score, 85);
+});
+
+test("isDuplicateJob: 有 jobId 时不同岗位不因 title+company 相同误判", () => {
+  const job = { jobId: "job-1", title: "前端", company: "A 公司", location: "北京" };
+  assert.equal(isDuplicateJob(job, { deliveryQueue: [{ jobId: "job-2", title: "前端", company: "A 公司", location: "北京" }] }), false);
+});

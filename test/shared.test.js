@@ -223,3 +223,17 @@ test("buildCommunicationProbeText: null/空 → 空串", () => {
   assert.equal(buildCommunicationProbeText(null), "");
   assert.equal(buildCommunicationProbeText(undefined), "");
 });
+
+test("assertSafeEndpoint 拒绝 IPv6 内网变体（IPv4-mapped/ULA/link-local）", () => {
+  assert.throws(() => assertSafeEndpoint("https://[::ffff:127.0.0.1]/v1"), /本地或内网/);   // 127.0.0.1
+  assert.throws(() => assertSafeEndpoint("https://[::ffff:7f00:1]/v1"), /本地或内网/);     // 127.0.0.1
+  assert.throws(() => assertSafeEndpoint("https://[::ffff:0a00:0001]/v1"), /本地或内网/);  // 10.0.0.1
+  assert.throws(() => assertSafeEndpoint("https://[fd00::1]/v1"), /本地或内网/);           // ULA
+  assert.throws(() => assertSafeEndpoint("https://[fe80::1]/v1"), /本地或内网/);           // link-local
+});
+
+test("sameJob 有 jobId 时不再用 company|title|location 兜底误判不同岗位", () => {
+  const a = { jobId: "abc", company: "X", title: "前端", location: "北京" };
+  const b = { jobId: "xyz", company: "X", title: "前端", location: "北京" };
+  assert.ok(!sameJob(a, b));
+});

@@ -363,6 +363,7 @@ export async function scanFillPage() {
     $("fillCurrentSite").textContent = "";
     $("fillCurrentSiteText").textContent = `当前站点：${pageUrl.hostname}（识别到 ${fields.length} 个表单项）`;
     $("clearFill").hidden = false;
+    fillScanGeneration += 1;
     await buildMatches();
     await renderFillTemplate();
     setFillContinueRounds(0);
@@ -419,8 +420,13 @@ function computeRepeaterAdditions() {
   return plans.reduce((sum, plan) => sum + plan.targetCount - plan.currentCount, 0);
 }
 
-function applyScanResponse(response, tab) {
-  setSmartFillUndoEnabled(false);
+// 扫描代际计数器：AI 匹配在途时清空/重扫会使旧结果"复活"或串到新字段上，
+// buildMatches 在每次 await 之后比对代际，不一致即丢弃过期结果。
+let fillScanGeneration = 0;
+
+function applyScanResponse(response, tab, options = {}) {
+  fillScanGeneration += 1;
+  if (!options.preserveUndo) setSmartFillUndoEnabled(false);
   setFillScanFields(response.fields || []);
   setFillRepeaters(response.repeaters || []);
   setFillScanPage(response.page || state.fillScanPage);
@@ -503,6 +509,8 @@ function applyPlaybookOverlay(matches, resumeFields) {
       source: "playbook",
       confidence: "high",
       userConfirmed: false,
+      // 接线 playbook 声明的 valueRef：与模板层一致，从当前简历按路径取值并再走中央校验。
+      valueRef: mapping.valueRef?.source === "resume" ? mapping.valueRef : undefined,
       reason: `站点 playbook 映射（${mapping.fieldKey}）`,
     });
     if (validated.status !== "match") return match;
@@ -511,9 +519,11 @@ function applyPlaybookOverlay(matches, resumeFields) {
 }
 
 async function buildMatches() {
+  const generation = fillScanGeneration;
   const resume = activeProfile()?.resumeFields || {};
   let matches = matchRules(state.fillScanFields, resume);
   const templates = await getTemplates();
+  if (generation !== fillScanGeneration) return; // 扫描已过期，丢弃本次结果
   const storageKey = currentTemplateStorageKey();
   matches = applyTemplate(matches, templates[storageKey] || null, resume, {
     formFingerprint: state.fillScanSession?.formFingerprint || "",
@@ -537,6 +547,7 @@ async function buildMatches() {
           const startedAt = Date.now();
           const messages = buildAiMatchPrompt(needs, resume);
           const response = await ai(messages, 1200, true);
+          if (generation !== fillScanGeneration) return; // AI 在途时已清空/重扫，丢弃过期建议
           const data = await parseAiJson(response.text);
           matches = applyAiResults(matches, data, state.fillScanFields, resume);
           // 仅成功才写缓存（entries 为 AI 返回的 fieldKey 建议列表）；失败不写，下次可重试。
@@ -549,9 +560,17 @@ async function buildMatches() {
       }
     }
   }
+  if (generation !== fillScanGeneration) return;
   setFillMatches(matches);
   setFillSelected(new Set(matches.filter(m => m.status === "match" && m.value).map(m => m.fieldId)));
-  setFillValues(Object.fromEntries(matches.map(m => [m.fieldId, m.value])));
+  // 重建时保留用户已手动编辑的值：state.fillValues 里的手动输入不应被自动匹配值静默覆盖。
+  const previousValues = state.fillValues || {};
+  const nextValues = {};
+  for (const m of matches) {
+    const manual = previousValues[m.fieldId];
+    nextValues[m.fieldId] = (manual !== undefined && manual !== m.value) ? manual : m.value;
+  }
+  setFillValues(nextValues);
   renderFillMatches();
 }
 
@@ -776,6 +795,7 @@ export async function stopFill() {
 export async function clearFill() {
   stopIncrementalWatch();
   setSmartFillUndoEnabled(false);
+  fillScanGeneration += 1;
   const session = state.fillScanSession;
   const tab = session?.tabId ? { id: session.tabId, url: session.url } : await currentTab();
   if (tab?.id && tab?.url && /^https?:/i.test(tab.url) && state.fillFailedIds.length) {
@@ -1034,7 +1054,8 @@ async function continueFill() {
   if (!response?.ok) throw new Error(response?.error || "扫描失败");
   const newFields = response.fields || [];
   if (!newFields.length) { toast("没有发现新的可填字段"); return; }
-  applyScanResponse(response, tab);
+  // 续填保留撤销：引擎 scan 承接上一会话的 prevValues，撤销可一次性还原首轮+续填字段。
+  applyScanResponse(response, tab, { preserveUndo: true });
   await buildMatches();
   await renderFillTemplate();
   if (!state.fillMatches.some(match => match.status === "match")) { toast("新增字段无自动匹配项"); return; }
@@ -1092,7 +1113,8 @@ async function applyRegionFillResult(message) {
     if (!fields.length) { toast("选区内未识别到可填字段，请重新选择更完整的容器"); return; }
     stopIncrementalWatch();
     fillResultMode = "list";
-    applyScanResponse(response, tab);
+    // 选区重建保留撤销（引擎承接 prevValues）：选区内首轮已填字段仍可被撤销还原。
+    applyScanResponse(response, tab, { preserveUndo: true });
     const regionName = message.regionLabel || regionPath || "已选区域";
     $("fillCurrentSite").textContent = "";
     $("fillCurrentSiteText").textContent = `选区「${regionName}」：识别到 ${fields.length} 个表单项`;

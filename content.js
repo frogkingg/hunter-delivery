@@ -74,7 +74,8 @@ function extractJob() {
     title: title || fallbackTitle || "未识别岗位名称", company, location: jobLocation,
     salary: decodeSalary(salary || pageText.match(/\b\d{1,3}(?:-\d{1,3})?K[·・]?\d{0,2}薪?\b/i)?.[0] || ""),
     description, url: window.location.href, detailUrl, jobId, pageType: isListPage ? "职位列表" : "岗位详情",
-    communicationState: button ? text(button) : "未找到沟通按钮", extractedAt: new Date().toISOString()
+    communicationState: button ? text(button) : "未找到沟通按钮",
+    communicationAvailable: !!button, extractedAt: new Date().toISOString()
   };
 }
 
@@ -324,6 +325,9 @@ async function setComposer(value) {
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// SEND_MESSAGE 处理中标志：防止同一 frame 内并发重复发送。
+let sendInFlight = false;
+
 function sendButtonCandidates(input) {
   const selector = "button.btn-send, .btn-send";
   const scope = input?.closest?.(".message-controls, .greet-boss-container, .chat-dialog, .chat-container");
@@ -459,7 +463,9 @@ async function sendGreetingAndConfirm(greeting) {
 }
 
 async function waitForDeliveredText(beforeCount, greeting) {
-  const fingerprint = normalize(greeting).slice(0, 16);
+  // 指纹取全文归一化文本：同一 Boss 会话按招聘者维度共享，历史消息前缀（前 16 字）经常雷同，
+  // 用前缀会把新岗位的招呼语误判为"已发送"造成假成功真漏发；全文匹配只在完全重复时才跳过。
+  const fingerprint = normalize(greeting);
   return outgoingMessages().slice(beforeCount).some(message => fingerprint && normalize(text(message)).includes(fingerprint) && isDelivered(message.querySelector(".message-status")));
 }
 
@@ -491,7 +497,11 @@ async function sendResume(images) {
   return { sent: true, count: images.length, note: "简历图片已由 BOSS 确认送达" };
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+// content.js 可能被 manifest 自动注入 + background 按需注入两份，重复注册监听会导致同一消息被
+// 两个副本同时处理（双发）。用全局标志保证每个 frame 只注册一次监听器。
+if (!window.__hunterContentListenerRegistered) {
+  window.__hunterContentListenerRegistered = true;
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     try {
       if (message.type === "EXTRACT_JOB") { sendResponse({ ok: true, job: extractJob() }); return; }
@@ -527,22 +537,32 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
 
       if (message.type === "SEND_MESSAGE") {
-        await prepareChatForSending();
-        if (await waitForDeliveredText(0, message.greeting)) {
-          sendResponse({
-            ok: true,
-            messageSent: true,
-            delivery: { status: "已送达", alreadySent: true },
-            resume: { sent: false, reason: "检测到相同招呼语已送达，未重复发送简历图片" },
-          });
+        // 防重入：面板双击「确认沟通并发送」会并发两条消息，若不互斥会导致图片+文字双发。
+        if (sendInFlight) {
+          sendResponse({ ok: false, error: "消息正在发送中，请勿重复操作。" });
           return;
         }
-        // 先逐张确认简历图片已送达，再发送文字；若图片失败，避免出现“只发了招呼语、没发简历”的半成品投递。
-        const resume = await sendResume(message.images);
-        await delay(500);
-        const delivery = await sendGreetingAndConfirm(message.greeting);
-        sendResponse({ ok: true, messageSent: true, delivery, resume });
-        return;
+        sendInFlight = true;
+        try {
+          await prepareChatForSending();
+          if (await waitForDeliveredText(0, message.greeting)) {
+            sendResponse({
+              ok: true,
+              messageSent: true,
+              delivery: { status: "已送达", alreadySent: true },
+              resume: { sent: false, reason: "检测到相同招呼语已送达，未重复发送简历图片" },
+            });
+            return;
+          }
+          // 先逐张确认简历图片已送达，再发送文字；若图片失败，避免出现“只发了招呼语、没发简历”的半成品投递。
+          const resume = await sendResume(message.images);
+          await delay(500);
+          const delivery = await sendGreetingAndConfirm(message.greeting);
+          sendResponse({ ok: true, messageSent: true, delivery, resume });
+          return;
+        } finally {
+          sendInFlight = false;
+        }
       }
 
       sendResponse({ ok: false, error: "未知消息类型" });
@@ -551,7 +571,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
   })();
   return true;
-});
+  });
+}
 
 // —— 批量岗位抓取与切换支持 ——
 const BATCH_CARD_SELECTOR = ".job-card-wrap, .job-card-box, li.job-card-wrapper";

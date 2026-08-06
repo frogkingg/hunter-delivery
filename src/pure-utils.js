@@ -1,5 +1,6 @@
 // 纯函数：不依赖任何 chrome / DOM API，可在 Node 下测试。
 
+import { validateEndpoint as sharedValidateEndpoint } from "../lib/shared.js";
 // 将 textContent→innerHTML 的行为改为纯字符串实现，显式处理五个字符。
 // 与原 document.createElement 实现等价：原实现 textContent 已编码 & < >，
 // 再额外替换 " 和 '；新实现显式处理这五个字符，结果一致。
@@ -18,26 +19,9 @@ export function safeUrl(value) {
   return /^(https?:\/\/|\/)/i.test(String(value || "")) ? value : "#";
 }
 
+// 与 background 侧共用同一份端点校验（lib/shared.js），避免两套实现强度不一、防绕过能力漂移。
 export function validateEndpoint(value) {
-  const trimmed = String(value || "").trim();
-  if (!trimmed) throw new Error("请先填写 AI API 地址。");
-  let url;
-  try {
-    url = new URL(trimmed);
-  } catch (_) {
-    throw new Error("AI API 地址格式不正确。");
-  }
-  if (url.protocol !== "https:")
-    throw new Error("出于隐私安全，AI 服务地址必须为 https://。明文 http 会泄露简历内容。");
-  const host = url.hostname.toLowerCase();
-  if (
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(host)
-  )
-    throw new Error("不允许使用本地或内网地址作为 AI 服务。");
-  return trimmed;
+  return sharedValidateEndpoint(value);
 }
 
 // BOSS 直聘用私有字体（kanzhun-mix）把薪资等数字渲染为 PUA 码位：U+E031~U+E03A 对应 0-9。

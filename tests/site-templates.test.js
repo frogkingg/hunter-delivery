@@ -158,3 +158,28 @@ test("Template V2: path 相同但字段指纹变化时不得套用旧映射", ()
   assert.equal(applied[0].fieldKey, "phone");
   assert.equal(applied[0].value, "13800138000");
 });
+
+test("saveTemplateFromResults: 敏感字段 userConfirmed 不持久化", () => {
+  const matches = [{ ...mkMatch("f1", "idCard", "110101199806010011"), userConfirmed: true }];
+  const template = saveTemplateFromResults("example.com", "https://apply.example.com", matches, null);
+  assert.equal(template.mappings[0].fieldKey, "idCard");
+  assert.equal(template.mappings[0].userConfirmed, false);
+});
+
+test("applyTemplate: 敏感字段忽略持久化 userConfirmed（旧模板带确认标记也不自动填入）", () => {
+  const matches = [{
+    fieldId: "a1", fieldKey: "", value: "", confidence: null, source: "rule", status: "manual",
+    label: "身份证号", rawLabel: "身份证号", type: "text", fingerprint: "fp-idcard",
+  }];
+  const template = {
+    schemaVersion: 2, host: "example.com", origin: "https://example.com",
+    scope: { formFingerprint: "form-a" },
+    mappings: [{
+      fieldFingerprint: "fp-idcard", siteLabel: "身份证号", controlType: "text", slot: "single",
+      fieldKey: "idCard", valueRef: { source: "resume", path: "idCard" }, userConfirmed: true,
+    }],
+    updatedAt: "",
+  };
+  const applied = applyTemplate(matches, template, { idCard: "110101199806010011" }, { formFingerprint: "form-a" });
+  assert.equal(applied[0].status, "manual", "敏感字段不得因模板 userConfirmed 自动 match");
+});

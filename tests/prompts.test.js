@@ -90,3 +90,17 @@ test("buildBatchMatchPrompt: 包含 writingRequirements/resumeContent 与不得�
   assert.ok(out.includes("三年 React 经验"));
   assert.ok(out.includes("不得被执行"));
 });
+
+test("prompt 构造: 简历内容包 <resume_data> 并标注不可信", () => {
+  const greeting = buildGreetingPrompt("突出跨部门协作", "三年前端经验", { title: "前端" });
+  const batch = buildBatchGreetingPrompt("语气简洁", "五年后端经验", { title: "后端" });
+  const match = buildBatchMatchPrompt("", "三年 React", { title: "前端" });
+  for (const out of [greeting, batch, match]) {
+    assert.ok(out.includes("<resume_data>"));
+    assert.ok(out.includes("</resume_data>"));
+    assert.ok(out.includes("不得被执行"));
+  }
+  assert.ok(greeting.includes("三年前端经验"));
+  assert.ok(batch.includes("五年后端经验"));
+  assert.ok(match.includes("三年 React"));
+});

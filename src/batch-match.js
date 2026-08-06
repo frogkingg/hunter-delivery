@@ -8,6 +8,7 @@ import { buildBatchMatchPrompt } from "./prompts.js";
 import { generateQueue, startQueue } from "./queue.js";
 import { loadQueue } from "./render.js";
 import { escapeHtml, sanitizeDisplayText } from "./pure-utils.js";
+import { sameJob } from "../lib/shared.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const MAX_QUEUE_ITEMS = 20;            // 与 background 的投递清单上限一致
@@ -17,24 +18,20 @@ const MAX_SELECT_FAILURES = 3;         // 连续选中失败熔断阈值
 
 // AI 返回的匹配结果规范化：score clamp 0-100 取整；reasoning 缺省文案；score 非数字视为失败。
 export function sanitizeMatch(raw) {
-  const score = Number(raw?.score);
-  if (!Number.isFinite(score)) throw new Error("AI 未返回有效匹配分");
+  // 严格判定：Number(true)=1、Number(null)=0、Number("")=0 都会被 Number() 强转吞掉，
+  // 把布尔/null/空串/字符串数字视为"非数字"并报失败，避免被静默当成低分甚至入选。
+  const score = raw?.score;
+  if (typeof score !== "number" || !Number.isFinite(score)) throw new Error("AI 未返回有效匹配分");
   return {
     score: Math.max(0, Math.min(100, Math.round(score))),
     reasoning: String(raw?.reasoning || "").trim() || "未返回分析结论",
   };
 }
 
-// 跨投递清单 / 已沟通历史 / 岗位库做语义去重：jobId 优先，title+company 兜底；URL 归一化去 query 与尾斜杠。
+// 跨投递清单 / 已沟通历史 / 岗位库做语义去重：复用 lib/shared 的 sameJob（jobId/详情 URL/兜底），
+// 与 background 端 queueJob/saveJob 的判重口径保持一致，避免前端判"不重复"而后台判"重复"。
 export function isDuplicateJob(job, { deliveryQueue = [], recentDeliveries = [], jobLibrary = [] } = {}) {
-  const normalizeUrl = (url) => (url || "").split("?")[0].replace(/\/+$/, "");
-  const jobKey = job.jobId || normalizeUrl(job.detailUrl);
-  const match = (item) => {
-    const itemKey = item.jobId || normalizeUrl(item.detailUrl);
-    return (jobKey && itemKey && jobKey === itemKey) ||
-      (job.title === item.title && job.company === item.company);
-  };
-  return deliveryQueue.some(match) || recentDeliveries.some(match) || jobLibrary.some(match);
+  return [...deliveryQueue, ...recentDeliveries, ...jobLibrary].some(item => sameJob(item, job));
 }
 
 // 批量筛选汇总文案。
@@ -189,7 +186,9 @@ export async function startBatchMatch() {
     toast("批量匹配任务正在运行中...");
     return;
   }
-
+  // 同步置锁：guard 与 setBatchMatchingState(true) 之间隔着多个 await，双击会并发启动双循环。
+  isBatchRunning = true;
+  try {
   // 前置校验：AI Key / 简历内容 / 当前简历（对齐 generateQueue 的校验）
   if (!state.config.apiKey) {
     toast("请先在设置中填写 AI API Key。");
@@ -337,8 +336,13 @@ export async function startBatchMatch() {
     }
 
     // 3.5 无即时沟通入口的岗位（银行/国企等只支持投递简历）无法自动打招呼，直接跳过
+    // 优先使用 content 端结构化字段 communicationAvailable，不再依赖诊断文案字符串判读。
     const communicateState = fullJob.communicationState;
-    if (communicateState && !/^(立即沟通|继续沟通)$/.test(communicateState)) {
+    const communicateAvailable = fullJob.communicationAvailable;
+    const noCommunication = communicateAvailable === false
+      ? true
+      : (communicateState && !/^(立即沟通|继续沟通)$/.test(communicateState));
+    if (noCommunication) {
       noCommunicationCount++;
       updateProgressUI(
         scannedIndex + 1,
@@ -396,6 +400,9 @@ export async function startBatchMatch() {
       if (addRes?.ok) {
         addedCount++;
         if (addRes.item?.key) addedKeys.push(addRes.item.key);
+        // 回填启动时的队列快照：同一次扫描里重复出现的岗位，后续去重立即生效，
+        // 不再被 background 判重后误报为"加入清单失败"。
+        if (addRes.item) deliveryQueue.push(addRes.item);
         updateProgressUI(
           scannedIndex + 1,
           targetCount,
@@ -417,8 +424,6 @@ export async function startBatchMatch() {
       await sleep(1200); // 避免频繁请求 AI
     }
   }
-
-  setBatchMatchingState(false);
 
   const noCommText = noCommunicationCount > 0 ? `、无沟通入口跳过 ${noCommunicationCount}` : "";
   let summary = batchStopped
@@ -456,5 +461,14 @@ export async function startBatchMatch() {
     } else {
       toast("已保留筛选结果，可在「投递清单」中手动生成招呼语并投递");
     }
+  }
+  } catch (error) {
+    // 异常路径兜底：任何运行时 reject（SW 失效/上下文失效等）都要复位运行状态，
+    // 避免开始按钮永久禁用、停止按钮残留且无任何提示。
+    console.error("[猎投] 批量匹配异常：", error);
+    toast(`批量匹配异常中断：${error?.message || String(error)}`);
+  } finally {
+    isBatchRunning = false;
+    setBatchMatchingState(false);
   }
 }
