@@ -4,7 +4,33 @@
   <nav><button class="tab active" data-tab="current">当前岗位</button><button class="tab" data-tab="queue">投递清单</button><button class="tab" data-tab="library">岗位库</button><button class="tab" data-tab="settings">设置</button><button class="tab" data-tab="smartfill">智能填充</button></nav>
   <section id="current" class="page active">
     <div id="onboarding" class="guide-card"><b>ℹ️ 首次使用</b><span>先在「设置」填写 AI Key，再上传简历图片并确认解析结果。</span></div>
-    <div class="row current-actions"><button id="addQueueTop" class="secondary">加入投递清单</button><button id="analyze" class="primary">分析当前岗位并投递</button></div><p id="analyzeProgress" class="hint" aria-live="polite"></p><div class="job-card"><span id="jobBadge" class="badge">等待识别</span><h2 id="jobTitle">请打开 BOSS 的职位列表或详情页</h2><p id="jobMeta">插件会自动读取当前页面，不需要复制 JD。</p></div>
+    <div class="row current-actions"><button id="addQueueTop" class="secondary">加入投递清单</button><button id="analyze" class="primary">分析当前岗位并投递</button></div><p id="analyzeProgress" class="hint" aria-live="polite"></p>
+    <!-- 批量 AI 匹配与投递控制面板 -->
+    <details id="batchMatchCard" class="job-prompt">
+      <summary>⚡ 批量 AI 筛选与自动投递</summary>
+      <p class="hint">按指定数量自动扫描 BOSS 职位列表，AI 比对简历后，高于阈值的岗位存入投递清单；可在清单中生成招呼语并投递。</p>
+      <div class="row" style="margin-top:8px">
+        <label style="margin:0">匹配数量
+          <input id="batchCountInput" type="number" min="1" max="50" value="10">
+        </label>
+        <label style="margin:0">匹配阈值(分)
+          <input id="batchThresholdInput" type="number" min="0" max="100" value="75">
+        </label>
+      </div>
+      <label class="toggle-setting" style="margin:10px 0 6px">
+        <input id="batchAutoSendCheck" type="checkbox">
+        <span>匹配完成后自动投递</span>
+      </label>
+      <div class="row" style="margin-top:10px">
+        <button id="startBatchMatch" class="primary">开始批量筛选</button>
+        <button id="stopBatchMatch" class="secondary" hidden>停止筛选</button>
+      </div>
+      <div id="batchProgressBox" class="hidden" style="margin-top:10px">
+        <div class="batch-progress-bar"><div id="batchProgressFill" class="batch-progress-fill" style="width:0%"></div></div>
+        <p id="batchStatusText" class="hint" aria-live="polite" style="margin-top:4px"></p>
+      </div>
+    </details>
+    <div class="job-card"><span id="jobBadge" class="badge">等待识别</span><h2 id="jobTitle">请打开 BOSS 的职位列表或详情页</h2><p id="jobMeta">插件会自动读取当前页面，不需要复制 JD。</p></div>
     <div id="result" class="hidden"><div class="section-head"><h3>招呼语</h3></div><details id="matchAnalysis" class="job-prompt hidden"><summary>查看 JD 与简历匹配</summary><div id="matchAnalysisContent"></div></details><details class="job-prompt"><summary>调整本次招呼语要求</summary><p class="hint">仅作用于当前岗位；修改后点击“重新生成”。</p><textarea id="jobGreetingPrompt" rows="5" placeholder="例如：突出跨部门协作经验，语气更简洁直接"></textarea></details><button id="refreshGreeting" class="text-button refresh-greeting">重新生成</button><label>修改招呼语<textarea id="greeting" rows="10" placeholder="生成的招呼语会出现在这里"></textarea></label><button id="send" class="primary">确认沟通并发送</button></div>
   </section>
   <section id="library" class="page"><div class="section-head"><div><h2>岗位库</h2><p>已投递的岗位会自动记录在这里。</p></div><button id="export" class="secondary">导出 Excel</button></div><div id="libraryList" class="library-list"></div></section>
