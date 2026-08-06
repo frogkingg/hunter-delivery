@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { escapeHtml, safeUrl, validateEndpoint, sanitizeGreeting, trimLog } from "../src/pure-utils.js";
+import { escapeHtml, safeUrl, validateEndpoint, sanitizeGreeting, sanitizeDisplayText, decodePuaText, trimLog } from "../src/pure-utils.js";
 
 test("escapeHtml: 空值/undefined → 空串", () => {
   assert.equal(escapeHtml(undefined), "");
@@ -176,4 +176,35 @@ test("trimLog: max 为非数字 → 空数组", () => {
 test("trimLog: 非数组输入 → 空数组", () => {
   assert.deepEqual(trimLog(null, 3), []);
   assert.deepEqual(trimLog(undefined, 3), []);
+});
+
+
+test("decodePuaText: BOSS 私有字体数字码位映射 0-9", () => {
+  // U+E031=0, U+E032=1, ..., U+E03A=9
+  assert.equal(decodePuaText("\uE033\uE031-\uE034\uE031K"), "20-30K");
+  assert.equal(decodePuaText("\uE031\uE032\uE033\uE034\uE035\uE036\uE037\uE038\uE039\uE03A"), "0123456789");
+});
+
+test("decodePuaText: 未映射的私用区字符被移除，避免乱码", () => {
+  assert.equal(decodePuaText("岗位\uF000乱码\uEFFF"), "岗位乱码");
+});
+
+test("decodePuaText: 普通文本不受影响", () => {
+  assert.equal(decodePuaText("前端工程师@猎投科技 20-30K"), "前端工程师@猎投科技 20-30K");
+});
+
+test("decodePuaText: null/undefined/空 → 空串", () => {
+  assert.equal(decodePuaText(null), "");
+  assert.equal(decodePuaText(undefined), "");
+  assert.equal(decodePuaText(""), "");
+});
+
+test("sanitizeDisplayText: 残留 PUA 被清除且数字码位被解码", () => {
+  assert.equal(sanitizeDisplayText("\uE034D 打印\uF000"), "3D 打印");
+  assert.equal(sanitizeDisplayText(null), "");
+});
+
+test("sanitizeGreeting: 招呼语中的 PUA 数字被解码、残留 PUA 被清除", () => {
+  const out = sanitizeGreeting("您好，我对\uE034D 打印\uF000岗位很感兴趣。");
+  assert.equal(out, "您好，我对3D 打印岗位很感兴趣。");
 });

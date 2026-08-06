@@ -3,7 +3,12 @@ const SALARY_FONT_START = 0xE031;
 const SALARY_FONT_END = 0xE03A;
 
 const visible = el => el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-const text = el => (el?.innerText || el?.textContent || "").replace(/\s+/g, " ").trim();
+// 解码 BOSS 私有字体 PUA：已知数字码位映射 0-9，未知私用区字符移除，避免状态文字乱码。
+const decodePuaText = value => String(value ?? "").replace(/[\uE000-\uF8FF]/g, char => {
+  const code = char.charCodeAt(0);
+  return code >= SALARY_FONT_START && code <= SALARY_FONT_END ? String(code - SALARY_FONT_START) : "";
+});
+const text = el => decodePuaText((el?.innerText || el?.textContent || "").replace(/\s+/g, " ").trim());
 const decodeSalary = value => String(value || "").replace(new RegExp(`[\\u${SALARY_FONT_START.toString(16)}-\\u${SALARY_FONT_END.toString(16)}]`, "g"), char => String(char.charCodeAt(0) - SALARY_FONT_START));
 const firstText = selectors => {
   for (const selector of selectors) {
@@ -87,9 +92,13 @@ function diagnosePage() {
     return [key, { count: elements.length, sample: text(first).slice(0, 140) }];
   }));
   const job = extractJob();
+  const bodyText = document.body?.innerText || "";
+  const puaMatches = bodyText.match(/[\uE000-\uF8FF]/g) || [];
   return {
     checkedAt: new Date().toISOString(), url: window.location.href, title: document.title,
     readyState: document.readyState, job, selectors: found,
+    puaCount: puaMatches.length,
+    puaSample: [...new Set(puaMatches)].slice(0, 5).join(""),
     diagnosis: job.description.length > 40 ? "页面已读取到 JD" : "未读取到 JD；请复制这份诊断信息发给开发者"
   };
 }

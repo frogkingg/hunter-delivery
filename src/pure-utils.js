@@ -40,6 +40,24 @@ export function validateEndpoint(value) {
   return trimmed;
 }
 
+// BOSS 直聘用私有字体（kanzhun-mix）把薪资等数字渲染为 PUA 码位：U+E031~U+E03A 对应 0-9。
+// 解码已知映射；未映射的私用区字符（U+E000~U+F8FF）在正常 UI 文本中不会出现，
+// 直接移除，避免字体映射变化/防爬更新导致状态文字部分乱码。
+export function decodePuaText(text) {
+  const value = String(text ?? "");
+  if (!value) return value;
+  return value.replace(/[\uE000-\uF8FF]/g, (char) => {
+    const code = char.charCodeAt(0);
+    if (code >= 0xE031 && code <= 0xE03A) return String(code - 0xE031); // 0-9
+    return ""; // 未映射的私用区字符移除
+  });
+}
+
+// 显示边界净化：对来自页面/AI 的文本去除 PUA，避免渲染为乱码。
+export function sanitizeDisplayText(text) {
+  return decodePuaText(text);
+}
+
 // 原实现为 async 但内部无 await，改为同步纯函数。
 export function sanitizeGreeting(text) {
   const value = String(text || "").trim();
@@ -50,7 +68,7 @@ export function sanitizeGreeting(text) {
     throw new Error("招呼语疑似包含联系方式，已拦截，请检查 AI 返回是否被 JD 指令污染。");
   if (/https?:\/\//i.test(value))
     throw new Error("招呼语疑似包含链接，已拦截，请检查 AI 返回是否被 JD 指令污染。");
-  return value;
+  return decodePuaText(value);
 }
 
 // 截断投递日志到最大条数，避免无限增长。纯函数，可在 Node 下测试。

@@ -7,6 +7,7 @@ import { ai, parseAiJson } from "./ai-client.js";
 import { buildBatchMatchPrompt } from "./prompts.js";
 import { generateQueue, startQueue } from "./queue.js";
 import { loadQueue } from "./render.js";
+import { sanitizeDisplayText } from "./pure-utils.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const MAX_QUEUE_ITEMS = 20;            // 与 background 的投递清单上限一致
@@ -207,7 +208,7 @@ export async function startBatchMatch() {
 
   while (isBatchRunning && scannedIndex < listJobs.length && scannedIndex < targetCount) {
     const currentListJob = listJobs[scannedIndex];
-    const jobDisplayName = `岗位「${currentListJob.title || "未知"}@${currentListJob.company || "未知"}」`;
+    const jobDisplayName = `岗位「${sanitizeDisplayText(currentListJob.title || "未知")}@${sanitizeDisplayText(currentListJob.company || "未知")}」`;
 
     updateProgressUI(scannedIndex + 1, targetCount, `[${scannedIndex + 1}/${targetCount}] 正在切换至${jobDisplayName}...`);
 
@@ -276,7 +277,7 @@ export async function startBatchMatch() {
       updateProgressUI(
         scannedIndex + 1,
         targetCount,
-        `[${scannedIndex + 1}/${targetCount}] ${jobDisplayName} 匹配分 ${match.score}分 < 阈值${threshold}分（${match.reasoning}），已跳过`
+        `[${scannedIndex + 1}/${targetCount}] ${jobDisplayName} 匹配分 ${match.score}分 < 阈值${threshold}分（${sanitizeDisplayText(match.reasoning)}），已跳过`
       );
     } else {
       // 6. 达到或超过阈值，加入投递清单（不携带 greeting → 后台置 status=待生成，绑定当前简历）
@@ -289,7 +290,7 @@ export async function startBatchMatch() {
         jobId: fullJob.jobId,
         description: fullJob.description,
         matchScore: match.score,
-        matchReasoning: match.reasoning,
+        matchReasoning: sanitizeDisplayText(match.reasoning),
         profileName: profile.name,
       };
 

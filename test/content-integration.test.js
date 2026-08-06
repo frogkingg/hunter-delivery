@@ -523,3 +523,50 @@ test("SELECT_LIST_JOB 索引越界返回失败", async () => {
     listCards = [];
   }
 });
+
+test("SCAN_LIST_JOBS 解码 BOSS 私有字体 PUA 数字", async () => {
+  globalThis.window.location = { pathname: "/web/geek/jobs", href: "https://www.zhipin.com/web/geek/jobs" };
+  // U+E034=3，U+E031=0 → "3D 打印"；公司名同样含 PUA 数字
+  listCards = [
+    makeBatchCard("\uE034D 打印工程师", "\uE033D 打印公司", "job-3d", () => {}),
+  ];
+  try {
+    const response = await dispatch({ type: "SCAN_LIST_JOBS" });
+    assert.equal(response.ok, true);
+    assert.equal(response.jobs[0].title, "3D 打印工程师");
+    assert.equal(response.jobs[0].company, "2D 打印公司");
+  } finally {
+    listCards = [];
+  }
+});
+
+test("SELECT_LIST_JOB 解码列表页薪资 PUA 数字", async () => {
+  globalThis.window.location = { pathname: "/web/geek/jobs", href: "https://www.zhipin.com/web/geek/jobs" };
+  listDetailContainer = null;
+  activeCard = null;
+  const card = makeBatchCard("测试岗位", "测试公司", "job-pay", () => {
+    listDetailContainer = {
+      _desc: visibleElement({ innerText: "岗位职责：负责测试。".repeat(8) }),
+      querySelector: selector => {
+        if (selector === ".job-detail-header .job-name" || selector === ".job-name") return visibleElement({ innerText: "测试岗位", textContent: "测试岗位" });
+        if (selector === ".job-detail-header .job-salary" || selector === ".job-salary") {
+          // U+E033=2, U+E031=0, U+E034=3 → "20-30K"
+          return visibleElement({ innerText: "\uE033\uE031-\uE034\uE031K", textContent: "\uE033\uE031-\uE034\uE031K" });
+        }
+        if (selector === ".job-detail-header .job-salary" === false) return null;
+        return null;
+      },
+    };
+    activeCard = card;
+  });
+  listCards = [card];
+  try {
+    const response = await dispatch({ type: "SELECT_LIST_JOB", index: 0 });
+    assert.equal(response.ok, true);
+    assert.equal(response.job.salary, "20-30K");
+  } finally {
+    listCards = [];
+    listDetailContainer = null;
+    activeCard = null;
+  }
+});
