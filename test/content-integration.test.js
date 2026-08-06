@@ -690,3 +690,17 @@ test("OPEN_COMMUNICATION 岗位已关闭时提示下架", async () => {
     communicationButtons = [];
   }
 });
+
+test("OPEN_COMMUNICATION 岗位仅支持投递简历时提示无即时沟通入口", async () => {
+  communicationButtons = [visibleElement({ innerText: "投递简历", textContent: "投递简历" })];
+  const prevBody = globalThis.document.body;
+  globalThis.document.body = visibleElement({ innerText: "银行实习生-云阳支行", textContent: "银行实习生-云阳支行" });
+  try {
+    const response = await dispatch({ type: "OPEN_COMMUNICATION", timeoutMs: 300 });
+    assert.equal(response.ok, false);
+    assert.match(response.error, /没有即时沟通入口/);
+  } finally {
+    globalThis.document.body = prevBody;
+    communicationButtons = [];
+  }
+});

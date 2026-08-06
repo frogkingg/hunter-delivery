@@ -77,3 +77,15 @@ test("buildBatchDiagnostic: failures 为空时正常输出空数组", () => {
   const diag = buildBatchDiagnostic({ params: { targetCount: 10 }, result: { failed: 0 }, failures: [], config: {} });
   assert.deepEqual(diag.failures, []);
 });
+
+test("buildBatchSummary: 无沟通入口跳过计数", () => {
+  const out = buildBatchSummary({ scanned: 10, added: 2, lowScore: 4, duplicate: 1, noCommunication: 2, failed: 1 });
+  assert.match(out, /无沟通入口跳过 2/);
+  assert.match(out, /共扫描 10 个岗位/);
+});
+
+test("buildBatchSummary: 无无沟通入口时保持原格式", () => {
+  const out = buildBatchSummary({ scanned: 10, added: 3, lowScore: 5, duplicate: 1, failed: 1 });
+  assert.ok(!out.includes("无沟通入口"));
+  assert.match(out, /共扫描 10 个岗位：匹配 3、低分跳过 5、去重跳过 1、失败 1/);
+});

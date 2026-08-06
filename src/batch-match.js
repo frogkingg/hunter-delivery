@@ -38,8 +38,11 @@ export function isDuplicateJob(job, { deliveryQueue = [], recentDeliveries = [],
 }
 
 // 批量筛选汇总文案。
-export function buildBatchSummary({ scanned, added, lowScore, duplicate, failed }) {
-  return `批量匹配完成！共扫描 ${scanned} 个岗位：匹配 ${added}、低分跳过 ${lowScore}、去重跳过 ${duplicate}、失败 ${failed}。`;
+export function buildBatchSummary({ scanned, added, lowScore, duplicate, noCommunication = 0, failed }) {
+  const parts = [`匹配 ${added}`, `低分跳过 ${lowScore}`, `去重跳过 ${duplicate}`];
+  if (noCommunication > 0) parts.push(`无沟通入口跳过 ${noCommunication}`);
+  parts.push(`失败 ${failed}`);
+  return `批量匹配完成！共扫描 ${scanned} 个岗位：${parts.join("、")}。`;
 }
 
 // 批量匹配诊断导出（纯函数，Node 可测）：只含参数/计数/失败明细与配置摘要，不含 API Key/简历/JD。
@@ -275,6 +278,7 @@ export async function startBatchMatch() {
   let addedCount = 0;
   let lowScoreCount = 0;
   let duplicateCount = 0;
+  let noCommunicationCount = 0;
   let failedCount = 0;
   let scannedCount = 0;
   let scannedIndex = 0;
@@ -327,6 +331,20 @@ export async function startBatchMatch() {
     if (isDuplicateJob(fullJob, { deliveryQueue, recentDeliveries, jobLibrary })) {
       duplicateCount++;
       updateProgressUI(scannedIndex + 1, targetCount, `[${scannedIndex + 1}/${targetCount}] ${jobDisplayName} 已投递/在清单中，去重跳过`);
+      scannedIndex++;
+      await sleep(600);
+      continue;
+    }
+
+    // 3.5 无即时沟通入口的岗位（银行/国企等只支持投递简历）无法自动打招呼，直接跳过
+    const communicateState = fullJob.communicationState;
+    if (communicateState && !/^(立即沟通|继续沟通)$/.test(communicateState)) {
+      noCommunicationCount++;
+      updateProgressUI(
+        scannedIndex + 1,
+        targetCount,
+        `[${scannedIndex + 1}/${targetCount}] ${jobDisplayName} 无即时沟通入口（${sanitizeDisplayText(communicateState)}），跳过`
+      );
       scannedIndex++;
       await sleep(600);
       continue;
@@ -402,9 +420,10 @@ export async function startBatchMatch() {
 
   setBatchMatchingState(false);
 
+  const noCommText = noCommunicationCount > 0 ? `、无沟通入口跳过 ${noCommunicationCount}` : "";
   let summary = batchStopped
-    ? `批量匹配已停止（已扫描 ${scannedCount} 个岗位）：匹配 ${addedCount}、低分跳过 ${lowScoreCount}、去重跳过 ${duplicateCount}、失败 ${failedCount}。`
-    : buildBatchSummary({ scanned: scannedCount, added: addedCount, lowScore: lowScoreCount, duplicate: duplicateCount, failed: failedCount });
+    ? `批量匹配已停止（已扫描 ${scannedCount} 个岗位）：匹配 ${addedCount}、低分跳过 ${lowScoreCount}、去重跳过 ${duplicateCount}${noCommText}、失败 ${failedCount}。`
+    : buildBatchSummary({ scanned: scannedCount, added: addedCount, lowScore: lowScoreCount, duplicate: duplicateCount, noCommunication: noCommunicationCount, failed: failedCount });
   // 列表页可见岗位数少于目标时注明，避免误以为功能少扫了
   if (listJobs.length < targetCount) summary += ` 列表页当前仅 ${listJobs.length} 个可见岗位。`;
   updateProgressUI(scannedCount, targetCount, summary);
@@ -421,7 +440,7 @@ export async function startBatchMatch() {
       queueCount: deliveryQueue.length,
       libraryCount: jobLibrary.length,
     },
-    result: { scanned: scannedCount, added: addedCount, lowScore: lowScoreCount, duplicate: duplicateCount, failed: failedCount, stopped: batchStopped },
+    result: { scanned: scannedCount, added: addedCount, lowScore: lowScoreCount, duplicate: duplicateCount, noCommunication: noCommunicationCount, failed: failedCount, stopped: batchStopped },
     failures,
   };
   renderBatchReport(lastBatchReport);

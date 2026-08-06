@@ -119,11 +119,18 @@ async function waitForCommunicationButton(timeoutMs = 5000) {
   return null;
 }
 
-// 页面文本提示岗位是否已关闭/下架，用于把「无沟通按钮」从「渲染慢」里区分出来。
-function closedJobHint() {
-  const bodyText = text(document.body).slice(0, 2000);
+// 页面状态提示：把「无沟通按钮」区分为「已下架」或「仅支持投递简历、无即时沟通入口」。
+function communicationButtonHint() {
+  const bodyText = text(document.body).slice(0, 3000);
   if (/该职位已关闭|职位已下线|已停止招聘|职位已结束|招聘已结束|该职位不存在|职位已暂停/.test(bodyText)) {
     return "该岗位可能已关闭或下架";
+  }
+  // 银行/国企等岗位只开放「投递简历」类入口，没有即时沟通，无法自动打招呼。
+  const applyButtons = [...document.querySelectorAll("button, a")].filter(el =>
+    visible(el) && /投递简历|申请职位|申请该职位|立即投递|去投递|网申/.test(text(el)) && !/沟通/.test(text(el))
+  );
+  if (applyButtons.length) {
+    return `该岗位仅支持「${text(applyButtons[0])}」，没有即时沟通入口，无法自动打招呼`;
   }
   return "";
 }
@@ -494,7 +501,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message.type === "OPEN_COMMUNICATION") {
         const button = await waitForCommunicationButton(message.timeoutMs || 5000);
         if (!button) {
-          const hint = closedJobHint();
+          const hint = communicationButtonHint();
           throw new Error(
             hint
               ? `未找到“立即沟通”或“继续沟通”按钮。${hint}。`
