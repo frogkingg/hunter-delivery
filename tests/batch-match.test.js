@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { sanitizeMatch, isDuplicateJob, buildBatchSummary } from "../src/batch-match.js";
+import { sanitizeMatch, isDuplicateJob, buildBatchSummary, buildBatchDiagnostic } from "../src/batch-match.js";
 
 test("sanitizeMatch: 正常返回取整后的 score 与 reasoning", () => {
   const out = sanitizeMatch({ score: 85.6, reasoning: "匹配度高" });
@@ -49,4 +49,31 @@ test("buildBatchSummary: 汇总计数文案", () => {
   assert.match(out, /低分跳过 5/);
   assert.match(out, /去重跳过 1/);
   assert.match(out, /失败 1/);
+});
+
+test("buildBatchDiagnostic: 汇总参数/结果/失败明细，且不含敏感内容", () => {
+  const diag = buildBatchDiagnostic({
+    params: { targetCount: 10, threshold: 75, autoSend: false, effectiveTarget: 10, listJobCount: 10 },
+    result: { scanned: 10, added: 3, lowScore: 5, duplicate: 0, failed: 2, stopped: false },
+    failures: [
+      { title: "前端工程师", company: "甲公司", step: "AI 匹配", reason: "AI 服务连接超时（60 秒）" },
+      { title: "后端工程师", company: "乙公司", step: "读取岗位详情", reason: "等待岗位详情加载超时" },
+    ],
+    config: { model: "gpt-4o", endpoint: "https://api.example.com", disableThinking: false, profileName: "标准简历", resumeLength: 800, greetingPromptLength: 100, queueCount: 3, libraryCount: 12 },
+  });
+  assert.equal(diag.type, "batch-match-diagnostic");
+  assert.equal(diag.result.failed, 2);
+  assert.equal(diag.failures.length, 2);
+  assert.equal(diag.failures[0].step, "AI 匹配");
+  assert.match(JSON.stringify(diag), /连接超时/);
+  const json = JSON.stringify(diag);
+  assert.ok(!json.includes("sk-"), "不应包含 API Key");
+  assert.ok(!json.includes("apiKey"), "不应包含 apiKey 字段");
+  assert.ok(!json.includes("resumeContent"), "不应包含简历原文");
+  assert.ok(!json.includes("job_data"), "不应包含 JD");
+});
+
+test("buildBatchDiagnostic: failures 为空时正常输出空数组", () => {
+  const diag = buildBatchDiagnostic({ params: { targetCount: 10 }, result: { failed: 0 }, failures: [], config: {} });
+  assert.deepEqual(diag.failures, []);
 });

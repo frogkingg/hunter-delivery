@@ -7,7 +7,7 @@ import { ai, parseAiJson } from "./ai-client.js";
 import { buildBatchMatchPrompt } from "./prompts.js";
 import { generateQueue, startQueue } from "./queue.js";
 import { loadQueue } from "./render.js";
-import { sanitizeDisplayText } from "./pure-utils.js";
+import { escapeHtml, sanitizeDisplayText } from "./pure-utils.js";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const MAX_QUEUE_ITEMS = 20;            // 与 background 的投递清单上限一致
@@ -42,9 +42,28 @@ export function buildBatchSummary({ scanned, added, lowScore, duplicate, failed 
   return `批量匹配完成！共扫描 ${scanned} 个岗位：匹配 ${added}、低分跳过 ${lowScore}、去重跳过 ${duplicate}、失败 ${failed}。`;
 }
 
+// 批量匹配诊断导出（纯函数，Node 可测）：只含参数/计数/失败明细与配置摘要，不含 API Key/简历/JD。
+export function buildBatchDiagnostic({ params = {}, result = {}, failures = [], config = {} } = {}) {
+  return {
+    app: "猎投",
+    type: "batch-match-diagnostic",
+    exportedAt: new Date().toISOString(),
+    params,
+    result,
+    failures: (failures || []).map((f) => ({
+      title: String(f?.title || ""),
+      company: String(f?.company || ""),
+      step: String(f?.step || ""),
+      reason: String(f?.reason || ""),
+    })),
+    config,
+  };
+}
+
 // —— 运行状态与 UI ——
 
 let isBatchRunning = false;
+let lastBatchReport = null;
 let batchStopped = false; // 用户停止或熔断触发；循环结束后据此输出停止态汇总
 
 export function isBatchMatching() {
@@ -85,6 +104,61 @@ export async function stopBatchMatch() {
   batchStopped = true;
   isBatchRunning = false;
   toast("已请求停止批量 AI 匹配，当前岗位完成后停止");
+}
+
+// 渲染本次批量匹配报告：失败原因列表 + 导出按钮显隐。
+function renderBatchReport(report) {
+  const detailsEl = $("batchFailureReport");
+  const countEl = $("batchFailureCount");
+  const listEl = $("batchFailureList");
+  const exportBtn = $("exportBatchDiagnostics");
+  const failures = report?.failures || [];
+  if (detailsEl && countEl && listEl) {
+    if (failures.length) {
+      detailsEl.classList.remove("hidden");
+      countEl.textContent = failures.length;
+      listEl.innerHTML = failures.map((f) =>
+        `<p style="margin:4px 0">${escapeHtml(sanitizeDisplayText(f.title || "未知"))}@${escapeHtml(sanitizeDisplayText(f.company || "未知"))}（${escapeHtml(f.step || "")}）：${escapeHtml(sanitizeDisplayText(f.reason || "未知原因"))}</p>`
+      ).join("");
+    } else {
+      detailsEl.classList.add("hidden");
+      listEl.innerHTML = "";
+    }
+  }
+  if (exportBtn) exportBtn.hidden = !report;
+}
+
+// 批量匹配诊断导出（JSON，脱敏：不含 API Key / 简历原文 / JD）。
+export function exportBatchDiagnosticsJson() {
+  if (!lastBatchReport) return "";
+  const config = {
+    model: state.config.model || "",
+    endpoint: state.config.endpoint || "",
+    disableThinking: !!state.config.disableThinking,
+    profileName: activeProfile()?.name || "",
+    resumeLength: (state.config.candidateProfile || "").length,
+    greetingPromptLength: (state.config.greetingPrompt || "").length,
+  };
+  return JSON.stringify(buildBatchDiagnostic({ ...lastBatchReport, config }), null, 2);
+}
+
+export async function exportBatchDiagnostics() {
+  const json = exportBatchDiagnosticsJson();
+  if (!json) {
+    toast("暂无批量匹配诊断数据，请先执行一次批量匹配。");
+    return;
+  }
+  try {
+    const url = URL.createObjectURL(new Blob([json], { type: "application/json;charset=utf-8" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `猎投-批量匹配诊断-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch (error) {
+    toast(`导出诊断失败：${error.message}`);
+  }
 }
 
 // 单岗位 AI 筛选：轻量 prompt 只输出 score+reasoning；失败重试 1 次。
@@ -205,6 +279,7 @@ export async function startBatchMatch() {
   let scannedCount = 0;
   let scannedIndex = 0;
   let consecutiveSelectFailures = 0;
+  const failures = [];
 
   while (isBatchRunning && scannedIndex < listJobs.length && scannedIndex < targetCount) {
     const currentListJob = listJobs[scannedIndex];
@@ -226,6 +301,7 @@ export async function startBatchMatch() {
     if (!selectRes?.ok || !selectRes.job) {
       consecutiveSelectFailures++;
       failedCount++;
+      failures.push({ title: currentListJob.title, company: currentListJob.company, step: "读取岗位详情", reason: selectRes?.reason || "未知原因" });
       updateProgressUI(
         scannedIndex + 1,
         targetCount,
@@ -260,9 +336,11 @@ export async function startBatchMatch() {
     updateProgressUI(scannedIndex + 1, targetCount, `[${scannedIndex + 1}/${targetCount}] AI 正在评估${jobDisplayName}...`);
 
     let match;
+    let aiError = null;
     try {
       match = await matchJob(fullJob);
     } catch (aiErr) {
+      aiError = aiErr;
       console.error(`[猎投] AI 匹配${jobDisplayName}失败:`, aiErr);
     }
 
@@ -271,6 +349,7 @@ export async function startBatchMatch() {
     // 5. 判断阈值分（AI 失败与低分区分展示，避免误导）
     if (!match) {
       failedCount++;
+      failures.push({ title: fullJob.title, company: fullJob.company, step: "AI 匹配", reason: aiError?.message || "AI 匹配失败" });
       updateProgressUI(scannedIndex + 1, targetCount, `[${scannedIndex + 1}/${targetCount}] ${jobDisplayName} AI 匹配失败，已跳过`);
     } else if (match.score < threshold) {
       lowScoreCount++;
@@ -306,6 +385,7 @@ export async function startBatchMatch() {
         );
       } else {
         failedCount++;
+        failures.push({ title: fullJob.title, company: fullJob.company, step: "加入清单", reason: addRes?.error || "未知原因" });
         updateProgressUI(
           scannedIndex + 1,
           targetCount,
@@ -322,11 +402,29 @@ export async function startBatchMatch() {
 
   setBatchMatchingState(false);
 
-  const summary = batchStopped
+  let summary = batchStopped
     ? `批量匹配已停止（已扫描 ${scannedCount} 个岗位）：匹配 ${addedCount}、低分跳过 ${lowScoreCount}、去重跳过 ${duplicateCount}、失败 ${failedCount}。`
     : buildBatchSummary({ scanned: scannedCount, added: addedCount, lowScore: lowScoreCount, duplicate: duplicateCount, failed: failedCount });
+  // 列表页可见岗位数少于目标时注明，避免误以为功能少扫了
+  if (listJobs.length < targetCount) summary += ` 列表页当前仅 ${listJobs.length} 个可见岗位。`;
   updateProgressUI(scannedCount, targetCount, summary);
   toast(summary);
+
+  // 6.5 保存并渲染本次报告（失败原因可见，可导出诊断）
+  lastBatchReport = {
+    params: {
+      requestedTarget: inputCount,
+      threshold,
+      autoSend,
+      effectiveTarget: targetCount,
+      listJobCount: listJobs.length,
+      queueCount: deliveryQueue.length,
+      libraryCount: jobLibrary.length,
+    },
+    result: { scanned: scannedCount, added: addedCount, lowScore: lowScoreCount, duplicate: duplicateCount, failed: failedCount, stopped: batchStopped },
+    failures,
+  };
+  renderBatchReport(lastBatchReport);
 
   // 7. 自动投递（默认关闭）：确认门 → 选中新增岗位 → 复用 generateQueue/startQueue
   if (!batchStopped && autoSend && addedCount > 0) {

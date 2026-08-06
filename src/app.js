@@ -15,7 +15,7 @@ import {
 } from "./config.js";
 import { ai } from "./ai-client.js";
 import { analyze, sendJob } from "./current-job.js";
-import { startBatchMatch, stopBatchMatch } from "./batch-match.js";
+import { startBatchMatch, stopBatchMatch, exportBatchDiagnostics } from "./batch-match.js";
 import { parseResume, loadImages } from "./resume.js";
 import {
   addCurrentToQueue,
@@ -99,6 +99,7 @@ function bindEvents() {
   $("analyze").onclick = analyze;
   $("startBatchMatch").onclick = startBatchMatch;
   $("stopBatchMatch").onclick = stopBatchMatch;
+  $("exportBatchDiagnostics").onclick = exportBatchDiagnostics;
   $("refreshGreeting").onclick = analyze;
   $("send").onclick = sendJob;
   // 招呼语切换（委托事件，由 render.js 动态生成）
