@@ -177,3 +177,7 @@ body.dark .queue-delivered { background: #1a2e24; border-color: #12b76a; }
 .fill-legend .dot.done { background: #16a34a; }
 .fill-legend .dot.pending { background: #f59e0b; }
 .fill-row { cursor: pointer; }
+
+/* 批量匹配进度条样式 */
+.batch-progress-bar { width: 100%; height: 6px; background: var(--line, #e4e7ec); border-radius: 99px; overflow: hidden; }
+.batch-progress-fill { height: 100%; background: var(--blue, #155eef); transition: width 0.3s ease; }
