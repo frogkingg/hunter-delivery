@@ -34,6 +34,7 @@ composer = chatInput;
 
 // —— 批量扫描/选中测试的列表页模拟状态 ——
 let listCards = [];
+let communicationButtons = [];
 let activeCard = null;
 let listDetailContainer = null;
 
@@ -63,6 +64,7 @@ globalThis.document = {
     if (selector === ".company-info a[href*='/gongsi/']") return detailCompanyLinks;
     if (selector === "button.btn-send, .btn-send") return sendButtons;
     if (selector === ".job-card-wrap, .job-card-box, li.job-card-wrapper") return listCards;
+    if (selector === "button, a") return communicationButtons;
     if (selector === ".job-detail-container .job-detail-body .desc" || selector === ".job-detail-container .desc") {
       return listDetailContainer ? [listDetailContainer._desc] : [];
     }
@@ -657,5 +659,34 @@ test("PREPARE_COMMUNICATION 不再跳过含「已发送」文案的通信弹层�
   } finally {
     greetBoxes = [];
     composer = chatInput;
+  }
+});
+
+
+test("OPEN_COMMUNICATION 等待沟通按钮渲染后点击成功", async () => {
+  communicationButtons = [];
+  setTimeout(() => {
+    communicationButtons = [visibleElement({ innerText: "立即沟通", textContent: "立即沟通", click: () => {} })];
+  }, 150);
+  try {
+    const response = await dispatch({ type: "OPEN_COMMUNICATION", timeoutMs: 3000 });
+    assert.equal(response.ok, true);
+    assert.equal(response.state, "立即沟通");
+  } finally {
+    communicationButtons = [];
+  }
+});
+
+test("OPEN_COMMUNICATION 岗位已关闭时提示下架", async () => {
+  communicationButtons = [];
+  const prevBody = globalThis.document.body;
+  globalThis.document.body = visibleElement({ innerText: "该职位已关闭", textContent: "该职位已关闭" });
+  try {
+    const response = await dispatch({ type: "OPEN_COMMUNICATION", timeoutMs: 300 });
+    assert.equal(response.ok, false);
+    assert.match(response.error, /该岗位可能已关闭或下架/);
+  } finally {
+    globalThis.document.body = prevBody;
+    communicationButtons = [];
   }
 });

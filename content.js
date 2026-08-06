@@ -108,6 +108,26 @@ function findCommunicationButton() {
     [...document.querySelectorAll("button, a")].find(el => visible(el) && /^(立即沟通|继续沟通)$/.test(text(el)));
 }
 
+// 沟通按钮可能晚于页面加载渲染（SPA），轮询等待；找不到时返回 null。
+async function waitForCommunicationButton(timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const button = findCommunicationButton();
+    if (button) return button;
+    await delay(200);
+  }
+  return null;
+}
+
+// 页面文本提示岗位是否已关闭/下架，用于把「无沟通按钮」从「渲染慢」里区分出来。
+function closedJobHint() {
+  const bodyText = text(document.body).slice(0, 2000);
+  if (/该职位已关闭|职位已下线|已停止招聘|职位已结束|招聘已结束|该职位不存在|职位已暂停/.test(bodyText)) {
+    return "该岗位可能已关闭或下架";
+  }
+  return "";
+}
+
 function verifyJob(expected) {
   const actual = extractJob();
   const normal = value => String(value || "").replace(/\s+/g, "").toLowerCase();
@@ -472,8 +492,15 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message.type === "SELECT_LIST_JOB") { sendResponse(await selectListJob(message.index)); return; }
       if (message.type === "DIAGNOSE_PAGE") { sendResponse({ ok: true, data: diagnosePage() }); return; }
       if (message.type === "OPEN_COMMUNICATION") {
-        const button = findCommunicationButton();
-        if (!button) throw new Error("未找到“立即沟通”或“继续沟通”按钮。");
+        const button = await waitForCommunicationButton(message.timeoutMs || 5000);
+        if (!button) {
+          const hint = closedJobHint();
+          throw new Error(
+            hint
+              ? `未找到“立即沟通”或“继续沟通”按钮。${hint}。`
+              : `未找到“立即沟通”或“继续沟通”按钮。请确认岗位是否已关闭或页面是否正常加载（${window.location.pathname}）。`
+          );
+        }
         const state = text(button); button.click(); sendResponse({ ok: true, state }); return;
       }
       if (message.type === "VERIFY_JOB") { sendResponse(verifyJob(message.job || {})); return; }
