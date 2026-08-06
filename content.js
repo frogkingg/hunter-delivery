@@ -155,12 +155,23 @@ const CHAT_COMPOSER_SELECTORS = [
   ".message-controls .chat-input",
   ".greet-boss-container .chat-input",
   ".chat-input[contenteditable='true']",
+  ".dialog-container .chat-input",
+  ".chat-dialog .chat-input",
+  ".chat-input",
 ];
+const CHAT_DIALOG_SELECTOR = ".greet-boss-container, .dialog-container, [role='dialog'], .boss-dialog";
+const CHAT_INPUT_FALLBACK_SELECTOR = ".chat-input, [contenteditable='true'], textarea, .ql-editor";
 const handledCommunicationActions = new WeakSet();
 
 function findChatComposer() {
   for (const selector of CHAT_COMPOSER_SELECTORS) {
     const input = [...document.querySelectorAll(selector)].find(visibleNow);
+    if (input) return input;
+  }
+  // 兜底：在可见通信弹层（greet/dialog）内查找可输入控件，适配 BOSS 弹层 DOM 变化。
+  for (const box of document.querySelectorAll(CHAT_DIALOG_SELECTOR)) {
+    if (!visibleNow(box)) continue;
+    const input = [...box.querySelectorAll(CHAT_INPUT_FALLBACK_SELECTOR)].find(el => visibleNow(el) && !el.disabled);
     if (input) return input;
   }
   return null;
@@ -212,9 +223,10 @@ function advanceCommunicationFlow({ probe = false } = {}) {
   const input = findChatComposer();
   if (input) return { ready: true, blocked: false, mode: window.location.pathname.includes("/web/geek/chat") ? "chat-page" : "inline-chat" };
 
-  for (const box of document.querySelectorAll(".greet-boss-container, .dialog-container, [role='dialog'], .boss-dialog")) {
+  for (const box of document.querySelectorAll(CHAT_DIALOG_SELECTOR)) {
     if (!visibleNow(box)) continue;
-    if (!box.classList?.contains("greet-boss-container") && !/已向BOSS发送消息/.test(text(box))) continue;
+    // 通信弹层可能是 greet-boss、已发送历史对话或旧版「已向BOSS发送消息」弹层，均不应跳过。
+    if (!box.classList?.contains("greet-boss-container") && !/已向BOSS发送消息|已发送|继续沟通|打招呼/.test(text(box))) continue;
     const action = clickCommunicationAction(box, ["继续沟通"]);
     if (action) return { ready: false, blocked: false, action };
   }
@@ -226,7 +238,7 @@ function advanceCommunicationFlow({ probe = false } = {}) {
   }
 
   if (probe) {
-    const dialogs = [...document.querySelectorAll(".greet-boss-container, .dialog-container, [role='dialog'], .boss-dialog, .change-job-tip-dialog")]
+    const dialogs = [...document.querySelectorAll(`${CHAT_DIALOG_SELECTOR}, .change-job-tip-dialog`)]
       .filter(visibleNow)
       .map(el => ({ className: String(el.className || el.id || "").slice(0, 80), text: text(el).slice(0, 60) }))
       .slice(0, 6);

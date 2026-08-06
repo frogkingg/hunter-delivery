@@ -608,3 +608,54 @@ test("PREPARE_COMMUNICATION_PROBE 检测到安全验证时返回 blocked 与 sec
     composer = chatInput;
   }
 });
+
+test("PREPARE_COMMUNICATION 识别 dialog-container 弹层内的聊天输入框", async () => {
+  composer = null;
+  securityDialogs = [];
+  const dialogInput = visibleElement({
+    tagName: "DIV",
+    contenteditable: "true",
+    focus: () => {},
+    dispatchEvent: () => {},
+    closest: () => null,
+  });
+  const chatDialog = visibleElement({
+    innerText: "栗女士 它石智航·人才经纪人 已发送 您好，请问还在招吗？",
+    textContent: "栗女士 它石智航·人才经纪人 已发送 您好，请问还在招吗？",
+    querySelectorAll: selector => (selector.includes("contenteditable") || selector.includes(".chat-input") || selector.includes("textarea")) ? [dialogInput] : [],
+    querySelector: () => null,
+  });
+  greetBoxes = [chatDialog];
+  try {
+    const response = await dispatch({ type: "PREPARE_COMMUNICATION" });
+    assert.equal(response.ok, true);
+    assert.equal(response.ready, true);
+    assert.equal(response.blocked, false);
+  } finally {
+    greetBoxes = [];
+    composer = chatInput;
+  }
+});
+
+test("PREPARE_COMMUNICATION 不再跳过含「已发送」文案的通信弹层，点击继续沟通", async () => {
+  composer = null;
+  securityDialogs = [];
+  const continueBtn = visibleElement({ innerText: "继续沟通", textContent: "继续沟通", click: () => {} });
+  const chatDialog = visibleElement({
+    innerText: "已发送 您好，请问数据产品经理还在招吗？",
+    textContent: "已发送 您好，请问数据产品经理还在招吗？",
+    querySelectorAll: selector => selector.includes("[class*='btn']") ? [continueBtn] : [],
+    querySelector: () => null,
+  });
+  greetBoxes = [chatDialog];
+  try {
+    const response = await dispatch({ type: "PREPARE_COMMUNICATION" });
+    assert.equal(response.ok, true);
+    assert.equal(response.ready, false);
+    assert.equal(response.blocked, false);
+    assert.equal(response.action, "继续沟通");
+  } finally {
+    greetBoxes = [];
+    composer = chatInput;
+  }
+});
