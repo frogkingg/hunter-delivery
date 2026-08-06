@@ -435,50 +435,102 @@ async function sendResume(images) {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  try {
-    if (message.type === "EXTRACT_JOB") sendResponse({ ok: true, job: extractJob() });
-    if (message.type === "DIAGNOSE_PAGE") sendResponse({ ok: true, data: diagnosePage() });
-    if (message.type === "OPEN_COMMUNICATION") {
-      const button = findCommunicationButton();
-      if (!button) throw new Error("未找到“立即沟通”或“继续沟通”按钮。");
-      const state = text(button); button.click(); sendResponse({ ok: true, state });
-    }
-    if (message.type === "VERIFY_JOB") sendResponse(verifyJob(message.job || {}));
-    if (message.type === "PREPARE_COMMUNICATION") {
-      sendResponse({ ok: true, ...advanceCommunicationFlow() });
-    }
-    if (message.type === "SELF_CHECK") {
-      const input = findChatComposer();
-      const missing = [];
-      if (!input) missing.push("聊天输入框");
-      if (!sendButtonCandidates(input).length) missing.push("发送按钮");
-      if (message.requireImages && !findImageUploader()) missing.push("图片上传入口");
-      sendResponse({ ok: true, missing });
-    }
+  (async () => {
+    try {
+      if (message.type === "EXTRACT_JOB") { sendResponse({ ok: true, job: extractJob() }); return; }
+      if (message.type === "SCAN_LIST_JOBS") { sendResponse({ ok: true, jobs: scanListJobs() }); return; }
+      if (message.type === "SELECT_LIST_JOB") { sendResponse(await selectListJob(message.index)); return; }
+      if (message.type === "DIAGNOSE_PAGE") { sendResponse({ ok: true, data: diagnosePage() }); return; }
+      if (message.type === "OPEN_COMMUNICATION") {
+        const button = findCommunicationButton();
+        if (!button) throw new Error("未找到“立即沟通”或“继续沟通”按钮。");
+        const state = text(button); button.click(); sendResponse({ ok: true, state }); return;
+      }
+      if (message.type === "VERIFY_JOB") { sendResponse(verifyJob(message.job || {})); return; }
+      if (message.type === "PREPARE_COMMUNICATION") {
+        sendResponse({ ok: true, ...advanceCommunicationFlow() }); return;
+      }
+      if (message.type === "SELF_CHECK") {
+        const input = findChatComposer();
+        const missing = [];
+        if (!input) missing.push("聊天输入框");
+        if (!sendButtonCandidates(input).length) missing.push("发送按钮");
+        if (message.requireImages && !findImageUploader()) missing.push("图片上传入口");
+        sendResponse({ ok: true, missing }); return;
+      }
 
-    if (message.type === "SEND_MESSAGE") {
-      (async () => {
-        try {
-          await prepareChatForSending();
-          if (await waitForDeliveredText(0, message.greeting)) {
-            sendResponse({
-              ok: true,
-              messageSent: true,
-              delivery: { status: "已送达", alreadySent: true },
-              resume: { sent: false, reason: "检测到相同招呼语已送达，未重复发送简历图片" },
-            });
-            return;
-          }
-          // 先逐张确认简历图片已送达，再发送文字；若图片失败，避免出现“只发了招呼语、没发简历”的半成品投递。
-          const resume = await sendResume(message.images);
-          await delay(500);
-          const delivery = await sendGreetingAndConfirm(message.greeting);
-          sendResponse({ ok: true, messageSent: true, delivery, resume });
-        } catch (error) {
-          sendResponse({ ok: false, error: error.message, ...(error.uncertain ? { uncertain: true } : {}) });
+      if (message.type === "SEND_MESSAGE") {
+        await prepareChatForSending();
+        if (await waitForDeliveredText(0, message.greeting)) {
+          sendResponse({
+            ok: true,
+            messageSent: true,
+            delivery: { status: "已送达", alreadySent: true },
+            resume: { sent: false, reason: "检测到相同招呼语已送达，未重复发送简历图片" },
+          });
+          return;
         }
-      })();
-      return true;
+        // 先逐张确认简历图片已送达，再发送文字；若图片失败，避免出现“只发了招呼语、没发简历”的半成品投递。
+        const resume = await sendResume(message.images);
+        await delay(500);
+        const delivery = await sendGreetingAndConfirm(message.greeting);
+        sendResponse({ ok: true, messageSent: true, delivery, resume });
+        return;
+      }
+
+      sendResponse({ ok: false, error: "未知消息类型" });
+    } catch (error) {
+      sendResponse({ ok: false, error: error.message, ...(error?.uncertain ? { uncertain: true } : {}) });
     }
-  } catch (error) { sendResponse({ ok: false, error: error.message }); }
+  })();
+  return true;
 });
+
+// —— 批量岗位抓取与切换支持 ——
+const BATCH_CARD_SELECTOR = ".job-card-wrap, .job-card-box, li.job-card-wrapper";
+const MAX_SELECT_WAIT_MS = 3000;   // 点击卡片后等待右侧详情浮层更新的最长时间
+const SELECT_POLL_MS = 200;
+
+function scanListJobs() {
+  const cards = [...document.querySelectorAll(BATCH_CARD_SELECTOR)].filter(visible);
+  return cards.map((card, index) => {
+    const titleEl = card.querySelector(".job-name, .job-title");
+    const title = titleEl && visible(titleEl) ? text(titleEl) : "";
+    const companyEl = card.querySelector(".boss-name, .company-name");
+    const company = companyEl && visible(companyEl) ? text(companyEl) : "";
+    const href = card.querySelector("a.job-name[href*='/job_detail/'], a[href*='/job_detail/']")?.href || "";
+    const jobId = (href.match(/job_detail\/([^./?]+)\.html/) || [])[1] || "";
+    return { index, title, company, detailUrl: href, jobId };
+  });
+}
+
+// 从卡片提取用于核验的身份信息（jobId 优先，其次 title）。
+function cardIdentity(card) {
+  const link = card.querySelector("a.job-name[href*='/job_detail/'], a[href*='/job_detail/']");
+  const jobId = (link?.href?.match(/job_detail\/([^./?]+)\.html/) || [])[1] || "";
+  const titleEl = card.querySelector(".job-name, .job-title");
+  const title = titleEl && visible(titleEl) ? text(titleEl) : "";
+  return { jobId, title };
+}
+
+function jobMatchesTarget(job, target) {
+  if (target.jobId && job.jobId) return target.jobId === job.jobId;
+  return !!target.title && !!job.title && target.title === job.title;
+}
+
+// 点击列表第 index 张卡片，并轮询右侧详情浮层直到读到与卡片匹配的岗位，避免读到上一个岗位。
+async function selectListJob(index) {
+  const cards = [...document.querySelectorAll(BATCH_CARD_SELECTOR)].filter(visible);
+  if (!cards[index]) return { ok: false, reason: `未找到第 ${index + 1} 个岗位卡片` };
+  const card = cards[index];
+  const target = cardIdentity(card);
+  const clickable = card.querySelector("a.job-name, .job-title, .job-info, .job-card-body") || card;
+  clickable.click();
+  const deadline = Date.now() + MAX_SELECT_WAIT_MS;
+  while (Date.now() < deadline) {
+    const job = extractJob();
+    if (jobMatchesTarget(job, target)) return { ok: true, job };
+    await delay(SELECT_POLL_MS);
+  }
+  return { ok: false, reason: "等待岗位详情加载超时，请确认列表页可正常点击切换岗位" };
+}

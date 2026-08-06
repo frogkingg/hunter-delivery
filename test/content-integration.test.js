@@ -32,6 +32,11 @@ const chatInput = visibleElement({
 });
 composer = chatInput;
 
+// —— 批量扫描/选中测试的列表页模拟状态 ——
+let listCards = [];
+let activeCard = null;
+let listDetailContainer = null;
+
 globalThis.window = {
   location: {
     pathname: "/job_detail/job-1.html",
@@ -48,12 +53,19 @@ globalThis.document = {
     if (selector === ".job-primary.detail-box") return detailScope;
     if (selector === "div#chat-input.chat-input") return chatInput;
     if (selector === "button.btn-send") return sendButtons[0] || null;
+    if (selector === ".job-detail-container") return listDetailContainer;
+    if (selector === ".job-card-wrap.active") return activeCard;
+    if (selector === ".job-card-wrap.active a.job-name[href*='/job_detail/']") return activeCard?.querySelector("a.job-name[href*='/job_detail/']") || null;
     return null;
   },
   querySelectorAll: selector => {
     if (selector === ".chat-record .item-myself, .chat-record .message-self") return outgoing;
     if (selector === ".company-info a[href*='/gongsi/']") return detailCompanyLinks;
     if (selector === "button.btn-send, .btn-send") return sendButtons;
+    if (selector === ".job-card-wrap, .job-card-box, li.job-card-wrapper") return listCards;
+    if (selector === ".job-detail-container .job-detail-body .desc" || selector === ".job-detail-container .desc") {
+      return listDetailContainer ? [listDetailContainer._desc] : [];
+    }
     if ([
       "div#chat-input.chat-input",
       ".message-controls .chat-input",
@@ -98,6 +110,16 @@ function dispatch(message) {
 function dispatchNoTimeout(message) {
   return new Promise(resolve => {
     listener(message, {}, resolve);
+  });
+}
+
+function dispatchSlow(message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Message timed out: ${message.type}`)), 6000);
+    listener(message, {}, response => {
+      clearTimeout(timer);
+      resolve(response);
+    });
   });
 }
 
@@ -399,5 +421,105 @@ test("SEND_MESSAGE 重试时跳过已确认失败的旧气泡", async () => {
   } finally {
     sendButtons = [];
     outgoing = [];
+  }
+});
+
+// —— 批量扫描与选中（列表页） ——
+const makeBatchCard = (title, company, jobId, onClick) => {
+  const link = visibleElement({ href: `https://www.zhipin.com/job_detail/${jobId}.html` });
+  return visibleElement({
+    querySelector: selector => {
+      if (selector.includes("a.job-name[href*='/job_detail/']") || selector.includes("a[href*='/job_detail/']")) return link;
+      if (selector.includes(".job-name")) return visibleElement({ innerText: title, textContent: title, click: onClick });
+      if (selector.includes(".boss-name") || selector.includes(".company-name")) return visibleElement({ innerText: company, textContent: company });
+      return null;
+    },
+    click: onClick,
+  });
+};
+
+const makeListDetail = (title, company, jobId) => {
+  const desc = visibleElement({ innerText: `岗位职责：负责${title}相关工作，需要${company}业务背景与${jobId}项目经验。${"详细 JD 内容".repeat(12)}` });
+  return {
+    _desc: desc,
+    querySelector: selector => {
+      if (selector === ".job-detail-header .job-name" || selector === ".job-name") return visibleElement({ innerText: title, textContent: title });
+      if (selector === ".boss-info-attr") return visibleElement({ innerText: company, textContent: company });
+      if (selector === ".job-detail-header .job-salary" || selector === ".job-salary") return visibleElement({ innerText: "20-30K", textContent: "20-30K" });
+      if (selector === ".company-location" || selector === ".tag-list li a") return visibleElement({ innerText: "上海", textContent: "上海" });
+      return null;
+    },
+  };
+};
+
+test("SCAN_LIST_JOBS 逐卡片读取独立 title/company/jobId", async () => {
+  globalThis.window.location = { pathname: "/web/geek/jobs", href: "https://www.zhipin.com/web/geek/jobs" };
+  listCards = [
+    makeBatchCard("前端工程师", "甲公司", "job-a", () => {}),
+    makeBatchCard("后端工程师", "乙公司", "job-b", () => {}),
+  ];
+  try {
+    const response = await dispatch({ type: "SCAN_LIST_JOBS" });
+    assert.equal(response.ok, true);
+    assert.equal(response.jobs.length, 2);
+    assert.equal(response.jobs[0].title, "前端工程师");
+    assert.equal(response.jobs[0].company, "甲公司");
+    assert.equal(response.jobs[0].jobId, "job-a");
+    assert.equal(response.jobs[1].title, "后端工程师");
+    assert.equal(response.jobs[1].company, "乙公司");
+    assert.equal(response.jobs[1].jobId, "job-b");
+  } finally {
+    listCards = [];
+  }
+});
+
+test("SELECT_LIST_JOB 点击后等待详情加载到匹配岗位才返回", async () => {
+  globalThis.window.location = { pathname: "/web/geek/jobs", href: "https://www.zhipin.com/web/geek/jobs" };
+  listDetailContainer = null;
+  activeCard = null;
+  const card = makeBatchCard("AI 产品经理", "目标公司", "job-pm", () => {
+    setTimeout(() => {
+      listDetailContainer = makeListDetail("AI 产品经理", "目标公司", "job-pm");
+      activeCard = card;
+    }, 120);
+  });
+  listCards = [card];
+  try {
+    const response = await dispatch({ type: "SELECT_LIST_JOB", index: 0 });
+    assert.equal(response.ok, true);
+    assert.equal(response.job.title, "AI 产品经理");
+    assert.equal(response.job.company, "目标公司");
+    assert.equal(response.job.jobId, "job-pm");
+  } finally {
+    listCards = [];
+    listDetailContainer = null;
+    activeCard = null;
+  }
+});
+
+test("SELECT_LIST_JOB 详情加载超时返回失败原因", async () => {
+  globalThis.window.location = { pathname: "/web/geek/jobs", href: "https://www.zhipin.com/web/geek/jobs" };
+  listDetailContainer = null;
+  activeCard = null;
+  listCards = [makeBatchCard("永不加载岗位", "某公司", "job-void", () => {})];
+  try {
+    const response = await dispatchSlow({ type: "SELECT_LIST_JOB", index: 0 });
+    assert.equal(response.ok, false);
+    assert.match(response.reason, /等待岗位详情加载超时/);
+  } finally {
+    listCards = [];
+    listDetailContainer = null;
+    activeCard = null;
+  }
+});
+
+test("SELECT_LIST_JOB 索引越界返回失败", async () => {
+  globalThis.window.location = { pathname: "/web/geek/jobs", href: "https://www.zhipin.com/web/geek/jobs" };
+  listCards = [makeBatchCard("唯一岗位", "公司", "job-1", () => {})];
+  try {
+    const response = await dispatch({ type: "SELECT_LIST_JOB", index: 5 });
+    assert.equal(response.ok, false);
+  } finally {
+    listCards = [];
   }
 });
