@@ -172,7 +172,7 @@ function findSecurityInterruption() {
   );
   return [...candidates].find(element =>
     visibleNow(element) &&
-    /安全验证|滑动验证|拖动滑块|访问异常|账号异常|操作频繁|请完成验证|验证码/.test(text(element))
+    /安全验证|滑动验证|拖动滑块|访问异常|账号异常|操作频繁|请完成验证|验证码|行为验证|人机验证|请先完成/.test(text(element))
   );
 }
 
@@ -198,13 +198,14 @@ function clickCommunicationAction(container, labels) {
   return label;
 }
 
-function advanceCommunicationFlow() {
+function advanceCommunicationFlow({ probe = false } = {}) {
   const securityInterruption = findSecurityInterruption();
   if (securityInterruption) {
     return {
       ready: false,
       blocked: true,
       reason: "检测到 BOSS 安全验证或操作限制，请在页面中手动完成后再重试。",
+      ...(probe ? { securityText: text(securityInterruption).slice(0, 120) } : {}),
     };
   }
 
@@ -222,6 +223,14 @@ function advanceCommunicationFlow() {
     if (!visibleNow(dialog)) continue;
     const action = clickCommunicationAction(dialog, ["沟通新职位"]);
     if (action) return { ready: false, blocked: false, action };
+  }
+
+  if (probe) {
+    const dialogs = [...document.querySelectorAll(".greet-boss-container, .dialog-container, [role='dialog'], .boss-dialog, .change-job-tip-dialog")]
+      .filter(visibleNow)
+      .map(el => ({ className: String(el.className || el.id || "").slice(0, 80), text: text(el).slice(0, 60) }))
+      .slice(0, 6);
+    return { ready: false, blocked: false, action: "", probe: { url: window.location.href, hasComposer: !!input, dialogs } };
   }
 
   return { ready: false, blocked: false, action: "" };
@@ -458,6 +467,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message.type === "VERIFY_JOB") { sendResponse(verifyJob(message.job || {})); return; }
       if (message.type === "PREPARE_COMMUNICATION") {
         sendResponse({ ok: true, ...advanceCommunicationFlow() }); return;
+      }
+      if (message.type === "PREPARE_COMMUNICATION_PROBE") {
+        sendResponse({ ok: true, ...advanceCommunicationFlow({ probe: true }) }); return;
       }
       if (message.type === "SELF_CHECK") {
         const input = findChatComposer();

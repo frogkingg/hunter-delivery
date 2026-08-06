@@ -6,7 +6,7 @@ import {
   endpointUrl, hostOf, assertSafeEndpoint,
   jsonFrom, jobIdentityKeys, sameJob, dedupeJobLibrary,
   sanitizeJobForLibrary, escapeCsv,
-  DEFAULTS
+  DEFAULTS, buildCommunicationProbeText,
 } from "../lib/shared.js";
 
 // ——— endpointUrl ———
@@ -200,4 +200,26 @@ test("escapeCsv 拦截公式注入前缀", () => {
 test("escapeCsv 正常内容不受影响", () => {
   assert.equal(escapeCsv("正常文本"), '"正常文本"');
   assert.equal(escapeCsv("前导空格 =ok"), '"前导空格 =ok"');
+});
+
+test("buildCommunicationProbeText: 格式化页面快照", () => {
+  const out = buildCommunicationProbeText({
+    url: "https://www.zhipin.com/web/geek/chat?x=1",
+    hasComposer: false,
+    dialogs: [{ className: "boss-dialog", text: "继续沟通" }],
+  });
+  assert.match(out, /页面=https:\/\/www.zhipin.com\/web\/geek\/chat/);
+  assert.match(out, /聊天输入框=无/);
+  assert.match(out, /可见弹层=boss-dialog「继续沟通」/);
+});
+
+test("buildCommunicationProbeText: 无弹层显示为无", () => {
+  const out = buildCommunicationProbeText({ url: "x", hasComposer: true, dialogs: [] });
+  assert.match(out, /聊天输入框=有/);
+  assert.match(out, /可见弹层=无/);
+});
+
+test("buildCommunicationProbeText: null/空 → 空串", () => {
+  assert.equal(buildCommunicationProbeText(null), "");
+  assert.equal(buildCommunicationProbeText(undefined), "");
 });

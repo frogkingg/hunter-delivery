@@ -570,3 +570,41 @@ test("SELECT_LIST_JOB 解码列表页薪资 PUA 数字", async () => {
     activeCard = null;
   }
 });
+
+test("PREPARE_COMMUNICATION_PROBE 无输入框/无弹层时返回页面快照", async () => {
+  globalThis.window.location = { pathname: "/job_detail/job-1.html", href: "https://www.zhipin.com/job_detail/job-1.html" };
+  composer = null;
+  securityDialogs = [];
+  greetBoxes = [];
+  try {
+    const response = await dispatch({ type: "PREPARE_COMMUNICATION_PROBE" });
+    assert.equal(response.ok, true);
+    assert.equal(response.ready, false);
+    assert.equal(response.blocked, false);
+    assert.ok(response.probe, "应返回 probe 快照");
+    assert.equal(response.probe.hasComposer, false);
+    assert.match(response.probe.url, /job_detail/);
+    assert.ok(Array.isArray(response.probe.dialogs));
+  } finally {
+    composer = chatInput;
+    securityDialogs = [];
+    greetBoxes = [];
+  }
+});
+
+test("PREPARE_COMMUNICATION_PROBE 检测到安全验证时返回 blocked 与 securityText", async () => {
+  composer = null;
+  securityDialogs = [visibleElement({
+    innerText: "访问异常，请完成滑动验证",
+    textContent: "访问异常，请完成滑动验证",
+  })];
+  try {
+    const response = await dispatch({ type: "PREPARE_COMMUNICATION_PROBE" });
+    assert.equal(response.ok, true);
+    assert.equal(response.blocked, true);
+    assert.match(response.securityText, /滑动验证/);
+  } finally {
+    securityDialogs = [];
+    composer = chatInput;
+  }
+});

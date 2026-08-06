@@ -2,7 +2,7 @@ import { sanitizeGreeting, trimLog } from "./src/pure-utils.js";
 import {
   DEFAULTS, endpointUrl, hostOf, assertSafeEndpoint,
   jsonFrom, jobIdentityKeys, sameJob, dedupeJobLibrary,
-  sanitizeJobForLibrary, escapeCsv,
+  sanitizeJobForLibrary, escapeCsv, buildCommunicationProbeText,
 } from "./lib/shared.js";
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -501,7 +501,15 @@ async function waitForCommunicationReady(tabId, timeout = 15000) {
     }
     await sleep(400);
   }
-  throw new Error(`未能进入可发送状态。${lastError ? `最后状态：${lastError}。` : ""}请检查 BOSS 页面是否出现验证或沟通弹层。`);
+  // 超时：抓取页面快照，把真实状态带进错误信息，并把 worker 标签页带到前台供用户查看/完成验证。
+  let snapshot = "";
+  try {
+    const probe = await sendToTab(tabId, { type: "PREPARE_COMMUNICATION_PROBE" });
+    if (probe?.blocked) snapshot = `检测到安全验证：${probe.securityText || "请手动完成验证"}`;
+    else snapshot = buildCommunicationProbeText(probe?.probe);
+  } catch (_) {}
+  try { await chrome.tabs.update(tabId, { active: true }); } catch (_) {}
+  throw new Error(`未能进入可发送状态。${snapshot ? `快照：${snapshot}。` : ""}请检查 BOSS 页面是否出现验证或沟通弹层。`);
 }
 
 async function ensureWorker(url) {
