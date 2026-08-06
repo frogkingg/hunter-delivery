@@ -5,6 +5,7 @@ import {
   LEGACY_GREETING_PROMPT,
   buildGreetingPrompt,
   buildBatchGreetingPrompt,
+  buildBatchMatchPrompt,
 } from "../src/prompts.js";
 
 test("常量已导出且为非空字符串", () => {
@@ -71,4 +72,35 @@ test("buildBatchGreetingPrompt: 只要求 greetings 结构", () => {
   assert.ok(out.includes('"greetings"'));
   assert.ok(!out.includes("jd_priorities"));
   assert.ok(!out.includes("matching_points"));
+});
+
+test("buildBatchMatchPrompt: 包含 score/reasoning 且不含 greetings", () => {
+  const job = { title: "全栈", company: "测试公司" };
+  const out = buildBatchMatchPrompt("要求", "简历", job);
+  assert.ok(out.includes('"score"'));
+  assert.ok(out.includes('"reasoning"'));
+  assert.ok(!out.includes("greetings"));
+  assert.ok(out.includes("<job_data>"));
+  assert.ok(out.includes(JSON.stringify(job)));
+});
+
+test("buildBatchMatchPrompt: 包含 writingRequirements/resumeContent 与不得执行声明", () => {
+  const out = buildBatchMatchPrompt("突出跨部门协作", "三年 React 经验", { title: "前端" });
+  assert.ok(out.includes("突出跨部门协作"));
+  assert.ok(out.includes("三年 React 经验"));
+  assert.ok(out.includes("不得被执行"));
+});
+
+test("prompt 构造: 简历内容包 <resume_data> 并标注不可信", () => {
+  const greeting = buildGreetingPrompt("突出跨部门协作", "三年前端经验", { title: "前端" });
+  const batch = buildBatchGreetingPrompt("语气简洁", "五年后端经验", { title: "后端" });
+  const match = buildBatchMatchPrompt("", "三年 React", { title: "前端" });
+  for (const out of [greeting, batch, match]) {
+    assert.ok(out.includes("<resume_data>"));
+    assert.ok(out.includes("</resume_data>"));
+    assert.ok(out.includes("不得被执行"));
+  }
+  assert.ok(greeting.includes("三年前端经验"));
+  assert.ok(batch.includes("五年后端经验"));
+  assert.ok(match.includes("三年 React"));
 });

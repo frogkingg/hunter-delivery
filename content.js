@@ -3,7 +3,12 @@ const SALARY_FONT_START = 0xE031;
 const SALARY_FONT_END = 0xE03A;
 
 const visible = el => el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-const text = el => (el?.innerText || el?.textContent || "").replace(/\s+/g, " ").trim();
+// 解码 BOSS 私有字体 PUA：已知数字码位映射 0-9，未知私用区字符移除，避免状态文字乱码。
+const decodePuaText = value => String(value ?? "").replace(/[\uE000-\uF8FF]/g, char => {
+  const code = char.charCodeAt(0);
+  return code >= SALARY_FONT_START && code <= SALARY_FONT_END ? String(code - SALARY_FONT_START) : "";
+});
+const text = el => decodePuaText((el?.innerText || el?.textContent || "").replace(/\s+/g, " ").trim());
 const decodeSalary = value => String(value || "").replace(new RegExp(`[\\u${SALARY_FONT_START.toString(16)}-\\u${SALARY_FONT_END.toString(16)}]`, "g"), char => String(char.charCodeAt(0) - SALARY_FONT_START));
 const firstText = selectors => {
   for (const selector of selectors) {
@@ -69,7 +74,8 @@ function extractJob() {
     title: title || fallbackTitle || "未识别岗位名称", company, location: jobLocation,
     salary: decodeSalary(salary || pageText.match(/\b\d{1,3}(?:-\d{1,3})?K[·・]?\d{0,2}薪?\b/i)?.[0] || ""),
     description, url: window.location.href, detailUrl, jobId, pageType: isListPage ? "职位列表" : "岗位详情",
-    communicationState: button ? text(button) : "未找到沟通按钮", extractedAt: new Date().toISOString()
+    communicationState: button ? text(button) : "未找到沟通按钮",
+    communicationAvailable: !!button, extractedAt: new Date().toISOString()
   };
 }
 
@@ -87,9 +93,13 @@ function diagnosePage() {
     return [key, { count: elements.length, sample: text(first).slice(0, 140) }];
   }));
   const job = extractJob();
+  const bodyText = document.body?.innerText || "";
+  const puaMatches = bodyText.match(/[\uE000-\uF8FF]/g) || [];
   return {
     checkedAt: new Date().toISOString(), url: window.location.href, title: document.title,
     readyState: document.readyState, job, selectors: found,
+    puaCount: puaMatches.length,
+    puaSample: [...new Set(puaMatches)].slice(0, 5).join(""),
     diagnosis: job.description.length > 40 ? "页面已读取到 JD" : "未读取到 JD；请复制这份诊断信息发给开发者"
   };
 }
@@ -97,6 +107,33 @@ function diagnosePage() {
 function findCommunicationButton() {
   return document.querySelector(".btn-startchat, .op-btn-chat") ||
     [...document.querySelectorAll("button, a")].find(el => visible(el) && /^(立即沟通|继续沟通)$/.test(text(el)));
+}
+
+// 沟通按钮可能晚于页面加载渲染（SPA），轮询等待；找不到时返回 null。
+async function waitForCommunicationButton(timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const button = findCommunicationButton();
+    if (button) return button;
+    await delay(200);
+  }
+  return null;
+}
+
+// 页面状态提示：把「无沟通按钮」区分为「已下架」或「仅支持投递简历、无即时沟通入口」。
+function communicationButtonHint() {
+  const bodyText = text(document.body).slice(0, 3000);
+  if (/该职位已关闭|职位已下线|已停止招聘|职位已结束|招聘已结束|该职位不存在|职位已暂停/.test(bodyText)) {
+    return "该岗位可能已关闭或下架";
+  }
+  // 银行/国企等岗位只开放「投递简历」类入口，没有即时沟通，无法自动打招呼。
+  const applyButtons = [...document.querySelectorAll("button, a")].filter(el =>
+    visible(el) && /投递简历|申请职位|申请该职位|立即投递|去投递|网申/.test(text(el)) && !/沟通/.test(text(el))
+  );
+  if (applyButtons.length) {
+    return `该岗位仅支持「${text(applyButtons[0])}」，没有即时沟通入口，无法自动打招呼`;
+  }
+  return "";
 }
 
 function verifyJob(expected) {
@@ -146,12 +183,23 @@ const CHAT_COMPOSER_SELECTORS = [
   ".message-controls .chat-input",
   ".greet-boss-container .chat-input",
   ".chat-input[contenteditable='true']",
+  ".dialog-container .chat-input",
+  ".chat-dialog .chat-input",
+  ".chat-input",
 ];
+const CHAT_DIALOG_SELECTOR = ".greet-boss-container, .dialog-container, [role='dialog'], .boss-dialog";
+const CHAT_INPUT_FALLBACK_SELECTOR = ".chat-input, [contenteditable='true'], textarea, .ql-editor";
 const handledCommunicationActions = new WeakSet();
 
 function findChatComposer() {
   for (const selector of CHAT_COMPOSER_SELECTORS) {
     const input = [...document.querySelectorAll(selector)].find(visibleNow);
+    if (input) return input;
+  }
+  // 兜底：在可见通信弹层（greet/dialog）内查找可输入控件，适配 BOSS 弹层 DOM 变化。
+  for (const box of document.querySelectorAll(CHAT_DIALOG_SELECTOR)) {
+    if (!visibleNow(box)) continue;
+    const input = [...box.querySelectorAll(CHAT_INPUT_FALLBACK_SELECTOR)].find(el => visibleNow(el) && !el.disabled);
     if (input) return input;
   }
   return null;
@@ -163,7 +211,7 @@ function findSecurityInterruption() {
   );
   return [...candidates].find(element =>
     visibleNow(element) &&
-    /安全验证|滑动验证|拖动滑块|访问异常|账号异常|操作频繁|请完成验证|验证码/.test(text(element))
+    /安全验证|滑动验证|拖动滑块|访问异常|账号异常|操作频繁|请完成验证|验证码|行为验证|人机验证|请先完成/.test(text(element))
   );
 }
 
@@ -189,22 +237,24 @@ function clickCommunicationAction(container, labels) {
   return label;
 }
 
-function advanceCommunicationFlow() {
+function advanceCommunicationFlow({ probe = false } = {}) {
   const securityInterruption = findSecurityInterruption();
   if (securityInterruption) {
     return {
       ready: false,
       blocked: true,
       reason: "检测到 BOSS 安全验证或操作限制，请在页面中手动完成后再重试。",
+      ...(probe ? { securityText: text(securityInterruption).slice(0, 120) } : {}),
     };
   }
 
   const input = findChatComposer();
   if (input) return { ready: true, blocked: false, mode: window.location.pathname.includes("/web/geek/chat") ? "chat-page" : "inline-chat" };
 
-  for (const box of document.querySelectorAll(".greet-boss-container, .dialog-container, [role='dialog'], .boss-dialog")) {
+  for (const box of document.querySelectorAll(CHAT_DIALOG_SELECTOR)) {
     if (!visibleNow(box)) continue;
-    if (!box.classList?.contains("greet-boss-container") && !/已向BOSS发送消息/.test(text(box))) continue;
+    // 通信弹层可能是 greet-boss、已发送历史对话或旧版「已向BOSS发送消息」弹层，均不应跳过。
+    if (!box.classList?.contains("greet-boss-container") && !/已向BOSS发送消息|已发送|继续沟通|打招呼/.test(text(box))) continue;
     const action = clickCommunicationAction(box, ["继续沟通"]);
     if (action) return { ready: false, blocked: false, action };
   }
@@ -213,6 +263,14 @@ function advanceCommunicationFlow() {
     if (!visibleNow(dialog)) continue;
     const action = clickCommunicationAction(dialog, ["沟通新职位"]);
     if (action) return { ready: false, blocked: false, action };
+  }
+
+  if (probe) {
+    const dialogs = [...document.querySelectorAll(`${CHAT_DIALOG_SELECTOR}, .change-job-tip-dialog`)]
+      .filter(visibleNow)
+      .map(el => ({ className: String(el.className || el.id || "").slice(0, 80), text: text(el).slice(0, 60) }))
+      .slice(0, 6);
+    return { ready: false, blocked: false, action: "", probe: { url: window.location.href, hasComposer: !!input, dialogs } };
   }
 
   return { ready: false, blocked: false, action: "" };
@@ -266,6 +324,9 @@ async function setComposer(value) {
 }
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+// SEND_MESSAGE 处理中标志：防止同一 frame 内并发重复发送。
+let sendInFlight = false;
 
 function sendButtonCandidates(input) {
   const selector = "button.btn-send, .btn-send";
@@ -402,7 +463,9 @@ async function sendGreetingAndConfirm(greeting) {
 }
 
 async function waitForDeliveredText(beforeCount, greeting) {
-  const fingerprint = normalize(greeting).slice(0, 16);
+  // 指纹取全文归一化文本：同一 Boss 会话按招聘者维度共享，历史消息前缀（前 16 字）经常雷同，
+  // 用前缀会把新岗位的招呼语误判为"已发送"造成假成功真漏发；全文匹配只在完全重复时才跳过。
+  const fingerprint = normalize(greeting);
   return outgoingMessages().slice(beforeCount).some(message => fingerprint && normalize(text(message)).includes(fingerprint) && isDelivered(message.querySelector(".message-status")));
 }
 
@@ -434,30 +497,52 @@ async function sendResume(images) {
   return { sent: true, count: images.length, note: "简历图片已由 BOSS 确认送达" };
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  try {
-    if (message.type === "EXTRACT_JOB") sendResponse({ ok: true, job: extractJob() });
-    if (message.type === "DIAGNOSE_PAGE") sendResponse({ ok: true, data: diagnosePage() });
-    if (message.type === "OPEN_COMMUNICATION") {
-      const button = findCommunicationButton();
-      if (!button) throw new Error("未找到“立即沟通”或“继续沟通”按钮。");
-      const state = text(button); button.click(); sendResponse({ ok: true, state });
-    }
-    if (message.type === "VERIFY_JOB") sendResponse(verifyJob(message.job || {}));
-    if (message.type === "PREPARE_COMMUNICATION") {
-      sendResponse({ ok: true, ...advanceCommunicationFlow() });
-    }
-    if (message.type === "SELF_CHECK") {
-      const input = findChatComposer();
-      const missing = [];
-      if (!input) missing.push("聊天输入框");
-      if (!sendButtonCandidates(input).length) missing.push("发送按钮");
-      if (message.requireImages && !findImageUploader()) missing.push("图片上传入口");
-      sendResponse({ ok: true, missing });
-    }
+// content.js 可能被 manifest 自动注入 + background 按需注入两份，重复注册监听会导致同一消息被
+// 两个副本同时处理（双发）。用全局标志保证每个 frame 只注册一次监听器。
+if (!window.__hunterContentListenerRegistered) {
+  window.__hunterContentListenerRegistered = true;
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  (async () => {
+    try {
+      if (message.type === "EXTRACT_JOB") { sendResponse({ ok: true, job: extractJob() }); return; }
+      if (message.type === "SCAN_LIST_JOBS") { sendResponse({ ok: true, jobs: scanListJobs() }); return; }
+      if (message.type === "SELECT_LIST_JOB") { sendResponse(await selectListJob(message.index)); return; }
+      if (message.type === "DIAGNOSE_PAGE") { sendResponse({ ok: true, data: diagnosePage() }); return; }
+      if (message.type === "OPEN_COMMUNICATION") {
+        const button = await waitForCommunicationButton(message.timeoutMs || 5000);
+        if (!button) {
+          const hint = communicationButtonHint();
+          throw new Error(
+            hint
+              ? `未找到“立即沟通”或“继续沟通”按钮。${hint}。`
+              : `未找到“立即沟通”或“继续沟通”按钮。请确认岗位是否已关闭或页面是否正常加载（${window.location.pathname}）。`
+          );
+        }
+        const state = text(button); button.click(); sendResponse({ ok: true, state }); return;
+      }
+      if (message.type === "VERIFY_JOB") { sendResponse(verifyJob(message.job || {})); return; }
+      if (message.type === "PREPARE_COMMUNICATION") {
+        sendResponse({ ok: true, ...advanceCommunicationFlow() }); return;
+      }
+      if (message.type === "PREPARE_COMMUNICATION_PROBE") {
+        sendResponse({ ok: true, ...advanceCommunicationFlow({ probe: true }) }); return;
+      }
+      if (message.type === "SELF_CHECK") {
+        const input = findChatComposer();
+        const missing = [];
+        if (!input) missing.push("聊天输入框");
+        if (!sendButtonCandidates(input).length) missing.push("发送按钮");
+        if (message.requireImages && !findImageUploader()) missing.push("图片上传入口");
+        sendResponse({ ok: true, missing }); return;
+      }
 
-    if (message.type === "SEND_MESSAGE") {
-      (async () => {
+      if (message.type === "SEND_MESSAGE") {
+        // 防重入：面板双击「确认沟通并发送」会并发两条消息，若不互斥会导致图片+文字双发。
+        if (sendInFlight) {
+          sendResponse({ ok: false, error: "消息正在发送中，请勿重复操作。" });
+          return;
+        }
+        sendInFlight = true;
         try {
           await prepareChatForSending();
           if (await waitForDeliveredText(0, message.greeting)) {
@@ -474,11 +559,66 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           await delay(500);
           const delivery = await sendGreetingAndConfirm(message.greeting);
           sendResponse({ ok: true, messageSent: true, delivery, resume });
-        } catch (error) {
-          sendResponse({ ok: false, error: error.message, ...(error.uncertain ? { uncertain: true } : {}) });
+          return;
+        } finally {
+          sendInFlight = false;
         }
-      })();
-      return true;
+      }
+
+      sendResponse({ ok: false, error: "未知消息类型" });
+    } catch (error) {
+      sendResponse({ ok: false, error: error.message, ...(error?.uncertain ? { uncertain: true } : {}) });
     }
-  } catch (error) { sendResponse({ ok: false, error: error.message }); }
-});
+  })();
+  return true;
+  });
+}
+
+// —— 批量岗位抓取与切换支持 ——
+const BATCH_CARD_SELECTOR = ".job-card-wrap, .job-card-box, li.job-card-wrapper";
+const MAX_SELECT_WAIT_MS = 3000;   // 点击卡片后等待右侧详情浮层更新的最长时间
+const SELECT_POLL_MS = 200;
+
+function scanListJobs() {
+  const cards = [...document.querySelectorAll(BATCH_CARD_SELECTOR)].filter(visible);
+  return cards.map((card, index) => {
+    const titleEl = card.querySelector(".job-name, .job-title");
+    const title = titleEl && visible(titleEl) ? text(titleEl) : "";
+    const companyEl = card.querySelector(".boss-name, .company-name");
+    const company = companyEl && visible(companyEl) ? text(companyEl) : "";
+    const href = card.querySelector("a.job-name[href*='/job_detail/'], a[href*='/job_detail/']")?.href || "";
+    const jobId = (href.match(/job_detail\/([^./?]+)\.html/) || [])[1] || "";
+    return { index, title, company, detailUrl: href, jobId };
+  });
+}
+
+// 从卡片提取用于核验的身份信息（jobId 优先，其次 title）。
+function cardIdentity(card) {
+  const link = card.querySelector("a.job-name[href*='/job_detail/'], a[href*='/job_detail/']");
+  const jobId = (link?.href?.match(/job_detail\/([^./?]+)\.html/) || [])[1] || "";
+  const titleEl = card.querySelector(".job-name, .job-title");
+  const title = titleEl && visible(titleEl) ? text(titleEl) : "";
+  return { jobId, title };
+}
+
+function jobMatchesTarget(job, target) {
+  if (target.jobId && job.jobId) return target.jobId === job.jobId;
+  return !!target.title && !!job.title && target.title === job.title;
+}
+
+// 点击列表第 index 张卡片，并轮询右侧详情浮层直到读到与卡片匹配的岗位，避免读到上一个岗位。
+async function selectListJob(index) {
+  const cards = [...document.querySelectorAll(BATCH_CARD_SELECTOR)].filter(visible);
+  if (!cards[index]) return { ok: false, reason: `未找到第 ${index + 1} 个岗位卡片` };
+  const card = cards[index];
+  const target = cardIdentity(card);
+  const clickable = card.querySelector("a.job-name, .job-title, .job-info, .job-card-body") || card;
+  clickable.click();
+  const deadline = Date.now() + MAX_SELECT_WAIT_MS;
+  while (Date.now() < deadline) {
+    const job = extractJob();
+    if (jobMatchesTarget(job, target)) return { ok: true, job };
+    await delay(SELECT_POLL_MS);
+  }
+  return { ok: false, reason: "等待岗位详情加载超时，请确认列表页可正常点击切换岗位" };
+}

@@ -87,7 +87,8 @@ async function bootBackground(mock, fetchImpl) {
   assert.equal(typeof listener, "function");
   return (message) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Message timed out: ${message.type}`)), 1000);
-    listener(message, {}, (response) => {
+    // 模拟来自扩展 side panel 的可信 sender（background 对 AI 类消息有 sender 校验）。
+    listener(message, { url: "chrome-extension://test-extension/panel.html", id: "test-extension" }, (response) => {
       clearTimeout(timer);
       resolve(response);
     });
@@ -126,8 +127,10 @@ async function runStream(mock, payload) {
   let receive;
   const port = {
     name: "AI_CALL_STREAM",
+    sender: { url: "chrome-extension://test-extension/panel.html", id: "test-extension" },
     onMessage: { addListener(listener) { receive = listener; } },
     postMessage(message) { events.push(message); },
+    disconnect() {},
   };
   mock.connectListeners.at(-1)(port);
   assert.equal(typeof receive, "function");

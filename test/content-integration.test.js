@@ -32,6 +32,12 @@ const chatInput = visibleElement({
 });
 composer = chatInput;
 
+// —— 批量扫描/选中测试的列表页模拟状态 ——
+let listCards = [];
+let communicationButtons = [];
+let activeCard = null;
+let listDetailContainer = null;
+
 globalThis.window = {
   location: {
     pathname: "/job_detail/job-1.html",
@@ -48,12 +54,20 @@ globalThis.document = {
     if (selector === ".job-primary.detail-box") return detailScope;
     if (selector === "div#chat-input.chat-input") return chatInput;
     if (selector === "button.btn-send") return sendButtons[0] || null;
+    if (selector === ".job-detail-container") return listDetailContainer;
+    if (selector === ".job-card-wrap.active") return activeCard;
+    if (selector === ".job-card-wrap.active a.job-name[href*='/job_detail/']") return activeCard?.querySelector("a.job-name[href*='/job_detail/']") || null;
     return null;
   },
   querySelectorAll: selector => {
     if (selector === ".chat-record .item-myself, .chat-record .message-self") return outgoing;
     if (selector === ".company-info a[href*='/gongsi/']") return detailCompanyLinks;
     if (selector === "button.btn-send, .btn-send") return sendButtons;
+    if (selector === ".job-card-wrap, .job-card-box, li.job-card-wrapper") return listCards;
+    if (selector === "button, a") return communicationButtons;
+    if (selector === ".job-detail-container .job-detail-body .desc" || selector === ".job-detail-container .desc") {
+      return listDetailContainer ? [listDetailContainer._desc] : [];
+    }
     if ([
       "div#chat-input.chat-input",
       ".message-controls .chat-input",
@@ -98,6 +112,16 @@ function dispatch(message) {
 function dispatchNoTimeout(message) {
   return new Promise(resolve => {
     listener(message, {}, resolve);
+  });
+}
+
+function dispatchSlow(message) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Message timed out: ${message.type}`)), 6000);
+    listener(message, {}, response => {
+      clearTimeout(timer);
+      resolve(response);
+    });
   });
 }
 
@@ -397,6 +421,343 @@ test("SEND_MESSAGE 重试时跳过已确认失败的旧气泡", async () => {
     assert.equal(response.ok, true);
     assert.equal(response.delivery.status, "已读");
   } finally {
+    sendButtons = [];
+    outgoing = [];
+  }
+});
+
+// —— 批量扫描与选中（列表页） ——
+const makeBatchCard = (title, company, jobId, onClick) => {
+  const link = visibleElement({ href: `https://www.zhipin.com/job_detail/${jobId}.html` });
+  return visibleElement({
+    querySelector: selector => {
+      if (selector.includes("a.job-name[href*='/job_detail/']") || selector.includes("a[href*='/job_detail/']")) return link;
+      if (selector.includes(".job-name")) return visibleElement({ innerText: title, textContent: title, click: onClick });
+      if (selector.includes(".boss-name") || selector.includes(".company-name")) return visibleElement({ innerText: company, textContent: company });
+      return null;
+    },
+    click: onClick,
+  });
+};
+
+const makeListDetail = (title, company, jobId) => {
+  const desc = visibleElement({ innerText: `岗位职责：负责${title}相关工作，需要${company}业务背景与${jobId}项目经验。${"详细 JD 内容".repeat(12)}` });
+  return {
+    _desc: desc,
+    querySelector: selector => {
+      if (selector === ".job-detail-header .job-name" || selector === ".job-name") return visibleElement({ innerText: title, textContent: title });
+      if (selector === ".boss-info-attr") return visibleElement({ innerText: company, textContent: company });
+      if (selector === ".job-detail-header .job-salary" || selector === ".job-salary") return visibleElement({ innerText: "20-30K", textContent: "20-30K" });
+      if (selector === ".company-location" || selector === ".tag-list li a") return visibleElement({ innerText: "上海", textContent: "上海" });
+      return null;
+    },
+  };
+};
+
+test("SCAN_LIST_JOBS 逐卡片读取独立 title/company/jobId", async () => {
+  globalThis.window.location = { pathname: "/web/geek/jobs", href: "https://www.zhipin.com/web/geek/jobs" };
+  listCards = [
+    makeBatchCard("前端工程师", "甲公司", "job-a", () => {}),
+    makeBatchCard("后端工程师", "乙公司", "job-b", () => {}),
+  ];
+  try {
+    const response = await dispatch({ type: "SCAN_LIST_JOBS" });
+    assert.equal(response.ok, true);
+    assert.equal(response.jobs.length, 2);
+    assert.equal(response.jobs[0].title, "前端工程师");
+    assert.equal(response.jobs[0].company, "甲公司");
+    assert.equal(response.jobs[0].jobId, "job-a");
+    assert.equal(response.jobs[1].title, "后端工程师");
+    assert.equal(response.jobs[1].company, "乙公司");
+    assert.equal(response.jobs[1].jobId, "job-b");
+  } finally {
+    listCards = [];
+  }
+});
+
+test("SELECT_LIST_JOB 点击后等待详情加载到匹配岗位才返回", async () => {
+  globalThis.window.location = { pathname: "/web/geek/jobs", href: "https://www.zhipin.com/web/geek/jobs" };
+  listDetailContainer = null;
+  activeCard = null;
+  const card = makeBatchCard("AI 产品经理", "目标公司", "job-pm", () => {
+    setTimeout(() => {
+      listDetailContainer = makeListDetail("AI 产品经理", "目标公司", "job-pm");
+      activeCard = card;
+    }, 120);
+  });
+  listCards = [card];
+  try {
+    const response = await dispatch({ type: "SELECT_LIST_JOB", index: 0 });
+    assert.equal(response.ok, true);
+    assert.equal(response.job.title, "AI 产品经理");
+    assert.equal(response.job.company, "目标公司");
+    assert.equal(response.job.jobId, "job-pm");
+  } finally {
+    listCards = [];
+    listDetailContainer = null;
+    activeCard = null;
+  }
+});
+
+test("SELECT_LIST_JOB 详情加载超时返回失败原因", async () => {
+  globalThis.window.location = { pathname: "/web/geek/jobs", href: "https://www.zhipin.com/web/geek/jobs" };
+  listDetailContainer = null;
+  activeCard = null;
+  listCards = [makeBatchCard("永不加载岗位", "某公司", "job-void", () => {})];
+  try {
+    const response = await dispatchSlow({ type: "SELECT_LIST_JOB", index: 0 });
+    assert.equal(response.ok, false);
+    assert.match(response.reason, /等待岗位详情加载超时/);
+  } finally {
+    listCards = [];
+    listDetailContainer = null;
+    activeCard = null;
+  }
+});
+
+test("SELECT_LIST_JOB 索引越界返回失败", async () => {
+  globalThis.window.location = { pathname: "/web/geek/jobs", href: "https://www.zhipin.com/web/geek/jobs" };
+  listCards = [makeBatchCard("唯一岗位", "公司", "job-1", () => {})];
+  try {
+    const response = await dispatch({ type: "SELECT_LIST_JOB", index: 5 });
+    assert.equal(response.ok, false);
+  } finally {
+    listCards = [];
+  }
+});
+
+test("SCAN_LIST_JOBS 解码 BOSS 私有字体 PUA 数字", async () => {
+  globalThis.window.location = { pathname: "/web/geek/jobs", href: "https://www.zhipin.com/web/geek/jobs" };
+  // U+E034=3，U+E031=0 → "3D 打印"；公司名同样含 PUA 数字
+  listCards = [
+    makeBatchCard("\uE034D 打印工程师", "\uE033D 打印公司", "job-3d", () => {}),
+  ];
+  try {
+    const response = await dispatch({ type: "SCAN_LIST_JOBS" });
+    assert.equal(response.ok, true);
+    assert.equal(response.jobs[0].title, "3D 打印工程师");
+    assert.equal(response.jobs[0].company, "2D 打印公司");
+  } finally {
+    listCards = [];
+  }
+});
+
+test("SELECT_LIST_JOB 解码列表页薪资 PUA 数字", async () => {
+  globalThis.window.location = { pathname: "/web/geek/jobs", href: "https://www.zhipin.com/web/geek/jobs" };
+  listDetailContainer = null;
+  activeCard = null;
+  const card = makeBatchCard("测试岗位", "测试公司", "job-pay", () => {
+    listDetailContainer = {
+      _desc: visibleElement({ innerText: "岗位职责：负责测试。".repeat(8) }),
+      querySelector: selector => {
+        if (selector === ".job-detail-header .job-name" || selector === ".job-name") return visibleElement({ innerText: "测试岗位", textContent: "测试岗位" });
+        if (selector === ".job-detail-header .job-salary" || selector === ".job-salary") {
+          // U+E033=2, U+E031=0, U+E034=3 → "20-30K"
+          return visibleElement({ innerText: "\uE033\uE031-\uE034\uE031K", textContent: "\uE033\uE031-\uE034\uE031K" });
+        }
+        if (selector === ".job-detail-header .job-salary" === false) return null;
+        return null;
+      },
+    };
+    activeCard = card;
+  });
+  listCards = [card];
+  try {
+    const response = await dispatch({ type: "SELECT_LIST_JOB", index: 0 });
+    assert.equal(response.ok, true);
+    assert.equal(response.job.salary, "20-30K");
+  } finally {
+    listCards = [];
+    listDetailContainer = null;
+    activeCard = null;
+  }
+});
+
+test("PREPARE_COMMUNICATION_PROBE 无输入框/无弹层时返回页面快照", async () => {
+  globalThis.window.location = { pathname: "/job_detail/job-1.html", href: "https://www.zhipin.com/job_detail/job-1.html" };
+  composer = null;
+  securityDialogs = [];
+  greetBoxes = [];
+  try {
+    const response = await dispatch({ type: "PREPARE_COMMUNICATION_PROBE" });
+    assert.equal(response.ok, true);
+    assert.equal(response.ready, false);
+    assert.equal(response.blocked, false);
+    assert.ok(response.probe, "应返回 probe 快照");
+    assert.equal(response.probe.hasComposer, false);
+    assert.match(response.probe.url, /job_detail/);
+    assert.ok(Array.isArray(response.probe.dialogs));
+  } finally {
+    composer = chatInput;
+    securityDialogs = [];
+    greetBoxes = [];
+  }
+});
+
+test("PREPARE_COMMUNICATION_PROBE 检测到安全验证时返回 blocked 与 securityText", async () => {
+  composer = null;
+  securityDialogs = [visibleElement({
+    innerText: "访问异常，请完成滑动验证",
+    textContent: "访问异常，请完成滑动验证",
+  })];
+  try {
+    const response = await dispatch({ type: "PREPARE_COMMUNICATION_PROBE" });
+    assert.equal(response.ok, true);
+    assert.equal(response.blocked, true);
+    assert.match(response.securityText, /滑动验证/);
+  } finally {
+    securityDialogs = [];
+    composer = chatInput;
+  }
+});
+
+test("PREPARE_COMMUNICATION 识别 dialog-container 弹层内的聊天输入框", async () => {
+  composer = null;
+  securityDialogs = [];
+  const dialogInput = visibleElement({
+    tagName: "DIV",
+    contenteditable: "true",
+    focus: () => {},
+    dispatchEvent: () => {},
+    closest: () => null,
+  });
+  const chatDialog = visibleElement({
+    innerText: "栗女士 它石智航·人才经纪人 已发送 您好，请问还在招吗？",
+    textContent: "栗女士 它石智航·人才经纪人 已发送 您好，请问还在招吗？",
+    querySelectorAll: selector => (selector.includes("contenteditable") || selector.includes(".chat-input") || selector.includes("textarea")) ? [dialogInput] : [],
+    querySelector: () => null,
+  });
+  greetBoxes = [chatDialog];
+  try {
+    const response = await dispatch({ type: "PREPARE_COMMUNICATION" });
+    assert.equal(response.ok, true);
+    assert.equal(response.ready, true);
+    assert.equal(response.blocked, false);
+  } finally {
+    greetBoxes = [];
+    composer = chatInput;
+  }
+});
+
+test("PREPARE_COMMUNICATION 不再跳过含「已发送」文案的通信弹层，点击继续沟通", async () => {
+  composer = null;
+  securityDialogs = [];
+  const continueBtn = visibleElement({ innerText: "继续沟通", textContent: "继续沟通", click: () => {} });
+  const chatDialog = visibleElement({
+    innerText: "已发送 您好，请问数据产品经理还在招吗？",
+    textContent: "已发送 您好，请问数据产品经理还在招吗？",
+    querySelectorAll: selector => selector.includes("[class*='btn']") ? [continueBtn] : [],
+    querySelector: () => null,
+  });
+  greetBoxes = [chatDialog];
+  try {
+    const response = await dispatch({ type: "PREPARE_COMMUNICATION" });
+    assert.equal(response.ok, true);
+    assert.equal(response.ready, false);
+    assert.equal(response.blocked, false);
+    assert.equal(response.action, "继续沟通");
+  } finally {
+    greetBoxes = [];
+    composer = chatInput;
+  }
+});
+
+
+test("OPEN_COMMUNICATION 等待沟通按钮渲染后点击成功", async () => {
+  communicationButtons = [];
+  setTimeout(() => {
+    communicationButtons = [visibleElement({ innerText: "立即沟通", textContent: "立即沟通", click: () => {} })];
+  }, 150);
+  try {
+    const response = await dispatch({ type: "OPEN_COMMUNICATION", timeoutMs: 3000 });
+    assert.equal(response.ok, true);
+    assert.equal(response.state, "立即沟通");
+  } finally {
+    communicationButtons = [];
+  }
+});
+
+test("OPEN_COMMUNICATION 岗位已关闭时提示下架", async () => {
+  communicationButtons = [];
+  const prevBody = globalThis.document.body;
+  globalThis.document.body = visibleElement({ innerText: "该职位已关闭", textContent: "该职位已关闭" });
+  try {
+    const response = await dispatch({ type: "OPEN_COMMUNICATION", timeoutMs: 300 });
+    assert.equal(response.ok, false);
+    assert.match(response.error, /该岗位可能已关闭或下架/);
+  } finally {
+    globalThis.document.body = prevBody;
+    communicationButtons = [];
+  }
+});
+
+test("OPEN_COMMUNICATION 岗位仅支持投递简历时提示无即时沟通入口", async () => {
+  communicationButtons = [visibleElement({ innerText: "投递简历", textContent: "投递简历" })];
+  const prevBody = globalThis.document.body;
+  globalThis.document.body = visibleElement({ innerText: "银行实习生-云阳支行", textContent: "银行实习生-云阳支行" });
+  try {
+    const response = await dispatch({ type: "OPEN_COMMUNICATION", timeoutMs: 300 });
+    assert.equal(response.ok, false);
+    assert.match(response.error, /没有即时沟通入口/);
+  } finally {
+    globalThis.document.body = prevBody;
+    communicationButtons = [];
+  }
+});
+
+test("SEND_MESSAGE 前 16 字相同但全文不同的招呼语不应误判已送达", async () => {
+  // 回归：旧实现取 normalize(greeting).slice(0,16) 作为指纹，同一 Boss 历史消息前缀雷同时
+  // 会把新岗位的招呼语误判为 alreadySent（假成功、真漏发）。
+  const oldGreeting = "您好，我对这个岗位很感兴趣，希望进一步沟通。";
+  const newGreeting = "您好，我对这个岗位很感兴趣，希望尽快回复我。";
+  const status = visibleElement({
+    className: "message-status status-delivery",
+    innerText: "已送达",
+    textContent: "已送达",
+  });
+  // 历史已送达消息：与 newGreeting 前 16 个归一化字符完全相同，但全文不同。
+  outgoing = [visibleElement({
+    innerText: oldGreeting,
+    textContent: oldGreeting,
+    querySelector: selector => selector === ".message-status" ? status : null,
+    querySelectorAll: () => [],
+  })];
+  const delivered = visibleElement({
+    innerText: newGreeting,
+    textContent: newGreeting,
+    querySelector: selector => selector === ".message-status" ? status : null,
+    querySelectorAll: () => [],
+  });
+  const scope = { querySelector: () => null, querySelectorAll: () => [] };
+  const testComposer = visibleElement({
+    tagName: "DIV",
+    className: "chat-input",
+    dataset: {},
+    textContent: "",
+    getAttribute: name => name === "contenteditable" ? "true" : null,
+    focus: () => { document.activeElement = testComposer; },
+    dispatchEvent: () => {},
+    closest: () => scope,
+  });
+  composer = testComposer;
+  sendButtons = [visibleElement({
+    tagName: "BUTTON",
+    disabled: false,
+    classList: { contains: () => false },
+    click: () => {
+      testComposer.textContent = "";
+      outgoing.push(delivered);
+    },
+    dispatchEvent: () => {},
+  })];
+  try {
+    const response = await dispatch({ type: "SEND_MESSAGE", greeting: newGreeting, images: [] });
+    assert.equal(response.ok, true);
+    assert.equal(response.messageSent, true);
+    assert.equal(response.delivery.alreadySent, undefined);
+    assert.equal(response.delivery.status, "已送达");
+  } finally {
+    composer = chatInput;
     sendButtons = [];
     outgoing = [];
   }

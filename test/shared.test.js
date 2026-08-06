@@ -6,7 +6,7 @@ import {
   endpointUrl, hostOf, assertSafeEndpoint,
   jsonFrom, jobIdentityKeys, sameJob, dedupeJobLibrary,
   sanitizeJobForLibrary, escapeCsv,
-  DEFAULTS
+  DEFAULTS, buildCommunicationProbeText,
 } from "../lib/shared.js";
 
 // ——— endpointUrl ———
@@ -200,4 +200,40 @@ test("escapeCsv 拦截公式注入前缀", () => {
 test("escapeCsv 正常内容不受影响", () => {
   assert.equal(escapeCsv("正常文本"), '"正常文本"');
   assert.equal(escapeCsv("前导空格 =ok"), '"前导空格 =ok"');
+});
+
+test("buildCommunicationProbeText: 格式化页面快照", () => {
+  const out = buildCommunicationProbeText({
+    url: "https://www.zhipin.com/web/geek/chat?x=1",
+    hasComposer: false,
+    dialogs: [{ className: "boss-dialog", text: "继续沟通" }],
+  });
+  assert.match(out, /页面=https:\/\/www.zhipin.com\/web\/geek\/chat/);
+  assert.match(out, /聊天输入框=无/);
+  assert.match(out, /可见弹层=boss-dialog「继续沟通」/);
+});
+
+test("buildCommunicationProbeText: 无弹层显示为无", () => {
+  const out = buildCommunicationProbeText({ url: "x", hasComposer: true, dialogs: [] });
+  assert.match(out, /聊天输入框=有/);
+  assert.match(out, /可见弹层=无/);
+});
+
+test("buildCommunicationProbeText: null/空 → 空串", () => {
+  assert.equal(buildCommunicationProbeText(null), "");
+  assert.equal(buildCommunicationProbeText(undefined), "");
+});
+
+test("assertSafeEndpoint 拒绝 IPv6 内网变体（IPv4-mapped/ULA/link-local）", () => {
+  assert.throws(() => assertSafeEndpoint("https://[::ffff:127.0.0.1]/v1"), /本地或内网/);   // 127.0.0.1
+  assert.throws(() => assertSafeEndpoint("https://[::ffff:7f00:1]/v1"), /本地或内网/);     // 127.0.0.1
+  assert.throws(() => assertSafeEndpoint("https://[::ffff:0a00:0001]/v1"), /本地或内网/);  // 10.0.0.1
+  assert.throws(() => assertSafeEndpoint("https://[fd00::1]/v1"), /本地或内网/);           // ULA
+  assert.throws(() => assertSafeEndpoint("https://[fe80::1]/v1"), /本地或内网/);           // link-local
+});
+
+test("sameJob 有 jobId 时不再用 company|title|location 兜底误判不同岗位", () => {
+  const a = { jobId: "abc", company: "X", title: "前端", location: "北京" };
+  const b = { jobId: "xyz", company: "X", title: "前端", location: "北京" };
+  assert.ok(!sameJob(a, b));
 });

@@ -1,6 +1,6 @@
 // 智能填充：站点模板记忆（按 hostname 记忆字段映射，供下次同站复用）。
 // 纯函数模块，Node 可测。
-import { validateBinding } from "./matcher.js";
+import { validateBinding, SENSITIVE_FIELD_KEYS } from "./matcher.js";
 
 export const TEMPLATE_MAX = 50;
 export const TEMPLATE_SCHEMA_VERSION = 2;
@@ -18,6 +18,9 @@ function mappingIdentity(mapping) {
 }
 
 function mappingFromMatch(match, now) {
+  // 敏感字段（身份证/薪酬/紧急联系人等）的"确认"只在当前会话生效，绝不写入模板：
+  // 否则用户确认一次后，同一站点的新会话会在无任何操作时自动填入敏感个人数据。
+  const isSensitive = SENSITIVE_FIELD_KEYS.has(match.fieldKey);
   return {
     fieldFingerprint: match.fingerprint || "",
     pathHint: match.path || "",
@@ -26,7 +29,7 @@ function mappingFromMatch(match, now) {
     slot: match.slot || "single",
     fieldKey: match.fieldKey,
     valueRef: match.valueRef?.source === "resume" ? match.valueRef : { source: "resume", path: match.fieldKey },
-    userConfirmed: !!match.userConfirmed,
+    userConfirmed: !!match.userConfirmed && !isSensitive,
     updatedAt: now,
   };
 }
@@ -66,7 +69,8 @@ export function applyTemplate(matches, template, resumeFields = {}, options = {}
     const validated = validateBinding(match, mapping.fieldKey, resumeFields, {
       source: "template",
       confidence: "high",
-      userConfirmed: !!mapping.userConfirmed,
+      // 敏感字段忽略持久化的 userConfirmed：只接受当前会话的显式确认，模板/内置适配不可绕过。
+      userConfirmed: SENSITIVE_FIELD_KEYS.has(mapping.fieldKey) ? false : !!mapping.userConfirmed,
       valueRef: mapping.valueRef,
       reason: `站点模板语义映射（${mapping.fieldKey}）`,
     });
@@ -88,7 +92,11 @@ export function saveTemplateFromResults(host, origin, matches, existingTemplate,
   const priorMappings = sameScope ? existingTemplate.mappings || [] : [];
   const merged = fresh.mappings.map(freshMapping => {
     const prior = priorMappings.find(mapping => mappingIdentity(mapping) === mappingIdentity(freshMapping));
-    return { ...freshMapping, userConfirmed: freshMapping.userConfirmed || !!prior?.userConfirmed };
+    return {
+      ...freshMapping,
+      // 合并历史确认时同样排除敏感字段，防止旧数据把 userConfirmed 带回。
+      userConfirmed: (freshMapping.userConfirmed || !!prior?.userConfirmed) && !SENSITIVE_FIELD_KEYS.has(freshMapping.fieldKey),
+    };
   });
   for (const prior of priorMappings) {
     const exists = merged.some(mapping => mappingIdentity(mapping) === mappingIdentity(prior));

@@ -2,14 +2,21 @@
 
 export const $ = (id) => document.getElementById(id);
 
-export const send = (message) =>
-  new Promise((resolve, reject) =>
+// 扩展 Service Worker 被系统回收时，chrome.runtime.sendMessage 回调可能永不触发；
+// 加超时避免面板侧 Promise 永久 pending（批量轮询会因此停摆且无提示）。
+export const send = (message, timeoutMs = 30000) =>
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`扩展后台无响应（${Math.round(timeoutMs / 1000)} 秒），请刷新面板后重试。`)),
+      timeoutMs
+    );
     chrome.runtime.sendMessage(message, (response) => {
+      clearTimeout(timer);
       const error = chrome.runtime.lastError;
       if (error) reject(new Error(error.message));
       else resolve(response);
-    })
-  );
+    });
+  });
 
 export async function activeTab() {
   // Side Panel 获得焦点时，currentWindow 在少数 Chrome 版本中会返回扩展页而非网页标签。

@@ -127,10 +127,21 @@ function fullContext(field, evidence = fieldEvidence(field)) {
   ].filter(Boolean).join(" "));
 }
 
+// 第三方联系人/证明人/亲属/导师等负向上下文词表：对"读取候选人本人数据"的字段统一生效，
+// 防止把候选人姓名/电话/地址/公司/城市等填入紧急联系人、证明人、导师等第三方字段（P0 错位类）。
+// 词表刻意只收明确指向第三方的组合词，不收裸"联系人"，避免误伤"联系人信息"等本人信息区块。
+const THIRD_PARTY_CONTEXT_TOKENS = [
+  "紧急联系人", "紧急联系", "联系人姓名", "联系人电话", "联系人邮箱", "联系人手机",
+  "监护人", "父亲", "母亲", "家长", "证明人", "推荐人", "亲属", "配偶", "导师", "班主任", "辅导员",
+  "emergencycontact", "guardian", "parentname", "parentphone", "parentemail", "referrer", "reference",
+  "contactperson", "contactphone", "contactemail", "mentor", "teacher", "supervisor",
+];
+
 function contextBlocked(field, fieldKey, evidence) {
   const deny = FIELD_CONSTRAINTS[fieldKey]?.denyContext || [];
   const context = fullContext(field, evidence);
-  return deny.some(token => context.includes(normalizeLabel(token)));
+  const tokens = [...deny, ...THIRD_PARTY_CONTEXT_TOKENS];
+  return tokens.some(token => context.includes(normalizeLabel(token)));
 }
 
 function hardTypeCompatible(field, fieldKey) {
@@ -503,7 +514,7 @@ export function matchRules(fields, resumeFields) {
       .sort((a, b) => b.score - a.score);
     if (!candidates.length) {
       const context = fullContext(field, evidence);
-      const risky = /(紧急联系人|联系人姓名|联系人电话|监护人|父亲|母亲|家长|证明人|emergencycontact|guardian|parentname|parentphone|parentemail|contactperson|contactphone|contactemail)/.test(context);
+      const risky = /(紧急联系人|联系人姓名|联系人电话|联系人邮箱|联系人手机|监护人|父亲|母亲|家长|证明人|推荐人|亲属|配偶|导师|班主任|辅导员|emergencycontact|guardian|parentname|parentphone|parentemail|referrer|reference|contactperson|contactphone|contactemail|mentor|teacher|supervisor)/.test(context);
       const hasKeyword = CANONICAL_FIELDS.some(canonical =>
         evidence.some(item => bestKeywordHit(item.normalized, NORMALIZED_KEYWORDS.get(canonical.key) || []).length)
       );
@@ -594,6 +605,8 @@ export function applyAiResults(matches, aiResults, fields, resumeFields) {
     if (!entry) return match;
     if (!(match.status === "manual" || match.confidence === "low")) return match;
     if (match.lockedManual) return match;
+    // 用户已显式确认的绑定不参与 AI 兜底，避免系统静默推翻用户的语义选择。
+    if (match.userConfirmed) return match;
     const field = fieldMap.get(match.fieldId) || match;
     const key = String(entry.fieldKey || "").trim();
     const confidence = ["high", "medium", "low"].includes(entry.confidence) ? entry.confidence : "medium";

@@ -519,3 +519,25 @@ test("敏感字段集合：规范敏感 key 必须存在于集合中（防误删
   const missing = required.filter(key => !SENSITIVE_FIELD_KEYS.has(key));
   assert.deepEqual(missing, [], `规范敏感 key 缺失：${missing.join("、")}`);
 });
+
+test("matchRules: 紧急联系人地址/城市/公司、导师/班主任/证明人工作单位不得自动填入候选人本人信息", () => {
+  const results = matchRules(toFields(["紧急联系人地址", "紧急联系人所在城市", "紧急联系人公司", "导师姓名", "班主任姓名", "证明人工作单位", "紧急联系人邮箱"]), FULL_RESUME);
+  const auto = results.filter(r => r.status === "match");
+  assert.deepEqual(auto.map(r => r.label), [], JSON.stringify(results.map(r => ({ label: r.label, key: r.fieldKey, status: r.status }))));
+});
+
+test("applyAiResults: 不覆盖用户已显式确认的绑定", () => {
+  const matches = [{
+    fieldId: "f0", label: "某字段", type: "text", status: "manual", fieldKey: "hobbies",
+    value: "", confidence: "medium", userConfirmed: true, lockedManual: false, source: "manual",
+  }];
+  const merged = applyAiResults(
+    matches,
+    [{ fieldId: "f0", fieldKey: "name", confidence: "high" }],
+    [{ id: "f0", label: "某字段", type: "text" }],
+    FULL_RESUME
+  );
+  assert.equal(merged[0].fieldKey, "hobbies");
+  assert.equal(merged[0].userConfirmed, true);
+  assert.equal(merged[0].status, "manual");
+});

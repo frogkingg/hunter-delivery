@@ -45,13 +45,16 @@ test("面板初始化：所有关键按钮绑定事件且无未捕获异常", as
       if (scan && typeof scan.onclick === "function") break;
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "smartFillOnce", "regionFill", "smartFillUndo", "exportDiagnostics", "fillSelected", "deleteFillTemplate", "darkToggle"];
+    const ids = ["analyze", "send", "addQueueTop", "generateQueue", "startQueue", "export", "saveConfig", "testApi", "parseResume", "clearFill", "extractResumeFields", "saveResumeFields", "manageResumeFields", "closeResumeFieldsEditor", "discardResumeFields", "smartFillOnce", "regionFill", "smartFillUndo", "exportDiagnostics", "fillSelected", "deleteFillTemplate", "darkToggle", "startBatchMatch", "stopBatchMatch", "exportBatchDiagnostics"];
     for (const id of ids) {
       const el = window.document.getElementById(id);
       assert.ok(el, `元素 #${id} 应存在`);
       assert.equal(typeof el.onclick, "function", `按钮 #${id} 应绑定 onclick`);
     }
     assert.equal(typeof window.document.getElementById("fillAutoToggle").onchange, "function", "开关 #fillAutoToggle 应绑定 onchange");
+    const autoSend = window.document.getElementById("batchAutoSendCheck");
+    assert.ok(autoSend, "元素 #batchAutoSendCheck 应存在");
+    assert.equal(autoSend.checked, false, "批量自动投递应默认关闭");
   } finally {
     delete globalThis.window;
     delete globalThis.document;

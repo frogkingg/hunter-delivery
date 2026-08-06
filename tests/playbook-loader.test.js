@@ -6,8 +6,8 @@ const moka = {
   schemaVersion: 2, host: "app.mokahr.com",
   scope: { routePattern: "/campus_apply/**" },
   mappings: [
-    { siteLabel: "姓名", controlType: "text", fieldKey: "name", valueRef: { source: "resume", path: "basic.name" } },
-    { siteLabel: "手机号", controlType: "tel", fieldKey: "phone", valueRef: { source: "resume", path: "basic.phone" } },
+    { siteLabel: "姓名", controlType: "text", fieldKey: "name", valueRef: { source: "resume", path: "name" } },
+    { siteLabel: "手机号", controlType: "tel", fieldKey: "phone", valueRef: { source: "resume", path: "phone" } },
   ],
   denyList: ["紧急联系人"], requireManual: ["idCard"],
 };
@@ -34,4 +34,29 @@ test("parseRoutePattern：** 跨 / 匹配，单 * 不跨 /", () => {
   const single = parseRoutePattern("/campus_apply/*");
   assert.equal(single.test("/campus_apply/123/step2"), false, "单 * 不应跨 /");
   assert.equal(single.test("/campus_apply/123"), true, "单 * 应匹配单段");
+});
+
+const validPb = () => ({
+  schemaVersion: 2,
+  host: "app.mokahr.com",
+  scope: { routePattern: "/campus_apply/**" },
+  mappings: [
+    { siteLabel: "姓名", controlType: "text", slot: "single", fieldKey: "name", valueRef: { source: "resume", path: "name" } },
+  ],
+});
+
+test("validatePlaybook：拒绝非法 slot", () => {
+  const pb = validPb();
+  pb.mappings[0].slot = "bogus";
+  const result = validatePlaybook(pb);
+  assert.equal(result.ok, false);
+  assert.match(result.error, /slot/);
+});
+
+test("validatePlaybook：拒绝无法解析的 valueRef 路径", () => {
+  const pb = validPb();
+  pb.mappings[0].valueRef = { source: "resume", path: "basic.name" };
+  assert.equal(validatePlaybook(pb).ok, false, "basic.name 不是简历 schema 根键");
+  pb.mappings[0].valueRef = { source: "resume", path: "education.0.endDate" };
+  assert.equal(validatePlaybook(pb).ok, false, "education 条目不包含 endDate 字段");
 });

@@ -784,7 +784,8 @@
           type: "text",
           target: el,
           labelInfo: controlLabel(el),
-          value: el.value || "",
+          // 密码/文件等不支持字段不读取其当前值（隐私最小化：不需要就不读）。
+          value: "",
           skipped: true,
           kind: "none",
           adapter: "unsupported",
@@ -843,6 +844,7 @@
     for (const field of fields) fingerprintCounts.set(field.fingerprint, (fingerprintCounts.get(field.fingerprint) || 0) + 1);
     for (const entry of registry.values()) entry.fingerprintMultiplicity = fingerprintCounts.get(entry.fingerprint) || 1;
     if (!scanOptions.dryRun) {
+      const previousSession = scanSession;
       elementRegistry = registry;
       scanSession = {
         scanId,
@@ -851,6 +853,11 @@
         url: page?.url || "",
         dirty: false,
         formRoots: [...new Set([...registry.values()].map(entry => entry.el.closest && entry.el.closest("form")).filter(Boolean))],
+        // 承接上一会话的撤销原值快照：增量续填 / 选区重建后，首轮已填字段仍可被一次撤销还原。
+        // （元素可能在重渲染后失效，undo 会按 locator + 指纹尽力重定位，无法定位的计入 unRestored 提示。）
+        prevValues: previousSession?.prevValues && previousSession.prevValues.size
+          ? previousSession.prevValues
+          : (previousSession?.prevValues || new Map()),
       };
       installStructureObserver(root);
     }
@@ -979,7 +986,8 @@
     scrollIntoView(best.node);
     triggerAction(best.node);
     await sleep(120);
-    if (!verifyValue(input, entry.type, value)) return null;
+    // 回读校验以"选中项完整文本"为准（联想会把完整选项写入输入框，而 value 只是用户输入的前缀）。
+    if (!verifyValue(input, entry.type, best.text)) return null;
     return { ok: true, via: "suggest" };
   }
 
@@ -1430,7 +1438,12 @@
     }
     const actual = normalizeCompare(el.value);
     const expected = normalizeCompare(value);
-    return actual && (actual === expected || actual.includes(expected) || expected.includes(actual));
+    // tel/email/date 类页面可能做归一化（去空格/加国家码/格式化成 yyyy-MM 等），允许包含匹配；
+    // 普通文本/文本域严格去空白相等，避免"含期望子串的错误值"（如期望"张三"实际"张三丰"）被误报成功。
+    if (type === "tel" || type === "email") {
+      return actual && (actual === expected || actual.includes(expected) || expected.includes(actual));
+    }
+    return actual && actual === expected;
   }
 
   function entryFingerprint(entry, el) {
@@ -2224,6 +2237,9 @@
 
   // —— 消息监听（真实环境） ——
   if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
+    // 防重复注入：background 按需注入 + 页面导航可能产生双份副本，只保留一个消息监听。
+    if (window.__hunterFillListenerRegistered) return;
+    window.__hunterFillListenerRegistered = true;
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       try {
         if (message.type === "SMART_FILL_SCAN") {

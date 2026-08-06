@@ -53,11 +53,22 @@ export async function allowApiOrigin() {
 }
 
 export async function ensureAiConsent() {
-  const { aiConsented } = await chrome.storage.local.get("aiConsented");
-  if (aiConsented) return;
-  const ok = confirm("首次使用提醒：你的简历图片、简历全文和岗位 JD 将发送到你在设置中填写的 AI 服务地址。\n\n请确认你信任该服务地址，且已使用 https。点击确定后继续，本提醒不会再出现。");
+  // 同意按 endpoint origin 记录：更换服务域名后需重新确认，避免"信任链"静默失效。
+  const endpoint = String(state.config.endpoint || "").trim();
+  let origin = "";
+  try { origin = new URL(endpoint).origin; } catch (_) {}
+  if (!origin) return;
+  const stored = await chrome.storage.local.get(["aiConsent", "aiConsented"]);
+  const consentMap = stored.aiConsent && typeof stored.aiConsent === "object" ? stored.aiConsent : {};
+  if (consentMap[origin]) return;
+  // 兼容旧版一次性同意：历史 aiConsented=true 时按当前 origin 迁移为已同意一次。
+  if (stored.aiConsented && !Object.keys(consentMap).length) {
+    await chrome.storage.local.set({ aiConsent: { [origin]: true } });
+    return;
+  }
+  const ok = confirm(`首次使用提醒：你的简历图片、简历全文和岗位 JD 将发送到以下 AI 服务：\n\n${origin}\n\n请确认你信任该服务地址，且已使用 https。`);
   if (!ok) throw new Error("已取消，未向 AI 服务发送任何数据。");
-  await chrome.storage.local.set({ aiConsented: true });
+  await chrome.storage.local.set({ aiConsent: { ...consentMap, [origin]: true } });
 }
 
 // —— 多简历管理 ——

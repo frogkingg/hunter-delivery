@@ -429,3 +429,31 @@ export function resolveResumeValueRef(resumeFields, valueRef) {
   }
   return typeof current === "string" || typeof current === "number" ? String(current).trim() : "";
 }
+
+// —— ValueRef 路径静态校验（供 playbook/模板校验器复用） ——
+
+// 经历类数组字段及各自的合法条目字段（与 AI 提取 prompt 的 schema 对齐）。
+export const RESUME_ARRAY_KEYS = new Set(["education", "workHistory", "internships", "projects"]);
+export const RESUME_ENTRY_KEYS = {
+  education: ["start", "end", "school", "schoolLocation", "college", "degree", "major", "studyMode"],
+  workHistory: ["start", "end", "company", "industry", "location", "title", "description"],
+  internships: ["start", "end", "company", "industry", "location", "title", "description"],
+  projects: ["start", "end", "name", "company", "role", "description", "responsibility"],
+};
+
+// 校验 ValueRef 路径是否可被 resolveResumeValueRef 解析（语法 + 根键 + 数组条目字段）。
+export function isValidResumePath(path) {
+  const p = String(path || "").trim();
+  if (!p || !/^[A-Za-z][A-Za-z0-9]*(?:\[\d+\]|\.[A-Za-z][A-Za-z0-9]*)*$/.test(p)) return false;
+  const segments = p.split(".");
+  const root = segments[0].replace(/\[\d+\]$/, ""); // 去掉数组下标（education[0] -> education）
+  if (!(root in EMPTY_RESUME_FIELDS)) return false;
+  if (segments.length === 1) return true;
+  if (RESUME_ARRAY_KEYS.has(root)) {
+    if (!/\[\d+\]$/.test(segments[0])) return false; // 数组必须带下标
+    const field = segments[1];
+    return (RESUME_ENTRY_KEYS[root] || []).includes(field);
+  }
+  // 标量多级路径（如 xxx.yy）目前 schema 不使用，保守拒绝。
+  return false;
+}

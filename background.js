@@ -2,7 +2,7 @@ import { sanitizeGreeting, trimLog } from "./src/pure-utils.js";
 import {
   DEFAULTS, endpointUrl, hostOf, assertSafeEndpoint,
   jsonFrom, jobIdentityKeys, sameJob, dedupeJobLibrary,
-  sanitizeJobForLibrary, escapeCsv,
+  sanitizeJobForLibrary, escapeCsv, buildCommunicationProbeText,
 } from "./lib/shared.js";
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -155,6 +155,11 @@ async function callAI({ config, messages, maxTokens = 1800, jsonMode = false, ti
     }
     const body = await response.json().catch(() => ({}));
     if (!response.ok) {
+      // 429 / 5xx 为可恢复的服务端压力错误：退避重试；refusal / content_filter 等业务拒绝不重试。
+      if (attempt < attempts && (response.status === 429 || response.status >= 500)) {
+        await sleep(1000 * attempt);
+        continue;
+      }
       const error = new Error(body?.error?.message || `AI 服务返回 ${response.status}`);
       error.rawResponse = rawAiResponse(body);
       throw error;
@@ -476,14 +481,27 @@ async function sendToTab(tabId, message) {
   }
 }
 
-async function waitForTab(tabId, fragment, timeout = 15000) {
+async function waitForTab(tabId, targetUrl, timeout = 15000) {
+  let target = null;
+  try { target = new URL(targetUrl); } catch (_) {}
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
     const tab = await chrome.tabs.get(tabId);
-    if (tab.status === "complete" && tab.url?.includes(fragment)) return tab;
+    if (tab.status === "complete" && tab.url) {
+      if (!target) {
+        if (tab.url.includes(String(targetUrl || ""))) return tab;
+      } else {
+        try {
+          const current = new URL(tab.url);
+          // 前后岗位详情 URL 都含 /job_detail/，仅用 fragment 匹配会读到上一个岗位的旧页面；
+          // 改为 host+pathname 全等，避免在旧页面触发 VERIFY_JOB 误停或注入竞态。
+          if (current.origin === target.origin && current.pathname === target.pathname) return tab;
+        } catch (_) {}
+      }
+    }
     await sleep(300);
   }
-  throw new Error(`页面加载超时：${fragment}`);
+  throw new Error(`页面加载超时：${target ? target.pathname : targetUrl}`);
 }
 
 async function waitForCommunicationReady(tabId, timeout = 15000) {
@@ -501,7 +519,15 @@ async function waitForCommunicationReady(tabId, timeout = 15000) {
     }
     await sleep(400);
   }
-  throw new Error(`未能进入可发送状态。${lastError ? `最后状态：${lastError}。` : ""}请检查 BOSS 页面是否出现验证或沟通弹层。`);
+  // 超时：抓取页面快照，把真实状态带进错误信息，并把 worker 标签页带到前台供用户查看/完成验证。
+  let snapshot = "";
+  try {
+    const probe = await sendToTab(tabId, { type: "PREPARE_COMMUNICATION_PROBE" });
+    if (probe?.blocked) snapshot = `检测到安全验证：${probe.securityText || "请手动完成验证"}`;
+    else snapshot = buildCommunicationProbeText(probe?.probe);
+  } catch (_) {}
+  try { await chrome.tabs.update(tabId, { active: true }); } catch (_) {}
+  throw new Error(`未能进入可发送状态。${snapshot ? `快照：${snapshot}。` : ""}请检查 BOSS 页面是否出现验证或沟通弹层。`);
 }
 
 async function ensureWorker(url) {
@@ -535,14 +561,18 @@ async function runQueue(keySet = null) {
       queueBatch.current = index + 1;
       await updateQueueItem(item.key, { status: "投递中", progress: `正在投递第 ${queueBatch.current}/${queueBatch.total} 个岗位：打开岗位详情`, error: "" });
       try {
-        const greeting = sanitizeGreeting(item.greeting);
-        if (!item.profileName) throw new Error("该岗位未绑定生成招呼语时使用的简历，请重新批量生成后再投递。");
+        // 发送前从队列重读最新值：投递进行中用户在面板编辑的招呼语/简历绑定应生效。
+        const freshItem = (await getQueue()).find(q => q.key === item.key);
+        const effectiveItem = freshItem || item;
+        const greeting = sanitizeGreeting(effectiveItem.greeting);
+        const profileName = effectiveItem.profileName;
+        if (!profileName) throw new Error("该岗位未绑定生成招呼语时使用的简历，请重新批量生成后再投递。");
         const { profiles = [] } = await chrome.storage.local.get("profiles");
-        const profile = profiles.find(candidate => candidate.name === item.profileName);
-        if (!profile) throw new Error(`生成招呼语时使用的简历“${item.profileName}”已不存在，请重新批量生成。`);
+        const profile = profiles.find(candidate => candidate.name === profileName);
+        if (!profile) throw new Error(`生成招呼语时使用的简历“${profileName}”已不存在，请重新批量生成。`);
         if (!item.detailUrl) throw new Error("缺少岗位详情链接");
         const tabId = await ensureWorker(item.detailUrl);
-        await waitForTab(tabId, "/job_detail/");
+        await waitForTab(tabId, item.detailUrl);
         await appendDeliveryLog({ jobKey: item.key, jobTitle: item.title, step: "打开详情", status: "ok" });
         await updateQueueItem(item.key, { progress: "正在核验岗位信息" });
         const verify = await sendToTab(tabId, { type: "VERIFY_JOB", job: item });
@@ -609,8 +639,18 @@ async function runQueue(keySet = null) {
   }
 }
 
+// AI 类消息只接受扩展自身页面（side panel）发来的调用，拒绝任意 content script / 网页上下文驱动，
+// 防止被诱导的页面借助扩展权限读取明文 API Key 或以任意 endpoint 发起请求（纵深防御）。
+function isTrustedExtensionSender(sender) {
+  return !!sender && /^chrome-extension:\/\//.test(String(sender?.url || ""));
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
+    if ((message.type === "AI_CALL" || message.type === "PARSE_JSON") && !isTrustedExtensionSender(_sender)) {
+      sendResponse({ ok: false, error: "拒绝来自不可信来源的 AI 调用。" });
+      return;
+    }
     if (message.type === "AI_CALL") {
       const result = await callAI(message.payload);
       const text = typeof result === "string" ? result : (result?.text ?? result);
@@ -684,6 +724,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 // background 读取 SSE，推送进度与累计文本；完成后返回文本和 usage。
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== "AI_CALL_STREAM") return;
+  if (!isTrustedExtensionSender(port.sender)) {
+    try { port.disconnect(); } catch (_) {}
+    return;
+  }
   port.onMessage.addListener(async (message) => {
     if (message.type !== "AI_CALL_STREAM") return;
     try {
