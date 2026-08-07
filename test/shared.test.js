@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   endpointUrl, hostOf, assertSafeEndpoint,
-  jsonFrom, jobIdentityKeys, sameJob, dedupeJobLibrary,
+  jsonFrom, jobIdentityKeys, jobIdOf, sameJob, dedupeJobLibrary,
   sanitizeJobForLibrary, escapeCsv,
   DEFAULTS, buildCommunicationProbeText,
 } from "../lib/shared.js";
@@ -119,6 +119,11 @@ test("jobIdentityKeys 从 detailUrl 提取 jobId", () => {
   assert.ok(keys.some(k => k === "jobId:abc123"));
 });
 
+test("jobIdOf 从显式字段或详情链接提取岗位 ID", () => {
+  assert.equal(jobIdOf({ jobId: "abc" }), "abc");
+  assert.equal(jobIdOf({ detailUrl: "https://www.zhipin.com/job_detail/xyz.html?securityId=x" }), "xyz");
+});
+
 test("sameJob 同 jobId 视为同一岗位", () => {
   const a = { jobId: "abc", title: "前端", company: "X" };
   const b = { detailUrl: "https://www.zhipin.com/job_detail/abc.html", title: "前端工程师", company: "X" };
@@ -131,11 +136,24 @@ test("sameJob 不同岗位不误判", () => {
   assert.ok(!sameJob(a, b));
 });
 
+test("sameJob 不同 jobId 即使公司标题地点相同也不去重", () => {
+  const a = { jobId: "abc", title: "产品经理", company: "X", location: "北京" };
+  const b = { jobId: "xyz", title: "产品经理", company: "X", location: "北京" };
+  assert.equal(sameJob(a, b), false);
+});
+
 test("sameJob 列表页 url 仅在缺少 jobId/detailUrl/key 时作为兜底", () => {
   const listUrl = "https://www.zhipin.com/web/geek/jobs";
   const a = { url: listUrl, title: "前端", company: "X", location: "北京" };
   const b = { detailUrl: "https://www.zhipin.com/job_detail/xyz.html", url: listUrl, title: "后端", company: "Y", location: "上海" };
   assert.ok(!sameJob(a, b));
+});
+
+test("sameJob 同一列表页但岗位语义不同时不误判", () => {
+  const listUrl = "https://www.zhipin.com/web/geek/jobs";
+  const a = { url: listUrl, title: "前端", company: "X", location: "北京" };
+  const b = { url: listUrl, title: "后端", company: "Y", location: "上海" };
+  assert.equal(sameJob(a, b), false);
 });
 
 test("sameJob company|title|location 兜底匹配", () => {

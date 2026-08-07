@@ -1,5 +1,5 @@
 // 当前岗位：extractJob / analyze / sendJob。
-import { state } from "./state.js";
+import { state, activeProfile } from "./state.js";
 import { $, send, activeTab, toast, messagePage } from "./chrome-helpers.js";
 import { handleError } from "./error-handler.js";
 import { aiStreamResponse, parseAiJson } from "./ai-client.js";
@@ -69,6 +69,10 @@ export async function analyze() {
     state.currentJob = nextJob;
     renderJob(state.currentJob);
     if (!state.config.candidateProfile) throw new Error("请先在设置中粘贴或解析简历内容。");
+    const profile = activeProfile();
+    if (!profile) throw new Error("未找到当前简历，请在设置中重新选择。");
+    state.currentJobProfile = profile;
+    state.currentJobResumeImages = [...state.uploadedImages];
     const prompt = buildGreetingPrompt(state.jobPromptOverride || state.config.greetingPrompt || DEFAULT_GREETING_PROMPT, state.config.candidateProfile, state.currentJob);
     const startedAt = Date.now();
     let receivedChars = 0;
@@ -121,10 +125,17 @@ export async function sendJob() {
   const button = $("send");
   if (state.sendJobInFlight) { toast("正在发送中，请勿重复点击。"); return; }
   state.sendJobInFlight = true;
-  if (button) button.disabled = true;
+  const originalButtonText = button?.textContent || "确认沟通并发送";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "正在核验并发送…";
+  }
   let lockSend = false; // 消息已送达但本地归档失败时保持禁用，防止重复发送
   try {
     if (!state.currentJob) throw new Error("请先分析当前岗位。");
+    if (!state.currentJobProfile || activeProfile() !== state.currentJobProfile) {
+      throw new Error("当前简历已切换，请重新分析岗位后再发送，避免混用不同简历。");
+    }
     const greeting = sanitizeGreeting($("greeting").value);
     const sourceTab = await activeTab();
     if (!sourceTab?.url) throw new Error("未找到当前岗位页。");
@@ -139,14 +150,21 @@ export async function sendJob() {
     const sourceTabId = sourceTab.id;
     const communication = await waitForCommunicationReady(sourceTabId);
     try {
-      const check = await messagePage(communication.tab, { type: "SELF_CHECK", requireImages: !!state.uploadedImages.length });
+      const check = await messagePage(communication.tab, { type: "SELF_CHECK", requireImages: !!state.currentJobResumeImages.length });
       if (check?.missing?.length) {
         toast(`BOSS 页面结构可能已变更（缺失：${check.missing.join("、")}），将继续尝试发送。`);
       }
     } catch (_) { /* 自检失败不阻断主流程 */ }
-    result = await messagePage(communication.tab, { type: "SEND_MESSAGE", greeting, images: state.uploadedImages });
+    result = await messagePage(communication.tab, { type: "SEND_MESSAGE", greeting, images: state.currentJobResumeImages });
     if (!result?.ok) throw new Error(result?.error || "发送失败");
-    const record = { ...state.currentJob, greeting, status: "已沟通", sentAt: new Date().toLocaleString("zh-CN"), resumeStatus: result.resume?.sent ? "简历图片已确认送达" : (result.resume?.reason || "未发送") };
+    const record = {
+      ...state.currentJob,
+      greeting,
+      profileName: state.currentJobProfile.name || "",
+      status: "已沟通",
+      sentAt: new Date().toLocaleString("zh-CN"),
+      resumeStatus: result.resume?.sent ? "简历图片已确认送达" : (result.resume?.reason || "未发送"),
+    };
     const saved = await send({ type: "SAVE_JOB", job: record });
     if (!saved?.ok) {
       lockSend = true;
@@ -163,6 +181,9 @@ export async function sendJob() {
     handleError("确认沟通并发送", error, toast);
   } finally {
     state.sendJobInFlight = false;
-    if (button && !lockSend) button.disabled = false;
+    if (button) {
+      button.textContent = originalButtonText;
+      if (!lockSend) button.disabled = false;
+    }
   }
 }

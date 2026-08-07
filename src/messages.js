@@ -27,7 +27,7 @@ export const MESSAGE_TYPES = {
   EXPORT_JOBS: {
     direction: "panel→background",
     payload: {},
-    response: { ok: "boolean" },
+    response: { ok: "boolean", csv: "string?", filename: "string?", error: "string?" },
   },
   QUEUE_ADD: {
     direction: "panel→background",

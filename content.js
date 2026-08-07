@@ -38,7 +38,6 @@ function extractJob() {
   const isListPage = window.location.pathname.includes("/web/geek/jobs");
   // BOSS 目前有两套 DOM：职位详情页和 /web/geek/jobs 右侧浮层。这里分别精确读取，
   // 避免把整页导航/推荐岗位当成 JD。
-  const detailScope = isListPage ? ".job-detail-container" : ".job-primary.detail-box";
   const title = isListPage
     ? scopedText(".job-detail-container", [".job-detail-header .job-name", ".job-name"])
     : scopedText(".job-primary.detail-box", ["h1", ".name h1"]);
@@ -65,11 +64,17 @@ function extractJob() {
     ? longestText([".job-detail-container .job-detail-body .desc", ".job-detail-container .desc"])
     : longestText([".job-detail .job-sec-text", ".job-sec-text", ".job-description", ".detail-content"]);
   const fallbackTitle = firstText([".job-name", "h1", ".job-title"]);
+  const activeJobLink = isListPage
+    ? document.querySelector(".job-card-wrap.active a.job-name[href*='/job_detail/']")
+    : null;
+  const detailJobLink = isListPage
+    ? document.querySelector(".job-detail-container a[href*='/job_detail/']")
+    : null;
   const detailUrl = isListPage
-    ? document.querySelector(".job-detail-container a[href*='/job_detail/'][href*='securityId='], a[href*='/job_detail/'][href*='securityId=']")?.href || document.querySelector(".job-card-wrap.active a.job-name[href*='/job_detail/']")?.href || ""
+    ? activeJobLink?.href || detailJobLink?.href || ""
     : window.location.href;
   const button = [...document.querySelectorAll("button, a")].find(el => visible(el) && /^(立即沟通|继续沟通)$/.test(text(el)));
-  const jobId = (detailUrl.match(/job_detail\/([^./?]+)\.html/) || [])[1] || "";
+  const jobId = (detailUrl.match(/job_detail\/([^./?]+)(?:\.html)?/) || [])[1] || "";
   return {
     title: title || fallbackTitle || "未识别岗位名称", company, location: jobLocation,
     salary: decodeSalary(salary || pageText.match(/\b\d{1,3}(?:-\d{1,3})?K[·・]?\d{0,2}薪?\b/i)?.[0] || ""),
@@ -146,32 +151,38 @@ function verifyJob(expected) {
   };
   const expectedJobId = jobIdFrom(expected);
   const actualJobId = jobIdFrom(actual);
-  const jobIdOk = !expectedJobId || !!actualJobId && actualJobId === expectedJobId;
-  const titleOk = !expected.title || normal(actual.title) === normal(expected.title);
+  const expectedTitle = normal(expected.title);
+  const actualTitle = normal(actual.title);
+  const jobIdOk = !!expectedJobId && !!actualJobId && actualJobId === expectedJobId;
+  const titleOk = !!expectedTitle && !!actualTitle && actualTitle === expectedTitle;
   const actualCompany = normal(actual.company);
   const expectedCompany = normal(expected.company);
   const companyOk = !expectedCompany || !!actualCompany && (actualCompany.includes(expectedCompany) || expectedCompany.includes(actualCompany));
   let ok = false;
   let reason = "";
-  if (!jobIdOk) {
-    reason = actualJobId ? "岗位唯一标识不一致" : "未读取到岗位唯一标识";
+  if (!expectedJobId) {
+    reason = "待投递岗位缺少唯一标识";
+  } else if (!actualJobId) {
+    reason = "未读取到岗位唯一标识";
+  } else if (!jobIdOk) {
+    reason = "岗位唯一标识不一致";
+  } else if (!expectedTitle) {
+    reason = "待投递岗位缺少岗位名称";
+  } else if (!actualTitle) {
+    reason = "未读取到岗位名称";
   } else if (!titleOk) {
     reason = "岗位名称不一致";
-  } else if (expectedJobId) {
+  } else {
     ok = true;
     if (!companyOk) reason = actualCompany
       ? "岗位 ID 与名称一致；公司展示名称不同，已按岗位 ID 确认"
       : "岗位 ID 与名称一致；公司未读取到，已按岗位 ID 确认";
-  } else if (companyOk) {
-    ok = true;
-  } else {
-    reason = "公司不一致或未读取到公司";
   }
   return {
     ok,
     actual,
     reason,
-    confidence: expectedJobId ? "high" : "medium",
+    confidence: ok ? "high" : "low",
     checks: { jobIdOk, titleOk, companyOk, expectedJobId, actualJobId },
   };
 }
@@ -387,7 +398,7 @@ const isFailed = statusEl => /status-error/.test(statusEl?.className || "") || /
 // 找到含本次招呼语内容指纹的那一条，再看它是否为 status-delivery / status-read。
 async function waitForOutgoingMessage(beforeCount, greeting, timeoutMs = 9000, isKnownFailed = () => false) {
   const deadline = Date.now() + timeoutMs;
-  const fingerprint = normalize(greeting).slice(0, 16);
+  const fingerprint = normalize(greeting);
   while (Date.now() < deadline) {
     const messages = outgoingMessages();
     for (const message of messages.slice(beforeCount)) {

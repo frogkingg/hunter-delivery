@@ -283,8 +283,13 @@ export function extractResumeFieldsLocal(text) {
   fields.qq = firstMatch(source, /(?:QQ号?|腾讯QQ)\s*[:：]?\s*(\d{5,12})/i);
 
   const lines = source.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
-  const firstLine = lines[0] || "";
-  if (/^[^\s|:：,，]{1,20}$/.test(firstLine) && !/\d{5,}/.test(firstLine)) fields.name = firstLine;
+  const firstLine = String(lines[0] || "").replace(/^#{1,6}\s*/, "").trim();
+  const genericResumeHeading = /^(?:(?:个人|求职|应聘)?(?:简历|履历|简历内容)|resume|curriculum\s*vitae|cv)$/i;
+  if (
+    /^[^\s|:：,，]{1,20}$/.test(firstLine)
+    && !/\d{5,}/.test(firstLine)
+    && !genericResumeHeading.test(firstLine)
+  ) fields.name = firstLine;
 
   const gender = source.match(/(^|[^\u4e00-\u9fa5])([男女])([^\u4e00-\u9fa5]|$)/);
   if (gender) fields.gender = gender[2];

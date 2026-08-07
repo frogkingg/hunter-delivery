@@ -112,8 +112,22 @@ function bindEvents() {
   });
   // 岗位库导出
   $("export").onclick = async () => {
-    const response = await send({ type: "EXPORT_JOBS" });
-    toast(response?.ok ? "已生成 Excel 兼容 CSV" : "导出失败");
+    let url = "";
+    try {
+      const response = await send({ type: "EXPORT_JOBS" });
+      if (!response?.ok || typeof response.csv !== "string") throw new Error(response?.error || "未能生成 CSV");
+      url = URL.createObjectURL(new Blob([response.csv], { type: "text/csv;charset=utf-8" }));
+      await chrome.downloads.download({
+        url,
+        filename: response.filename || `猎投-岗位库-${new Date().toISOString().slice(0, 10)}.csv`,
+        saveAs: true,
+      });
+      toast("已生成 Excel 兼容 CSV");
+    } catch (error) {
+      toast(`导出失败：${error.message || String(error)}`);
+    } finally {
+      if (url) setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
   };
   // 投递清单
   $("addQueueTop").onclick = addCurrentToQueue;

@@ -45,6 +45,15 @@ test("extractResumeFieldsLocal: 空输入返回空对象", () => {
   assert.equal(fields.name, "");
 });
 
+test("extractResumeFieldsLocal: 简历标题不作为姓名且 AI 可补入真实姓名", () => {
+  for (const heading of ["个人简历", "简历内容", "RESUME"]) {
+    const local = extractResumeFieldsLocal(`${heading}\n张三\n手机：13800138000`);
+    assert.equal(local.name, "", `${heading} 不应被识别为姓名`);
+    const merged = mergeResumeFields(local, { name: "张三" });
+    assert.equal(merged.name, "张三");
+  }
+});
+
 test("extractResumeFieldsLocal: 提取 QQ 与推荐码", () => {
   const fields = extractResumeFieldsLocal("张三\nQQ：12345678\n推荐码：SSG2026");
   assert.equal(fields.qq, "12345678");

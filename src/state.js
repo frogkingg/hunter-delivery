@@ -4,6 +4,9 @@
 export const state = {
   config: {},
   currentJob: null,
+  currentJobProfile: null,
+  currentJobResumeImages: [],
+  sendJobInFlight: false,
   uploadedImages: [],
   jobPromptOverride: "",
   selectedQueueKeys: new Set(),

@@ -609,6 +609,30 @@ test("QUEUE_ADD 用同岗位语义去重（jobId/detailUrl 等价）", async () 
   assert.match(dup.error, /已在投递清单/);
 });
 
+test("QUEUE_ADD 拒绝缺少可解析 jobId 或标题的岗位", async () => {
+  const mock = createChrome();
+  const dispatch = await bootBackground(mock);
+
+  const missingId = await dispatch({
+    type: "QUEUE_ADD",
+    job: {
+      title: "AI 产品经理",
+      detailUrl: "https://www.zhipin.com/web/geek/jobs",
+    },
+  });
+  assert.equal(missingId.ok, false);
+  assert.match(missingId.error, /唯一标识/);
+
+  const missingTitle = await dispatch({
+    type: "QUEUE_ADD",
+    job: {
+      detailUrl: "https://www.zhipin.com/job_detail/job-1.html",
+    },
+  });
+  assert.equal(missingTitle.ok, false);
+  assert.match(missingTitle.error, /岗位名称/);
+});
+
 test("批量投递运行中禁止移除岗位", async () => {
   const mock = createChrome({
     deliveryQueue: [queuedJob()],
@@ -637,12 +661,14 @@ test("批量投递运行中禁止移除岗位", async () => {
   await waitForQueueToStop(dispatch);
 });
 
-test("EXPORT_JOBS 使用 blob URL 导出", async () => {
+test("EXPORT_JOBS 返回 CSV 给 panel 创建 Blob 并下载", async () => {
   const mock = createChrome({ jobLibrary: [queuedJob({ status: "已沟通", sentAt: "2026-08-02" })] });
   const dispatch = await bootBackground(mock);
 
   const response = await dispatch({ type: "EXPORT_JOBS" });
   assert.equal(response.ok, true);
-  assert.equal(mock.calls.downloads.length, 1);
-  assert.ok(String(mock.calls.downloads[0].url || "").startsWith("blob:"));
+  assert.match(response.filename, /^猎投-岗位库-\d{4}-\d{2}-\d{2}\.csv$/);
+  assert.match(response.csv, /AI 产品经理/);
+  assert.match(response.csv, /已沟通/);
+  assert.equal(mock.calls.downloads.length, 0);
 });

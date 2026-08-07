@@ -1,7 +1,7 @@
 import { sanitizeGreeting, trimLog } from "./src/pure-utils.js";
 import {
   DEFAULTS, endpointUrl, hostOf, assertSafeEndpoint,
-  jsonFrom, jobIdentityKeys, sameJob, dedupeJobLibrary,
+  jsonFrom, jobIdOf, sameJob, dedupeJobLibrary,
   sanitizeJobForLibrary, escapeCsv, buildCommunicationProbeText,
 } from "./lib/shared.js";
 
@@ -334,10 +334,11 @@ async function exportJobs() {
     ["投递状态", "status"], ["岗位链接", "url"]
   ];
   const csv = "\uFEFF" + [columns.map(([label]) => escapeCsv(label)).join(","), ...jobLibrary.map(job => columns.map(([, key]) => escapeCsv(key === "url" ? (job.detailUrl || job.url) : job[key])).join(","))].join("\r\n");
-  // 岗位库可能很大，data URL 会超出 downloads 限制，改用 blob URL。
-  // MV3 service worker 终止时会自动释放 blob URL，无需手动 revoke。
-  const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-  await chrome.downloads.download({ url, filename: `猎投-岗位库-${new Date().toISOString().slice(0, 10)}.csv`, saveAs: true });
+  // Service Worker 不支持 URL.createObjectURL；把 CSV 交给 panel 创建 Blob 并下载。
+  return {
+    csv,
+    filename: `猎投-岗位库-${new Date().toISOString().slice(0, 10)}.csv`,
+  };
 }
 
 let queueRunning = false;
@@ -427,12 +428,15 @@ async function pruneRecentDeliveries() {
 async function queueJob(job) {
   return queueMutex.run(async () => {
     const queue = await getQueue();
-    const key = job.jobId || job.detailUrl;
-    if (!key) throw new Error("未读取到岗位唯一标识，请在岗位页重新分析后再加入清单。");
-    // 与岗位库一致：按 jobId/detailUrl/标题公司兜底做语义去重，而不是只比 key 字符串。
+    const jobId = jobIdOf(job);
+    if (!jobId) throw new Error("未读取到岗位唯一标识，请在岗位页重新分析后再加入清单。");
+    if (!String(job?.title || "").trim()) throw new Error("未读取到岗位名称，请在岗位页重新分析后再加入清单。");
+    if (!job?.detailUrl) throw new Error("未读取到岗位详情链接，请在岗位页重新分析后再加入清单。");
+    const key = jobId;
+    // 强身份优先；只有双方都缺少 jobId/detailUrl/key 时才按标题、公司和地点兜底。
     if (queue.some(item => sameJob(item, job))) throw new Error("该岗位已在投递清单中。");
     if (queue.filter(item => item.status !== "已成功").length >= 20) throw new Error("投递清单最多保留 20 条待处理岗位。");
-    const item = { ...job, key, greeting: job.greeting || "", status: job.greeting ? "待投递" : "待生成", queuedAt: new Date().toLocaleString("zh-CN"), error: "" };
+    const item = { ...job, jobId, key, greeting: job.greeting || "", status: job.greeting ? "待投递" : "待生成", queuedAt: new Date().toLocaleString("zh-CN"), error: "" };
     queue.unshift(item); await setQueue(queue); return item;
   });
 }
@@ -663,7 +667,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     } else if (message.type === "LIBRARY_GET") {
       sendResponse({ ok: true, jobLibrary: await getJobLibrary() });
     } else if (message.type === "EXPORT_JOBS") {
-      await exportJobs(); sendResponse({ ok: true });
+      sendResponse({ ok: true, ...await exportJobs() });
     } else if (message.type === "QUEUE_ADD") {
       sendResponse({ ok: true, item: await queueJob(message.job) });
     } else if (message.type === "QUEUE_GET") {

@@ -8,6 +8,9 @@ let greetBoxes = [];
 let securityDialogs = [];
 let detailCompanyLinks = [];
 let sendButtons = [];
+let activeJobLink = null;
+let detailJobLink = null;
+let unrelatedJobLink = null;
 
 const visibleElement = (values = {}) => ({
   innerText: "",
@@ -52,11 +55,15 @@ globalThis.document = {
   body: visibleElement(),
   querySelector: selector => {
     if (selector === ".job-primary.detail-box") return detailScope;
-    if (selector === "div#chat-input.chat-input") return chatInput;
-    if (selector === "button.btn-send") return sendButtons[0] || null;
     if (selector === ".job-detail-container") return listDetailContainer;
     if (selector === ".job-card-wrap.active") return activeCard;
-    if (selector === ".job-card-wrap.active a.job-name[href*='/job_detail/']") return activeCard?.querySelector("a.job-name[href*='/job_detail/']") || null;
+    if (selector === ".job-card-wrap.active a.job-name[href*='/job_detail/']") {
+      return activeJobLink || activeCard?.querySelector("a.job-name[href*='/job_detail/']") || null;
+    }
+    if (selector === ".job-detail-container a[href*='/job_detail/']") return detailJobLink;
+    if (selector.includes(", a[href*='/job_detail/']")) return unrelatedJobLink;
+    if (selector === "div#chat-input.chat-input") return chatInput;
+    if (selector === "button.btn-send") return sendButtons[0] || null;
     return null;
   },
   querySelectorAll: selector => {
@@ -125,14 +132,14 @@ function dispatchSlow(message) {
   });
 }
 
-test("VERIFY_JOB 在预期公司非空但页面未读取公司时失败", async () => {
+test("VERIFY_JOB 缺少预期 jobId 时即使标题存在也失败", async () => {
   const response = await dispatch({
     type: "VERIFY_JOB",
     job: { title: "AI 产品经理", company: "目标公司" },
   });
 
   assert.equal(response.ok, false);
-  assert.match(response.reason, /公司不一致或未读取到公司/);
+  assert.match(response.reason, /缺少唯一标识/);
 });
 
 test("EXTRACT_JOB 从详情页公司链接读取公司名称", async () => {
@@ -148,6 +155,25 @@ test("EXTRACT_JOB 从详情页公司链接读取公司名称", async () => {
   detailCompanyLinks = [];
 });
 
+test("EXTRACT_JOB 列表页优先读取 active 卡片链接而非全局首个岗位", async () => {
+  window.location.pathname = "/web/geek/jobs";
+  window.location.href = "https://www.zhipin.com/web/geek/jobs";
+  activeJobLink = { href: "https://www.zhipin.com/job_detail/active-job.html?securityId=active" };
+  detailJobLink = { href: "https://www.zhipin.com/job_detail/detail-job.html?securityId=detail" };
+  unrelatedJobLink = { href: "https://www.zhipin.com/job_detail/first-job.html?securityId=first" };
+
+  const response = await dispatch({ type: "EXTRACT_JOB" });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.job.detailUrl, activeJobLink.href);
+  assert.equal(response.job.jobId, "active-job");
+  window.location.pathname = "/job_detail/job-1.html";
+  window.location.href = "https://www.zhipin.com/job_detail/job-1.html";
+  activeJobLink = null;
+  detailJobLink = null;
+  unrelatedJobLink = null;
+});
+
 test("VERIFY_JOB 在 jobId 与标题一致时允许公司字段缺失", async () => {
   const response = await dispatch({
     type: "VERIFY_JOB",
@@ -160,6 +186,16 @@ test("VERIFY_JOB 在 jobId 与标题一致时允许公司字段缺失", async ()
   assert.equal(response.checks.titleOk, true);
   assert.equal(response.checks.companyOk, false);
   assert.match(response.reason, /已按岗位 ID 确认/);
+});
+
+test("VERIFY_JOB 缺少预期标题时阻断发送", async () => {
+  const response = await dispatch({
+    type: "VERIFY_JOB",
+    job: { jobId: "job-1", company: "目标公司" },
+  });
+
+  assert.equal(response.ok, false);
+  assert.match(response.reason, /缺少岗位名称/);
 });
 
 test("VERIFY_JOB 始终阻断 jobId 不一致", async () => {
@@ -284,6 +320,40 @@ test("SEND_MESSAGE 检测到相同招呼语已送达时不重复发送图片", a
   assert.equal(response.delivery.alreadySent, true);
   assert.equal(response.resume.sent, false);
   assert.match(response.resume.reason, /未重复发送简历图片/);
+});
+
+test("SEND_MESSAGE 不把仅前 16 字相同的历史消息误判为已发送", async () => {
+  const oldGreeting = "您好，我认真阅读了贵公司的岗位介绍，并关注到AI产品方向，期待交流。";
+  const greeting = "您好，我认真阅读了贵公司的岗位介绍，并关注到数据产品方向，希望进一步沟通。";
+  const status = visibleElement({ className: "message-status status-delivery", innerText: "已送达", textContent: "已送达" });
+  const deliveredMessage = value => visibleElement({
+    innerText: value,
+    textContent: value,
+    querySelector: selector => selector === ".message-status" ? status : null,
+    querySelectorAll: () => [],
+  });
+  outgoing = [deliveredMessage(oldGreeting)];
+  chatInput.textContent = "";
+  composer = chatInput;
+  let clicks = 0;
+  sendButtons = [visibleElement({
+    disabled: false,
+    classList: { contains: () => false },
+    click: () => {
+      clicks++;
+      chatInput.textContent = "";
+      outgoing.push(deliveredMessage(greeting));
+    },
+    dispatchEvent: () => {},
+  })];
+
+  const response = await dispatch({ type: "SEND_MESSAGE", greeting, images: [] });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.delivery.alreadySent, undefined);
+  assert.equal(clicks, 1);
+  sendButtons = [];
+  outgoing = [];
 });
 
 test("SEND_MESSAGE 忽略隐藏禁用按钮并使用可见启用按钮", async () => {
