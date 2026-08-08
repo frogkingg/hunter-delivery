@@ -2,6 +2,8 @@
 
 ![猎投](cover.png)
 
+<video src="assets/demo.mp4" controls width="100%"></video>
+
 
 Chrome 扩展。自动读取 BOSS 直聘岗位信息，用 AI 对比简历生成个性化招呼语，支持单岗位确认发送与批量投递。
 
